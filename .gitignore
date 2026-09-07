@@ -1,6 +1,10 @@
 node_modules/
 dist/
 build/
+.roster-flow/
+playwright-report/
+test-results/
+blob-report/
 *.tsbuildinfo
 .env
 .env.*

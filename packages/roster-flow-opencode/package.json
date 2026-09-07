@@ -1,0 +1,14 @@
+{
+  "name": "roster-flow-opencode",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "OpenCode plugin: map Roster-flow seats onto agents and enable bot-to-bot bus tools.",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}
