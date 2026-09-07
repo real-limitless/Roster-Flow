@@ -2,6 +2,7 @@ node_modules/
 dist/
 build/
 .roster-flow/
+.opencode/agents/
 playwright-report/
 test-results/
 blob-report/

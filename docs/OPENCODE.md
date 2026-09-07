@@ -7,7 +7,7 @@ Roster-flow must not become a second agent runtime. The Everflow pattern (see `P
 1. Resolve a real `opencode` binary (reject stubs).
 2. `ensure` — `opencode serve --hostname 127.0.0.1 --port <n>` in the project workspace.
 3. Health — `GET /global/health`.
-4. Talk to sessions over HTTP (Room / API), or `opencode attach` (Harness power path).
+4. Talk to sessions over HTTP (Room / API), or attach the TUI (`opencode attach --session`) in the Harness xterm pane.
 5. Write agents, plugins, and providers into the workspace `opencode.json`.
 
 `server/harness.mjs` is that manager for a single local workspace (`.roster-flow/workspace`).
@@ -39,7 +39,8 @@ Configured in `.opencode/opencode.json` as `"plugin": ["roster-flow-opencode"]`.
 
 - Built-in-style ids: `anthropic`, `openai`, `xai`, plus **Other / Custom** (npm `@ai-sdk/openai-compatible`, `baseURL`, model list).
 - API key as `{env:VAR}` in `opencode.json` when possible; literal keys only in `.roster-flow/auth.json` (gitignored).
-- Per-seat default model is a Roster-flow field that becomes the OpenCode session `model` on attach.
+- Per-seat model is a Roster-flow field stored as `provider/model`. Hire/patch writes `.opencode/agents/<seatId>.md` (frontmatter `model`, `mode`, `permissions`; body = persona + instructions) and the matching `agents` block in `opencode.json`. Attach/wake send `{ providerID, modelID }` plus that agent id.
+- Team Supervisor agents are `mode: primary`. Generic and specialists are `mode: all`. Mail to `team:<id>` wakes the Supervisor.
 
 ## Environment
 

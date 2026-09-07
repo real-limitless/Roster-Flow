@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { emptyState } from "./seed.mjs";
+import { emptyState, migrateState } from "./seed.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const dataDir = join(root, ".roster-flow");
@@ -10,7 +10,7 @@ export const statePath = join(dataDir, "state.json");
 function load() {
   if (!existsSync(statePath)) return emptyState();
   try {
-    return { ...emptyState(), ...JSON.parse(readFileSync(statePath, "utf8")) };
+    return migrateState({ ...emptyState(), ...JSON.parse(readFileSync(statePath, "utf8")) });
   } catch {
     return emptyState();
   }
@@ -35,7 +35,7 @@ export function mutate(fn) {
 }
 
 export function resetState() {
-  state = emptyState();
+  state = migrateState(emptyState());
   save();
   return state;
 }

@@ -21,14 +21,14 @@ async function api(path, init = {}) {
   return data;
 }
 
-function tools(tool) {
+export function buildTools(tool, fetchApi = api) {
   const z = tool.schema;
   return {
     roster_list_seats: tool({
       description: "List Roster-flow org-chart seats (humans and OpenCode bots) and teams.",
       args: {},
       async execute() {
-        const [seats, teams] = await Promise.all([api("/api/v1/seats"), api("/api/v1/teams")]);
+        const [seats, teams] = await Promise.all([fetchApi("/api/v1/seats"), fetchApi("/api/v1/teams")]);
         return { title: "Roster", output: JSON.stringify({ seats, teams }, null, 2) };
       },
     }),
@@ -41,7 +41,7 @@ function tools(tool) {
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
-        const entry = await api("/api/v1/messages", {
+        const entry = await fetchApi("/api/v1/messages", {
           method: "POST",
           body: JSON.stringify({ to: args.to, text: args.text, from, wake: true }),
         });
@@ -57,7 +57,7 @@ function tools(tool) {
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
-        const entry = await api("/api/v1/bus/send", {
+        const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
           body: JSON.stringify({ from, to: args.to, kind: "handoff", text: args.text, wake: true }),
         });
@@ -74,7 +74,7 @@ function tools(tool) {
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
         const channel = args.channel || "ship";
-        const entry = await api("/api/v1/bus/send", {
+        const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
           body: JSON.stringify({
             from,
@@ -96,10 +96,10 @@ function tools(tool) {
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
-        const seats = await api("/api/v1/seats");
+        const seats = await fetchApi("/api/v1/seats");
         const me = seats.find((s) => s.id === from);
         const manager = me?.reportsTo || "you";
-        const entry = await api("/api/v1/bus/send", {
+        const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
           body: JSON.stringify({ from, to: manager, kind: "ask_human", text: args.text, wake: false }),
         });
@@ -111,15 +111,8 @@ function tools(tool) {
 
 function guessSeat(agent) {
   if (!agent) return "floor";
-  const a = String(agent).toLowerCase();
-  if (a.includes("product")) return "product";
-  if (a.includes("build")) return "build";
-  if (a.includes("review")) return "review";
-  if (a.includes("devops")) return "devops";
-  if (a.includes("qa")) return "qa";
-  if (a.includes("scout")) return "scout";
-  if (a.includes("floor") || a.includes("conductor")) return "floor";
-  return a.replace(/[^a-z0-9-]/g, "") || "floor";
+  const a = String(agent).toLowerCase().replace(/[^a-z0-9-]/g, "");
+  return a || "floor";
 }
 
 /** @type {import('@opencode-ai/plugin').Plugin} */
@@ -133,11 +126,20 @@ export async function RosterFlowPlugin(_input) {
     };
   }
   return {
-    tool: tools(tool),
+    tool: buildTools(tool),
     async event({ event }) {
       const type = event?.type || event?.name;
-      if (type && String(type).includes("session")) {
-        /* seat ↔ session binding happens on the CORE API attach/wake path */
+      const sessionId = event?.properties?.sessionID || event?.sessionID || event?.sessionId;
+      const agent = event?.properties?.agent || event?.agent;
+      if (sessionId && agent && String(type || "").includes("session")) {
+        try {
+          await api(`/api/v1/seats/${guessSeat(agent)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ lastSession: sessionId }),
+          });
+        } catch {
+          /* CORE optional */
+        }
       }
     },
     async "experimental.chat.system.transform"(_input, output) {
@@ -145,12 +147,23 @@ export async function RosterFlowPlugin(_input) {
         const seats = await api("/api/v1/seats");
         const roster = seats
           .filter((s) => s.kind === "bot")
-          .map((s) => `${s.id}: ${s.name} — ${s.job}`)
+          .map((s) => {
+            const bits = [
+              `${s.id}: ${s.name} [${s.seatType || "specialist"}]`,
+              s.team ? `team=${s.team}` : null,
+              s.model ? `model=${s.model}` : null,
+              s.persona ? `persona=${s.persona}` : null,
+              `job=${s.job}`,
+              s.instructions ? `instructions=${s.instructions}` : null,
+            ];
+            return bits.filter(Boolean).join(" · ");
+          })
           .join("\n");
         output.system.push(
-          "You are a Roster-flow seat. Peers are other OpenCode agents on the same org chart.",
+          "You are a Roster-flow seat. Stay in your persona and follow your instructions.",
+          "Peers are other OpenCode agents on the same org chart.",
           "Talk through roster_send_message / roster_handoff / roster_report. Do not impersonate peers.",
-          "ask_human walks reports_to. Floor owns the run graph.",
+          "Mail to team:<id> reaches that team's Supervisor. ask_human walks reports_to. Floor owns the org run graph.",
           `Roster:\n${roster}`,
         );
       } catch {

@@ -6,6 +6,8 @@ import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { serveChildEnv } from "./providers.mjs";
+import { getState, mutate } from "./store.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const workspace = process.env.ROSTER_WORKSPACE
@@ -19,7 +21,7 @@ export function workspacePath() {
   return workspace;
 }
 
-function whichOpenCode() {
+export function whichOpenCode() {
   const envBin = process.env.OPENCODE_BIN;
   if (envBin && existsSync(envBin)) return envBin;
   const path = process.env.PATH || "";
@@ -32,11 +34,11 @@ function whichOpenCode() {
 
 function freePort(preferred) {
   return new Promise((resolve, reject) => {
-    const tryBind = (port) => {
+    const bind = (port, fallback) => {
       const s = createServer();
       s.unref();
       s.on("error", () => {
-        if (port === preferred) tryBind(0);
+        if (fallback) bind(0, false);
         else reject(new Error("No free port for opencode serve"));
       });
       s.listen(port, "127.0.0.1", () => {
@@ -45,8 +47,23 @@ function freePort(preferred) {
         s.close(() => resolve(p));
       });
     };
-    tryBind(preferred || Number(process.env.OPENCODE_PORT) || 14180);
+    bind(preferred || Number(process.env.OPENCODE_PORT) || 14180, true);
   });
+}
+
+async function adoptIfHealthy(port) {
+  const h = await healthCheck(port);
+  if (!h) return null;
+  instance = {
+    port,
+    baseUrl: `http://127.0.0.1:${port}`,
+    child: null,
+    pid: null,
+    healthy: true,
+    version: String(h.version || ""),
+  };
+  await reconcileSessions().catch(() => undefined);
+  return status();
 }
 
 export async function ocFetch(path, init = {}) {
@@ -123,6 +140,11 @@ export function status() {
 
 export async function ensure({ forceRestart = false } = {}) {
   writeWorkspaceConfig();
+  const preferred = Number(process.env.OPENCODE_PORT) || 14180;
+  if (!forceRestart && !instance) {
+    const adopted = await adoptIfHealthy(preferred);
+    if (adopted) return adopted;
+  }
   if (instance && !forceRestart) {
     const h = await healthCheck(instance.port);
     if (h && instance.child && instance.child.exitCode == null) {
@@ -154,7 +176,7 @@ export async function ensure({ forceRestart = false } = {}) {
   const child = spawn(binary, ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: root,
     env: {
-      ...process.env,
+      ...serveChildEnv(),
       OPENCODE_CLIENT: "roster-flow",
       ROSTER_API: process.env.ROSTER_API || `http://127.0.0.1:${process.env.ROSTER_API_PORT || 8787}`,
     },
@@ -192,6 +214,7 @@ export async function ensure({ forceRestart = false } = {}) {
     if (h) {
       instance.healthy = true;
       instance.version = String(h.version || "");
+      await reconcileSessions().catch(() => undefined);
       return status();
     }
     await new Promise((r) => setTimeout(r, 250));
@@ -217,4 +240,37 @@ export async function promptSession(sessionId, body) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function sessionMessages(sessionId) {
+  const data = await ocFetch(`/session/${sessionId}/message`);
+  return Array.isArray(data) ? data : data?.messages || [];
+}
+
+export function assistantText(messages) {
+  const out = [];
+  for (const msg of messages || []) {
+    const role = msg.role || msg.info?.role;
+    if (role && role !== "assistant") continue;
+    const parts = msg.parts || msg.info?.parts || [];
+    const text = parts
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text)
+      .join("\n")
+      .trim();
+    if (text) out.push({ id: msg.id || msg.info?.id, text });
+  }
+  return out;
+}
+
+export async function reconcileSessions() {
+  const live = await listSessions();
+  const ids = new Set(live.map((s) => s.id || s.sessionID).filter(Boolean));
+  mutate((s) => {
+    s.sessions = s.sessions || {};
+    for (const [seat, sid] of Object.entries(s.sessions)) {
+      if (!ids.has(sid)) delete s.sessions[seat];
+    }
+  });
+  return getState().sessions;
 }

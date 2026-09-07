@@ -76,4 +76,4 @@ CORE API (:8787)
 
 - Multi-tenant cloud sandboxes (that is Everflow’s product).
 - Real SSO. Local demo uses no login, or `Authorization: Bearer roster-demo`.
-- Embedded TUI iframe. Harness pane shows attach metadata; `opencode attach` is the power path.
+- OpenChamber / OpenCode web iframe. Harness embeds `opencode attach` in xterm (PTY), not a second web app.
