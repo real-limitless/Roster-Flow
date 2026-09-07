@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+.grok/
+artifacts/.project_id
+artifacts/relay-implementation-plan.md
+attachments/
