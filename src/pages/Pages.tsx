@@ -133,7 +133,7 @@ export function OrgPage() {
     <>
       <PageHero kicker="Org chart" title="The org chart is the control plane." sub="Hire a bot like you hire a person. Drag a reporting line. Watch the work move." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
-        <WorkspaceMock />
+        <WorkspaceMock initialMode="chart" />
         <div className="grid-3" style={{ marginTop: 24 }}>
           <div className="card">
             <h3>Hire</h3>
@@ -252,7 +252,7 @@ export function Access() {
             <Link to="/app">Meanwhile, open the workspace →</Link>
           </div>
         ) : (
-          <form className="form" onSubmit={onSubmit}>
+          <form className="form" data-testid="access-form" onSubmit={onSubmit}>
             <label>
               Name
               <input required name="name" />

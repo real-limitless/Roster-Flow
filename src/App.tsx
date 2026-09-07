@@ -2,12 +2,14 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Home } from "./pages/Home";
 import { Access, Bots, Changelog, HarnessPage, Orchestration, OrgPage, Pricing, Product, Security } from "./pages/Pages";
+import { Settings } from "./pages/Settings";
 import { Workspace } from "./pages/Workspace";
 
 export default function App() {
   return (
     <Routes>
       <Route path="/app" element={<Workspace />} />
+      <Route path="/app/settings" element={<Settings />} />
       <Route element={<Layout />}>
         <Route path="/" element={<Home />} />
         <Route path="/product" element={<Product />} />

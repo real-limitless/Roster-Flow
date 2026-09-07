@@ -364,11 +364,17 @@ h2, h2.section-title {
 .seat .pip.on { background: var(--phosphor); box-shadow: 0 0 8px var(--phosphor); }
 .seat .pip.run { background: var(--accent-hot); animation: pulse 1.6s infinite; }
 
-.chart-canvas { padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
-.org-node { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.chart-canvas { padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 18px; position: relative; }
+.org-chart { position: relative; width: 100%; min-height: 280px; padding: 8px 4px 24px; }
+.org-connectors { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; z-index: 0; }
+.org-line { fill: none; stroke: var(--rail); stroke-width: 2; }
+.org-line.live { stroke: var(--accent); }
+.org-tree { position: relative; z-index: 1; display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
+.org-node { display: flex; flex-direction: column; align-items: center; gap: 28px; position: relative; z-index: 1; }
+.org-children { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; align-items: flex-start; }
+.services-label { font-size: 11px; color: var(--muted); margin-top: 12px; position: relative; z-index: 1; }
 .row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-.edge { height: 18px; width: 2px; background: var(--rail); }
-.edge.live { background: linear-gradient(var(--accent), var(--vault)); }
+.edge { display: none; }
 .team-ring { border: 1px solid rgba(91, 141, 239, 0.28); padding: 12px; }
 .services { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; opacity: 0.9; }
 .chart-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; width: 100%; justify-content: center; margin-bottom: 8px; }

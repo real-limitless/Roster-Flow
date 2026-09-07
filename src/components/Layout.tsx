@@ -28,6 +28,9 @@ export function Layout() {
           <NavLink to="/app" className="pill on">
             Workspace
           </NavLink>
+          <NavLink to="/app/settings" className="pill">
+            Settings
+          </NavLink>
           <NavLink to="/access" className="pill vault">
             Access
           </NavLink>

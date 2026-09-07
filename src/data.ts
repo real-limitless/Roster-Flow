@@ -80,6 +80,7 @@ export const testimonials = [
 ];
 
 export const changelog = [
+  { date: "2026-09-07", title: "CORE branch", items: ["OpenCode harness wrapper + plugin", "Teams/bots API", "Provider settings", "Org-chart connectors"] },
   { date: "2026-09-06", title: "Roster-flow named", items: ["Wordmark locked", "Room | Harness | Chart as mode 3"] },
   { date: "2026-09-02", title: "Org chart control plane", items: ["Hire / fire / attach from the chart", "Live run path overlay"] },
   { date: "2026-08-20", title: "OpenCode attach", items: ["Same session in Room and TUI", "Confirm on deploy"] },

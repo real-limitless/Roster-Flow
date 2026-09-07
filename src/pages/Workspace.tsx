@@ -3,8 +3,6 @@ import { Link } from "react-router-dom";
 import { Logo } from "../components/Logo";
 import {
   channels as seedChannels,
-  displayParentId,
-  isServiceSeat,
   runSteps,
   seats as seedSeats,
   seedMessages,
@@ -14,7 +12,9 @@ import {
   type Seat,
   type SeatKind,
 } from "../data";
+import { OrgChart } from "../components/OrgChart";
 import type { Mode } from "../components/WorkspaceMock";
+import { api } from "../lib/api";
 
 const RUN_PROMPT =
   "Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.";
@@ -33,11 +33,55 @@ export function Workspace() {
   const [roomDraft, setRoomDraft] = useState("");
   const [hiring, setHiring] = useState(false);
   const [mobilePane, setMobilePane] = useState<"none" | "nav" | "seat">("none");
+  const [remoteRun, setRemoteRun] = useState(false);
 
   const selected = roster.find((s) => s.id === selectedId) || roster[0];
 
   useEffect(() => {
-    if (!running || step < 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const m = params.get("mode");
+    if (m === "room" || m === "harness" || m === "chart") setMode(m);
+    void (async () => {
+      try {
+        const st = await api.state();
+        if (Array.isArray(st.seats) && st.seats.length) setRoster(st.seats as Seat[]);
+        if (Array.isArray(st.channels) && st.channels.length) setRooms(st.channels as Channel[]);
+        if (Array.isArray(st.messages) && st.messages.length) setMessages(st.messages as Msg[]);
+        const live = st.runs?.find((r) => r.status === "running");
+        if (live) {
+          setRunning(true);
+          setStep(typeof live.step === "number" ? live.step : 0);
+        }
+      } catch {
+        /* local seed */
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const t = window.setInterval(() => {
+      void api
+        .runs()
+        .then((runs) => {
+          const live = runs[0];
+          if (!live) return;
+          setStep(live.step);
+          if (live.status !== "running") setRunning(false);
+        })
+        .catch(() => undefined);
+      void api
+        .messages(channel)
+        .then((m) => {
+          if (m.length) setMessages((prev) => mergeMsgs(prev, m));
+        })
+        .catch(() => undefined);
+    }, 800);
+    return () => window.clearInterval(t);
+  }, [running, channel]);
+
+  useEffect(() => {
+    if (!running || step < 0 || remoteRun) return;
     if (step >= runSteps.length) {
       setRunning(false);
       return;
@@ -93,6 +137,10 @@ export function Workspace() {
     setStep(0);
     setRunning(true);
     setSelectedId("floor");
+    void api
+      .startRun(from)
+      .then(() => setRemoteRun(true))
+      .catch(() => setRemoteRun(false));
   }
 
   function send() {
@@ -105,6 +153,7 @@ export function Workspace() {
         ...m,
         { id: `u-${Date.now()}`, channel, who: "You", kind: "human", text: t, time: now() },
       ]);
+      void api.postMessage(channel, t).catch(() => undefined);
     }
   }
 
@@ -144,10 +193,12 @@ export function Workspace() {
     setSelectedId(seat.id);
     setHiring(false);
     setMode("chart");
+    void api.hire(seat).catch(() => undefined);
   }
 
   function reparent(id: string, reportsTo: string) {
     setRoster((r) => r.map((s) => (s.id === id ? { ...s, reportsTo: reportsTo || undefined } : s)));
+    void api.patchSeat(id, { reportsTo: reportsTo || undefined }).catch(() => undefined);
   }
 
   const visible = messages.filter((m) => m.channel === channel);
@@ -155,7 +206,7 @@ export function Workspace() {
   const channelName = rooms.find((r) => r.id === channel)?.name ?? "";
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-testid="workspace-shell">
       <div className="app-top">
         <button
           className="pill-btn app-nav-toggle"
@@ -167,7 +218,12 @@ export function Workspace() {
         <Logo to="/" />
         <div className="seg">
           {(["room", "harness", "chart"] as Mode[]).map((m) => (
-            <button key={m} className={mode === m ? "on" : ""} onClick={() => { setMode(m); setMobilePane("none"); }}>
+            <button
+              key={m}
+              data-testid={`mode-${m}`}
+              className={mode === m ? "on" : ""}
+              onClick={() => { setMode(m); setMobilePane("none"); }}
+            >
               {m[0].toUpperCase() + m.slice(1)}
             </button>
           ))}
@@ -176,9 +232,12 @@ export function Workspace() {
           {channelName} · {running ? "run live" : "idle"}
         </span>
         <div className="app-desktop-actions">
-          <button className="pill-btn" onClick={() => startRun(RUN_PROMPT)} disabled={running}>
+          <button className="pill-btn" data-testid="run-ship-train" onClick={() => startRun(RUN_PROMPT)} disabled={running}>
             Run ship train
           </button>
+          <Link to="/app/settings" className="pill-btn">
+            Settings
+          </Link>
           <Link to="/access" className="pill-btn primary">
             Access
           </Link>
@@ -191,6 +250,7 @@ export function Workspace() {
           {rooms.map((c) => (
             <div
               key={c.id}
+              data-testid={`channel-${c.id}`}
               className={`ch ${channel === c.id ? "on" : ""}`}
               onClick={() => {
                 setChannel(c.id);
@@ -274,11 +334,12 @@ export function Workspace() {
                 }}
               >
                 <input
+                  data-testid="composer"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   placeholder={`Message ${channelName}`}
                 />
-                <button className="pill-btn primary" type="submit">
+                <button className="pill-btn primary" data-testid="send-message" type="submit">
                   Send
                 </button>
               </form>
@@ -407,48 +468,6 @@ function ChartPane({
   onCancelHire: () => void;
   onStartHire: () => void;
 }) {
-  const treeSeats = roster.filter((s) => (showSystem || !s.system) && !isServiceSeat(s));
-  const services = roster.filter((s) => isServiceSeat(s) && (showSystem || !s.system));
-  const roots = treeSeats.filter((s) => {
-    const p = displayParentId(s, roster, showSystem);
-    return !p || !treeSeats.some((x) => x.id === p);
-  });
-
-  function kids(id: string) {
-    return treeSeats.filter((s) => displayParentId(s, roster, showSystem) === id);
-  }
-
-  function Node({ seat }: { seat: Seat }) {
-    const children = kids(seat.id);
-    return (
-      <div className="org-node">
-        <button
-          className={`seat ${seat.kind === "human" ? "human" : ""} ${selected.id === seat.id ? "live" : ""} ${seat.system ? "system" : ""}`}
-          onClick={() => onSelect(seat)}
-          onDoubleClick={onAttach}
-        >
-          <span className={`pip ${liveId === seat.id ? "run" : "on"}`} />
-          {seat.name}
-          <div style={{ color: "var(--muted)", fontSize: 10 }}>
-            {seat.role}
-            {seat.kind === "human" ? " · human" : ""}
-            {seat.system ? " · system" : ""}
-          </div>
-        </button>
-        {children.length > 0 && (
-          <>
-            <div className={`edge ${liveId ? "live" : ""}`} />
-            <div className="row">
-              {children.map((c) => (
-                <Node key={c.id} seat={c} />
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="chart-canvas" style={{ flex: 1, overflow: "auto" }}>
       <div className="chart-toolbar">
@@ -461,30 +480,14 @@ function ChartPane({
         </button>
       </div>
       {hiring && <HireForm roster={roster} onHire={onHire} onCancel={onCancelHire} />}
-      <div className="row" style={{ alignItems: "flex-start" }}>
-        {roots.map((r) => (
-          <Node key={r.id} seat={r} />
-        ))}
-      </div>
-      {services.length > 0 && (
-        <>
-          <div style={{ fontSize: 11, color: "var(--muted)" }}>Services lane</div>
-          <div className="services">
-            {services.map((s) => (
-              <button
-                key={s.id}
-                className={`seat ${selected.id === s.id ? "live" : ""}`}
-                onClick={() => onSelect(s)}
-                onDoubleClick={onAttach}
-              >
-                <span className={`pip ${liveId === s.id ? "run" : "on"}`} />
-                {s.name}
-                <div style={{ color: "var(--muted)", fontSize: 10 }}>{s.role}</div>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      <OrgChart
+        roster={roster}
+        showSystem={showSystem}
+        liveId={liveId}
+        selectedId={selected.id}
+        onSelect={onSelect}
+        onAttach={onAttach}
+      />
     </div>
   );
 }
@@ -596,7 +599,7 @@ function Inspector({
 }) {
   const managers = roster.filter((s) => s.id !== seat.id && !wouldCycle(seat.id, s.id, roster));
   return (
-    <aside className={`inspector ${open ? "open" : ""}`}>
+    <aside className={`inspector ${open ? "open" : ""}`} data-testid="seat-inspector">
       <div className="inspector-head">
         <h4>Seat</h4>
         <button className="pill-btn inspector-close" onClick={onClose} type="button">
@@ -650,7 +653,7 @@ function Inspector({
       </div>
       <div style={{ display: "grid", gap: 8, marginTop: 18 }}>
         {seat.kind === "bot" && (
-          <button className="pill-btn primary" onClick={onAttach}>
+          <button className="pill-btn primary" data-testid="attach-harness" onClick={onAttach}>
             Attach harness
           </button>
         )}
@@ -678,4 +681,10 @@ function wouldCycle(fromId: string, toId: string, roster: Seat[]) {
 function now() {
   const d = new Date();
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+}
+
+function mergeMsgs(prev: Msg[], incoming: Msg[]) {
+  const seen = new Set(prev.map((m) => m.id));
+  const extra = incoming.filter((m) => !seen.has(m.id));
+  return extra.length ? [...prev, ...extra] : prev;
 }

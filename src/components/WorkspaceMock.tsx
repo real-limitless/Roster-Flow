@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
+import { OrgChart } from "./OrgChart";
 import { seats, seedMessages, runSteps } from "../data";
 
 export type Mode = "room" | "harness" | "chart";
 
-export function WorkspaceMock({ compact = false }: { compact?: boolean }) {
-  const [mode, setMode] = useState<Mode>("room");
+export function WorkspaceMock({ compact = false, initialMode = "room" }: { compact?: boolean; initialMode?: Mode }) {
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [step, setStep] = useState(2);
   const liveId = runSteps[Math.min(step, runSteps.length - 1)]?.id;
 
@@ -13,7 +14,7 @@ export function WorkspaceMock({ compact = false }: { compact?: boolean }) {
       <div className="frame-bar">
         <div className="seg" role="tablist">
           {(["room", "harness", "chart"] as Mode[]).map((m) => (
-            <button key={m} className={mode === m ? "on" : ""} onClick={() => setMode(m)}>
+            <button key={m} data-testid={`mock-mode-${m}`} className={mode === m ? "on" : ""} onClick={() => setMode(m)}>
               {m[0].toUpperCase() + m.slice(1)}
             </button>
           ))}
@@ -129,18 +130,6 @@ function HarnessPreview() {
 
 function ChartPreview({ liveId, onSeat }: { liveId?: string; onSeat: () => void }) {
   const [showSystem, setShowSystem] = useState(false);
-  const Box = ({ id, human = false }: { id: string; human?: boolean }) => {
-    const s = seats.find((x) => x.id === id);
-    if (!s) return null;
-    const live = liveId === id;
-    return (
-      <button className={`seat ${human || s.kind === "human" ? "human" : ""} ${live ? "live" : ""}`} onClick={onSeat}>
-        <span className={`pip ${live ? "run" : "on"}`} />
-        {s.name}
-        <div style={{ color: "var(--muted)", fontSize: 10 }}>{s.role}</div>
-      </button>
-    );
-  };
   return (
     <div className="frame-body chart">
       <div className="chart-canvas">
@@ -148,47 +137,14 @@ function ChartPreview({ liveId, onSeat }: { liveId?: string; onSeat: () => void 
           <input type="checkbox" checked={showSystem} onChange={(e) => setShowSystem(e.target.checked)} />
           Show system seats
         </label>
-        <Box id="you" human />
-        {showSystem && (
-          <>
-            <div className="edge live" />
-            <Box id="floor" />
-          </>
-        )}
-        <div className="edge live" />
-        <div className="row">
-          <div>
-            <Box id="maya" human />
-            <div className="edge" />
-            <div className="row">
-              <Box id="product" />
-              <div>
-                <Box id="jules" human />
-                <div className="edge" />
-                <div className="team-ring">
-                  <div style={{ fontSize: 10, color: "var(--amber)", marginBottom: 8 }}>@eng</div>
-                  <div className="row">
-                    <Box id="build" />
-                    <Box id="review" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div>
-            <Box id="priya" human />
-            <div className="edge" />
-            <Box id="qa" />
-          </div>
-          <Box id="devops" />
-        </div>
-        <div style={{ fontSize: 11, color: "var(--muted)" }}>Services lane — shared, not fake reports</div>
-        <div className="services">
-          <Box id="scout" />
-          <Box id="docs" />
-          <Box id="sec" />
-          <Box id="scribe" />
-        </div>
+        <OrgChart
+          roster={seats}
+          showSystem={showSystem}
+          liveId={liveId}
+          selectedId={liveId || "build"}
+          onSelect={() => onSeat()}
+          onAttach={onSeat}
+        />
       </div>
       <div className="side">
         <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>SEAT</div>
