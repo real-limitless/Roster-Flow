@@ -1,9 +1,12 @@
 import { createServer } from "node:http";
 import { getState, mutate, save, resetState, clock, uid } from "./store.mjs";
-import { emptyState, runSteps, stepCopy } from "./seed.mjs";
+import { emptyState, runSteps, stepCopy, normalizeSeat, normalizeModelId } from "./seed.mjs";
 import { ensure, status as harnessStatus, listSessions, createSession, promptSession } from "./harness.mjs";
-import { listProviders, upsertProvider, setAuth, removeProvider, listModels, readOpenCodeConfig } from "./providers.mjs";
-import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
+import { listProviders, upsertProvider, setAuth, removeProvider, listModels, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
+import { postBus, wakeSeat, cycleSafe, pullAssistant } from "./bus.mjs";
+import { attachPtyServer } from "./pty.mjs";
+import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
+import { syncBotAgents, syncSeatAgent } from "./agents.mjs";
 
 const PORT = Number(process.env.ROSTER_API_PORT || 8787);
 
@@ -34,21 +37,62 @@ function looksLikeShip(text) {
   return /product|eng|devops|qa/i.test(text);
 }
 
+function resolveSeatId(who) {
+  const s = getState().seats.find((x) => x.name === who || x.id === who);
+  return s?.id;
+}
+
+function asList(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function composeExtras(body = {}) {
+  const extras = {};
+  if (body.seatId) extras.seatId = String(body.seatId);
+  const attachments = asList(body.attachments)
+    .map((a) => ({
+      id: String(a.id || uid("att")),
+      name: String(a.name || "file").slice(0, 180),
+      size: Number(a.size) || 0,
+      type: String(a.type || "application/octet-stream").slice(0, 120),
+    }))
+    .filter((a) => a.name);
+  const skills = asList(body.skills)
+    .map((s) => ({ id: String(s.id || "").slice(0, 64), name: String(s.name || s.id || "").slice(0, 64) }))
+    .filter((s) => s.id && s.name);
+  const files = asList(body.files)
+    .map((f) => ({ path: String(f.path || "").slice(0, 240), name: String(f.name || f.path || "").slice(0, 180) }))
+    .filter((f) => f.path);
+  if (attachments.length) extras.attachments = attachments;
+  if (skills.length) extras.skills = skills;
+  if (files.length) extras.files = files;
+  return extras;
+}
+
 function postMessage(channel, who, kind, text, extra = {}) {
   const msg = { id: uid("msg"), channel, who, kind, text, time: clock(), ...extra };
+  if (!msg.seatId) msg.seatId = resolveSeatId(who);
   mutate((s) => {
     s.messages = [...s.messages, msg];
   });
   return msg;
 }
 
-async function startRun({ prompt, channel = "ship", who = "You" }) {
+function wantLive(mode) {
+  if (mode === "scripted") return false;
+  if (mode === "live") return true;
+  return harnessStatus().harness === "up";
+}
+
+async function startRun({ prompt, channel = "ship", who = "You", mode }) {
+  const live = wantLive(mode);
   const run = {
     id: uid("run"),
     prompt,
     channel,
     step: 0,
     status: "running",
+    mode: live ? "live" : "scripted",
     createdAt: new Date().toISOString(),
     steps: runSteps.map((s) => ({ ...s, status: "pending" })),
   };
@@ -60,9 +104,44 @@ async function startRun({ prompt, channel = "ship", who = "You" }) {
     run: true,
     runId: run.id,
   });
-  postBus({ from: "floor", to: "product", kind: "handoff", text: prompt, runId: run.id });
-  void tickRun(run.id);
+  postBus({ from: "floor", to: "product", kind: "handoff", text: prompt, runId: run.id, wake: live });
+  if (live) {
+    await wakeSeat("product", prompt, { from: "floor", kind: "run", runId: run.id });
+    void followLiveRun(run.id);
+  } else {
+    void tickRun(run.id);
+  }
   return run;
+}
+
+async function followLiveRun(runId) {
+  const seen = new Set();
+  for (let i = 0; i < 120; i++) {
+    const run = getState().runs.find((r) => r.id === runId);
+    if (!run || run.status !== "running") return;
+    if ((getState().bus || []).some((b) => b.runId === runId && b.kind === "report")) {
+      mutate((s) => {
+        const r = s.runs.find((x) => x.id === runId);
+        if (r) r.status = "done";
+      });
+      return;
+    }
+    for (const seatId of Object.keys(getState().sessions || {})) {
+      const parts = await pullAssistant(seatId);
+      for (const p of parts) {
+        if (!p.id || seen.has(p.id)) continue;
+        seen.add(p.id);
+        if (getState().messages.some((m) => m.text === p.text)) continue;
+        const seat = getState().seats.find((s) => s.id === seatId);
+        postMessage(run.channel, seat?.name || seatId, "bot", p.text, { runId, mirrored: true });
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  mutate((s) => {
+    const r = s.runs.find((x) => x.id === runId);
+    if (r && r.status === "running") r.status = "done";
+  });
 }
 
 async function tickRun(runId) {
@@ -112,6 +191,16 @@ async function tickRun(runId) {
 }
 
 save();
+mutate((s) => {
+  for (const r of s.runs || []) {
+    if (r.status === "running") r.status = "done";
+  }
+});
+try {
+  syncBotAgents(getState().seats);
+} catch {
+  /* agent files are best-effort */
+}
 
 const server = createServer(async (req, res) => {
   try {
@@ -129,7 +218,12 @@ const server = createServer(async (req, res) => {
     const method = req.method || "GET";
 
     if (pathname === "/api/v1/health" && method === "GET") {
-      json(res, 200, { ok: true, ...harnessStatus(), seats: getState().seats.length });
+      json(res, 200, {
+        ok: true,
+        ...harnessStatus(),
+        seats: getState().seats.length,
+        providerKeys: hasProviderKey(),
+      });
       return;
     }
     if (pathname === "/api/v1/reset" && method === "POST") {
@@ -137,7 +231,46 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/teams" && method === "GET") {
-      json(res, 200, getState().teams);
+      const st = getState();
+      json(res, 200, enrichTeams(st.teams, st.seats));
+      return;
+    }
+    if (pathname === "/api/v1/teams" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createStaffedTeam(s, body);
+      });
+      for (const seat of created.seats) syncSeatAgent(seat);
+      json(res, 201, created);
+      return;
+    }
+    const teamPatch = pathname.match(/^\/api\/v1\/teams\/([^/]+)$/);
+    if (teamPatch && method === "PATCH") {
+      const id = decodeURIComponent(teamPatch[1]);
+      const body = await readBody(req);
+      let updated = null;
+      mutate((s) => {
+        updated = patchTeam(s, id, body);
+      });
+      if (!updated) {
+        json(res, 404, { error: "team not found" });
+        return;
+      }
+      const generic = getState().seats.find((s) => s.id === updated.genericSeatId);
+      if (generic) syncSeatAgent(generic);
+      json(res, 200, updated);
+      return;
+    }
+    if (teamPatch && method === "GET") {
+      const id = decodeURIComponent(teamPatch[1]);
+      const st = getState();
+      const team = enrichTeams(st.teams, st.seats).find((t) => t.id === id);
+      if (!team) {
+        json(res, 404, { error: "team not found" });
+        return;
+      }
+      json(res, 200, team);
       return;
     }
     if (pathname === "/api/v1/bots" && method === "GET") {
@@ -163,22 +296,37 @@ const server = createServer(async (req, res) => {
         json(res, 409, { error: "seat exists" });
         return;
       }
-      const seat = {
+      const kind = body.kind === "human" ? "human" : "bot";
+      const teamId = body.team || undefined;
+      const team = teamId ? getState().teams.find((t) => t.id === teamId) : null;
+      const seatType =
+        body.seatType ||
+        (kind === "human" ? "human" : team ? "specialist" : "specialist");
+      const reportsTo =
+        body.reportsTo ||
+        (team && kind === "bot" ? team.supervisorSeatId : undefined) ||
+        undefined;
+      const seat = normalizeSeat({
         id,
         name: body.name || id,
-        role: body.role || (body.kind === "human" ? "Teammate" : "Specialist"),
-        kind: body.kind === "human" ? "human" : "bot",
-        reportsTo: body.reportsTo || undefined,
-        team: body.team,
-        tools: body.tools || (body.kind === "human" ? ["approve"] : ["read"]),
-        deny: body.deny || (body.kind === "bot" ? ["deploy"] : []),
-        model: body.kind === "human" ? undefined : body.model || "grok-4",
+        role: body.role || (kind === "human" ? "Teammate" : seatType === "supervisor" ? "Supervisor" : seatType === "generic" ? "Generic" : "Specialist"),
+        kind,
+        seatType,
+        reportsTo,
+        team: teamId,
+        tools: body.tools || (kind === "human" ? ["approve"] : ["read"]),
+        deny: body.deny || (kind === "bot" ? ["deploy"] : []),
+        model: kind === "human" ? undefined : normalizeModelId(body.model) || team?.defaultModel || "xai/grok-4",
+        persona: body.persona,
+        instructions: body.instructions,
         job: body.job || "New seat.",
         status: "idle",
-      };
+      });
       mutate((s) => {
         s.seats = [...s.seats, seat];
+        if (teamId) attachSeatToTeam(s, teamId, seat.id);
       });
+      if (seat.kind === "bot") syncSeatAgent(seat);
       json(res, 201, seat);
       return;
     }
@@ -190,14 +338,18 @@ const server = createServer(async (req, res) => {
       mutate((s) => {
         s.seats = s.seats.map((seat) => {
           if (seat.id !== id) return seat;
-          updated = { ...seat, ...body, id };
+          const next = { ...seat, ...body, id };
+          if (body.model) next.model = normalizeModelId(body.model);
+          updated = normalizeSeat(next);
           return updated;
         });
+        if (updated?.team) attachSeatToTeam(s, updated.team, updated.id);
       });
       if (!updated) {
         json(res, 404, { error: "seat not found" });
         return;
       }
+      if (updated.kind === "bot") syncSeatAgent(updated);
       json(res, 200, updated);
       return;
     }
@@ -209,8 +361,18 @@ const server = createServer(async (req, res) => {
       } catch (err) {
         if (err.code !== "OPENCODE_MISSING") throw err;
       }
-      const woke = await wakeSeat(id, "Attached from Roster-flow chart.", { from: "you", kind: "attach" });
-      json(res, 200, { seat: id, ...woke, harness: harnessStatus() });
+      const woke = (await wakeSeat(id, "Attached from Roster-flow chart.", { from: "you", kind: "attach" })) || {
+        seat: id,
+      };
+      const h = harnessStatus();
+      const sessionId = woke.sessionId || getState().sessions?.[id] || null;
+      json(res, 200, {
+        seat: id,
+        ...woke,
+        sessionId,
+        harness: h,
+        attach: sessionId && h.port ? `opencode attach http://127.0.0.1:${h.port} --session ${sessionId}` : null,
+      });
       return;
     }
     if (pathname === "/api/v1/channels" && method === "GET") {
@@ -227,16 +389,17 @@ const server = createServer(async (req, res) => {
       const id = decodeURIComponent(chMsg[1]);
       const body = await readBody(req);
       const text = String(body.text || "").trim();
-      if (!text) {
-        json(res, 400, { error: "text required" });
+      const extras = composeExtras(body);
+      if (!text && !extras.attachments && !extras.skills && !extras.files) {
+        json(res, 400, { error: "text or attachment required" });
         return;
       }
-      if (looksLikeShip(text) && id === "ship") {
+      if (text && looksLikeShip(text) && id === "ship") {
         const run = await startRun({ prompt: text, channel: id, who: body.who || "You" });
         json(res, 201, { run, messages: getState().messages.filter((m) => m.channel === id) });
         return;
       }
-      const msg = postMessage(id, body.who || "You", body.kind || "human", text);
+      const msg = postMessage(id, body.who || "You", body.kind || "human", text, extras);
       json(res, 201, msg);
       return;
     }
@@ -310,7 +473,7 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: "prompt required" });
         return;
       }
-      json(res, 201, await startRun({ prompt, channel: body.channel || "ship", who: body.who || "You" }));
+      json(res, 201, await startRun({ prompt, channel: body.channel || "ship", who: body.who || "You", mode: body.mode }));
       return;
     }
     const runGet = pathname.match(/^\/api\/v1\/runs\/([^/]+)$/);
@@ -407,6 +570,15 @@ const server = createServer(async (req, res) => {
     json(res, 404, { error: "not found", path: pathname });
   } catch (err) {
     fail(res, err);
+  }
+});
+
+attachPtyServer(server);
+server.on("clientError", (err, socket) => {
+  try {
+    socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+  } catch {
+    /* ignore */
   }
 });
 

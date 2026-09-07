@@ -16,15 +16,56 @@ export const api = {
       seats: import("../data").Seat[];
       channels: import("../data").Channel[];
       messages: import("../data").Msg[];
+      teams?: import("../data").Team[];
       runs: Array<{ id: string; step: number; status: string }>;
     }>("/api/v1/state"),
   seats: () => req<import("../data").Seat[]>("/api/v1/seats"),
+  teams: () => req<import("../data").Team[]>("/api/v1/teams"),
+  createTeam: (body: unknown) =>
+    req<{ team: import("../data").Team; seats: import("../data").Seat[] }>("/api/v1/teams", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  patchTeam: (id: string, body: unknown) =>
+    req<import("../data").Team>(`/api/v1/teams/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   channels: () => req<import("../data").Channel[]>("/api/v1/channels"),
   messages: (channel: string) => req<import("../data").Msg[]>(`/api/v1/channels/${channel}/messages`),
-  postMessage: (channel: string, text: string) =>
-    req(`/api/v1/channels/${channel}/messages`, { method: "POST", body: JSON.stringify({ text, who: "You" }) }),
-  startRun: (prompt: string) => req(`/api/v1/runs`, { method: "POST", body: JSON.stringify({ prompt, channel: "ship" }) }),
-  runs: () => req<Array<{ id: string; step: number; status: string }>>("/api/v1/runs"),
+  startRun: (prompt: string) =>
+    req<{ id: string; mode?: string; step: number; status: string }>("/api/v1/runs", {
+      method: "POST",
+      body: JSON.stringify({ prompt, channel: "ship" }),
+    }),
+  runs: () => req<Array<{ id: string; step: number; status: string; mode?: string }>>("/api/v1/runs"),
+  attach: (id: string) =>
+    req<{ seat: string; sessionId?: string; attach?: string | null; harness?: { harness: string; port?: number } }>(
+      `/api/v1/seats/${id}/attach`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  postMessage: (
+    channel: string,
+    text: string,
+    extra: {
+      who?: string;
+      seatId?: string;
+      attachments?: import("../data").MsgAttachment[];
+      skills?: import("../data").MsgSkill[];
+      files?: import("../data").MsgFile[];
+    } = {},
+  ) =>
+    req<{ id?: string; run?: unknown; messages?: import("../data").Msg[]; text?: string }>(
+      `/api/v1/channels/${channel}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          text,
+          who: extra.who || "You",
+          seatId: extra.seatId || "you",
+          attachments: extra.attachments,
+          skills: extra.skills,
+          files: extra.files,
+        }),
+      },
+    ),
   hire: (seat: unknown) => req("/api/v1/seats", { method: "POST", body: JSON.stringify(seat) }),
   patchSeat: (id: string, body: unknown) =>
     req(`/api/v1/seats/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

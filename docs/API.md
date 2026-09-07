@@ -13,19 +13,38 @@ All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, 
 | GET | `/api/v1/health` | API + OpenCode status (`harness: "up" \| "offline"`) |
 | POST | `/api/v1/harness/ensure` | Start or reuse `opencode serve` (Everflow ensure pattern) |
 | GET | `/api/v1/harness` | Port, version, workspace, plugin path |
+| WS | `/api/v1/harness/pty?seat=<id>` | xterm PTY: `opencode attach --session` |
+| POST | `/api/v1/seats/:id/attach` | Ensure serve, wake seat, return real `sessionId` + attach command |
 | GET | `/api/v1/opencode/config` | Current `opencode.json` written by settings |
 
 `POST /api/v1/harness/ensure` body: `{ "forceRestart": false }`.
 
 ## Teams and bots
 
+Staffed teams (`eng`, `services`) always have a **Supervisor** and a **Generic** seat. `ship` is a run roster only.
+
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/teams` | Named rosters (`eng`, `services`, `ship`) |
+| GET | `/api/v1/teams` | Rosters plus `seatCount` and `models[]` in use |
+| POST | `/api/v1/teams` | Create a staffed team (Supervisor + Generic) |
+| GET | `/api/v1/teams/:id` | One team, enriched |
+| PATCH | `/api/v1/teams/:id` | Default model (Generic inherits) |
 | GET | `/api/v1/bots` | Bot seats only |
 | GET | `/api/v1/seats` | Full org (humans + bots) |
-| POST | `/api/v1/seats` | Hire a seat (same fields as the chart hire form) |
-| PATCH | `/api/v1/seats/:id` | Reparent, model, tools |
+| POST | `/api/v1/seats` | Hire a seat (specialist when `team` is set) |
+| PATCH | `/api/v1/seats/:id` | Reparent, model, persona, instructions, tools |
+
+`POST /api/v1/teams`:
+
+```json
+{ "name": "platform", "defaultModel": "anthropic/claude-sonnet" }
+```
+
+Creates `platform-supervisor` and `platform-generic`. `POST /api/v1/seats` with `{ "team": "platform", "seatType": "specialist", "persona": "…", "instructions": "…" }` appends to `seatIds`.
+
+`to: "team:eng"` on the bus wakes that team's Supervisor.
+
+Seat `model` is an OpenCode catalog id (`provider/model`). Changing a bot seat rewrites `.opencode/agents/<id>.md`.
 
 ## Rooms and threads
 
@@ -40,10 +59,17 @@ All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, 
 `POST /api/v1/channels/:id/messages` body:
 
 ```json
-{ "text": "Talk to Product and the Eng team…", "who": "You" }
+{
+  "text": "Talk to Product and the Eng team…",
+  "who": "You",
+  "seatId": "you",
+  "skills": [{ "id": "deploy", "name": "deploy" }],
+  "files": [{ "path": "billing/webhook.ts", "name": "webhook.ts" }],
+  "attachments": [{ "id": "att_1", "name": "screenshot.png", "size": 24012, "type": "image/png" }]
+}
 ```
 
-If the text looks like a ship-train sentence, the API compiles a run (same as the workspace “Run ship train” button).
+`text` may be empty when at least one of `skills`, `files`, or `attachments` is present. Those fields are stored on the message (metadata only — no blob store). If the text looks like a ship-train sentence, the API compiles a run (same as the workspace “Run ship train” button).
 
 ## Bot / team messaging
 

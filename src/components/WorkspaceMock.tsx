@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { OrgChart } from "./OrgChart";
 import { seats, seedMessages, runSteps } from "../data";
+import { ComposerPreview } from "./chat/Composer";
+import { MessageRow } from "./chat/MessageRow";
 
 export type Mode = "room" | "harness" | "chart";
 
@@ -53,20 +55,17 @@ function RoomPreview({ step }: { step: number }) {
         <div className="ch">@eng</div>
         <div className="ch">@qa</div>
       </div>
-      <div className="main">
+      <div className="main room-preview-main">
         {msgs.map((m) => (
-          <div className="msg" key={m.id}>
-            <div className={`av ${m.kind}`}>{m.who.slice(0, 2)}</div>
-            <div>
-              <div>
-                <span className="who">{m.who}</span>
-                <span className="meta">{m.time}</span>
-              </div>
-              <div className="body">{m.text}</div>
-              {m.run && <RunCard step={step} />}
-            </div>
-          </div>
+          <MessageRow
+            key={m.id}
+            msg={m}
+            roster={seats}
+            extra={m.run ? <RunCard step={step} /> : null}
+            onOpenSeat={() => undefined}
+          />
         ))}
+        <ComposerPreview channelName="#ship" />
       </div>
       <div className="side">
         <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>ROSTER</div>
