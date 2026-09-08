@@ -159,7 +159,7 @@ export function Home() {
           <pre className="card mono" style={{ fontSize: 12.5, overflow: "auto", color: "var(--muted)" }}>{`---
 name: eng.build
 mode: primary
-model: Big Pickle
+model: opencode/big-pickle
 permission:
   edit: allow
   bash: allow
