@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { opencodeHostname } from "./config.mjs";
 import { ensure, status as harnessStatus, whichOpenCode, harnessKindForSeat, workspacePath } from "./harness.mjs";
 import { getState } from "./store.mjs";
 import { ensureSeatSession } from "./bus.mjs";
@@ -144,7 +145,7 @@ async function handlePty(ws, seatId, params) {
     }
     const cols = Math.max(20, Number(params.get("cols")) || 100);
     const rows = Math.max(8, Number(params.get("rows")) || 28);
-    const serveUrl = `http://127.0.0.1:${h.port}`;
+    const serveUrl = `http://${opencodeHostname()}:${h.port}`;
     const term = spawnAttach({
       binary,
       url: serveUrl,

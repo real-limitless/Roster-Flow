@@ -2,13 +2,10 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { normalizeModelId } from "./seed.mjs";
+import { authPath, opencodeDir as ocDir } from "./paths.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const ocDir = join(root, ".opencode");
 const ocPath = join(ocDir, "opencode.json");
-const authPath = join(root, ".roster-flow", "auth.json");
 
 function readJson(path, fallback) {
   if (!existsSync(path)) return fallback;

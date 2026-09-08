@@ -61,18 +61,20 @@ The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools
 ## Process map
 
 ```
-Browser (Vite :5173)
+Browser (Vite :5173, or CORE-served dist in Compose)
     │  /api/v1/*
     ▼
-CORE API (:8787)
-    ├── store  (.roster-flow/state.json)
+CORE API (ROSTER_API_HOST, default 127.0.0.1:8787; Compose binds 0.0.0.0)
+    ├── store  (ROSTER_DATA_DIR / .roster-flow/state.json)
     ├── bus    (messages, cycle detect)
-    ├── providers → writes .opencode/opencode.json + auth sidecar
+    ├── providers → writes ROSTER_OPENCODE_DIR/opencode.json + auth sidecar
     └── harness
           ├── company serve → product-bot sessions
           └── system serve  → Architect / Channel
                     └── plugin roster-flow-opencode (roster_* tools → API)
 ```
+
+`docker compose up` is the official install: one image runs CORE + the built UI + OpenCode. Company and System serves stay on container localhost so PTY attach still uses `opencode attach http://127.0.0.1:<port>`. Persist `/data` (`roster-data` volume). Host `npm run standup` is unchanged (Vite + loopback CORE).
 
 ## What is not in this slice
 

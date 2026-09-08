@@ -16,8 +16,12 @@ import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
+import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
+import { isDataWritable } from "./paths.mjs";
+import { tryServeStatic } from "./static.mjs";
 
-const PORT = Number(process.env.ROSTER_API_PORT || 8787);
+const PORT = apiPort();
+const HOST = apiHost();
 
 function json(res, code, body) {
   const data = JSON.stringify(body);
@@ -115,6 +119,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
     const { pathname } = url;
     const method = req.method || "GET";
+    if (tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
     const user = userFromToken(getState(), token);
 
@@ -131,7 +136,7 @@ const server = createServer(async (req, res) => {
           user,
           binary: whichOpenCode(),
           providerKeys: hasProviderKey(),
-          dataWritable: true,
+          dataWritable: isDataWritable(),
         }),
       );
       return;
@@ -145,7 +150,7 @@ const server = createServer(async (req, res) => {
           user,
           binary: whichOpenCode(),
           providerKeys: hasProviderKey(),
-          dataWritable: true,
+          dataWritable: isDataWritable(),
         }),
       );
       return;
@@ -167,7 +172,7 @@ const server = createServer(async (req, res) => {
           user,
           binary: whichOpenCode(),
           providerKeys: hasProviderKey(),
-          dataWritable: true,
+          dataWritable: isDataWritable(),
         }),
       );
       return;
@@ -184,7 +189,7 @@ const server = createServer(async (req, res) => {
       } catch {
         /* agent files are best-effort */
       }
-      json(res, 200, { ...setupStatus(next, { user, binary: whichOpenCode(), providerKeys: hasProviderKey(), dataWritable: true }), state: publicState(next) });
+      json(res, 200, { ...setupStatus(next, { user, binary: whichOpenCode(), providerKeys: hasProviderKey(), dataWritable: isDataWritable() }), state: publicState(next) });
       return;
     }
     if (pathname === "/api/v1/auth/login" && method === "POST") {
@@ -419,7 +424,7 @@ const server = createServer(async (req, res) => {
         ...woke,
         sessionId,
         harness: h,
-        attach: sessionId && h.port ? `opencode attach http://127.0.0.1:${h.port} --session ${sessionId}` : null,
+        attach: sessionId && h.port ? `opencode attach http://${opencodeHostname()}:${h.port} --session ${sessionId}` : null,
       });
       return;
     }
@@ -688,7 +693,8 @@ server.on("clientError", (err, socket) => {
 });
 
 startSessionSync();
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`roster-flow CORE API http://127.0.0.1:${PORT}`);
-  console.log(`Setup: http://127.0.0.1:5173/setup`);
+server.listen(PORT, HOST, () => {
+  const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
+  console.log(`roster-flow CORE API http://${shown}:${PORT}`);
+  console.log(`Setup: ${publicUrl()}/setup`);
 });

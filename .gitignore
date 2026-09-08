@@ -10,6 +10,9 @@ blob-report/
 .env
 .env.*
 !.env.example
+docker-compose.override.yml
+compose.override.yml
+.tmp/
 .DS_Store
 *.log
 .grok/

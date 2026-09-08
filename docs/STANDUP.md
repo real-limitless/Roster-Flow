@@ -2,7 +2,58 @@
 
 Goal: an AI agent can install, seed, open the site, and bug-test Room / Harness / Chart / Settings end to end.
 
-## Prerequisites
+## Container install (official)
+
+Needs Docker Compose v2 or Podman Compose, plus a clone of this repo. No host Node or OpenCode CLI.
+
+```bash
+cp -n .env.example .env
+# optional: put provider keys in .env (never commit it)
+docker compose up --build
+# Podman: podman compose up --build
+```
+
+| Process | URL | Role |
+|---|---|---|
+| Product (static UI + CORE) | http://127.0.0.1:5173 | Marketing, `/setup`, `/app`; `/api` on the same origin |
+| CORE API (same process) | http://127.0.0.1:5173/api/v1/health | Teams, bots, bus, setup/auth, harness wrapper |
+| Company OpenCode | inside the container (`127.0.0.1:14180`) | Product-bot sessions |
+| System OpenCode | inside the container (`127.0.0.1:14181`) | Architect / Channel |
+
+The image is production-ish: `vite build` plus `node server/index.mjs` serving `dist/`. OpenCode is installed in the image; CORE still starts in harness-offline mode if the binary is missing. State, auth sidecar, workspaces, harness logs, and `.opencode` live in the **`roster-data`** volume at `/data` (`ROSTER_DATA_DIR`). `compose down` / `up` keeps `/setup` completion.
+
+Health:
+
+```bash
+curl -s http://127.0.0.1:5173/api/v1/health
+curl -s http://127.0.0.1:5173/setup
+```
+
+First run: http://127.0.0.1:5173/setup. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`.
+
+If 5173 is busy: `ROSTER_HTTP_PORT=8080 docker compose up --build`. To also publish CORE on host 8787, add `8787:8787` in a gitignored `docker-compose.override.yml`.
+
+Optional bind mount instead of the named volume (Fedora/Podman SELinux: add `:Z`):
+
+```yaml
+# docker-compose.override.yml (gitignored)
+services:
+  roster-flow:
+    volumes:
+      - ./.roster-flow:/data:Z
+```
+
+Do not put secrets in the image or a committed Compose override. Host `npm run standup` below stays supported for development.
+
+Production-like without a container engine (same CORE + `dist/` process the image runs):
+
+```bash
+npm install
+npm run build
+npm run start:static   # http://127.0.0.1:8787/setup
+```
+
+## Host prerequisites
 
 - Node 20+ (Node 22 is fine)
 - npm
@@ -11,7 +62,7 @@ Goal: an AI agent can install, seed, open the site, and bug-test Room / Harness 
 
 First run: open http://127.0.0.1:5173/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds.
 
-## Install
+## Host install
 
 ```bash
 cd roster-flow

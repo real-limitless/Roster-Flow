@@ -1,6 +1,6 @@
 # CORE API — chatbots, teams, bus, harness
 
-Base URL: `http://127.0.0.1:8787` (Vite proxies `/api` there in `npm run dev`).
+Base URL: `http://127.0.0.1:8787` (Vite proxies `/api` there in `npm run dev`). `docker compose up` serves the same API on **5173** (same origin as `/setup` and `/app`).
 
 Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`.
 

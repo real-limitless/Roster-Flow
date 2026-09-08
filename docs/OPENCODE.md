@@ -5,7 +5,7 @@
 Roster-flow must not become a second agent runtime. The Everflow pattern (see `ProjectEverflow/everflow-sandbox-agent/app/opencode_mgr.py` and `everflow-platform-api/app/api/v1/opencode.py`) is:
 
 1. Resolve a real `opencode` binary (reject stubs).
-2. `ensure` — `opencode serve --hostname 127.0.0.1 --port <n>` in the project workspace.
+2. `ensure` — `opencode serve --hostname <OPENCODE_HOSTNAME, default 127.0.0.1> --port <n>` in the project workspace.
 3. Health — `GET /global/health`.
 4. Talk to sessions over HTTP (Room / API), or attach the TUI (`opencode attach --session`) in the Harness xterm pane.
 5. Write agents, plugins, and providers into the workspace `opencode.json`.
@@ -67,7 +67,12 @@ Provider contract:
 
 ```
 OPENCODE_BIN=          # optional absolute path
+OPENCODE_HOSTNAME=127.0.0.1
 OPENCODE_PORT=14180    # preferred serve port; falls back if busy
 ROSTER_API=http://127.0.0.1:8787
+ROSTER_API_HOST=127.0.0.1   # Compose sets 0.0.0.0
+ROSTER_DATA_DIR=.roster-flow
+ROSTER_OPENCODE_DIR=.opencode
 ROSTER_WORKSPACE=.roster-flow/workspace
+ROSTER_STATIC_DIR=          # set to dist/ so CORE serves the UI
 ```
