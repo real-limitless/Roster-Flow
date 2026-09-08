@@ -8,7 +8,7 @@ test("enrichTeam reports seat count and models in use", () => {
   const eng = state.teams.find((t) => t.id === "eng");
   const out = enrichTeam(eng, state.seats);
   assert.ok(out.seatCount >= 4);
-  assert.ok(out.models.includes("anthropic/claude-sonnet"));
+  assert.ok(out.models.includes("xai/grok-4"));
   assert.equal(out.supervisorSeatId, "eng-supervisor");
   assert.equal(out.genericSeatId, "eng-generic");
 });

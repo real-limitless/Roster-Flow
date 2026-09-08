@@ -5,17 +5,12 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { serveChildEnv, readOpenCodeConfig, readGlobalOpenCodeConfig, ensureAuthProviders } from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
-
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const companyWorkspace = process.env.ROSTER_WORKSPACE
-  ? join(root, process.env.ROSTER_WORKSPACE)
-  : join(root, ".roster-flow", "workspace");
-const systemWorkspace = join(root, ".roster-flow", "system");
+import { opencodeHostname, rosterApiUrl } from "./config.mjs";
+import { companyWorkspace, dataDir, opencodeDir, root, systemWorkspace } from "./paths.mjs";
 
 const HEALTH = "/global/health";
 const instances = { company: null, system: null };
@@ -42,7 +37,7 @@ export function spec(kind) {
       workspace: systemWorkspace,
       cwd: systemWorkspace,
       preferredPort: Number(process.env.OPENCODE_SYSTEM_PORT) || 14181,
-      logFile: join(root, ".roster-flow", "opencode-system.log"),
+      logFile: join(dataDir, "opencode-system.log"),
       sessionKey: "systemSessions",
       client: "roster-flow-system",
     };
@@ -52,7 +47,7 @@ export function spec(kind) {
     workspace: companyWorkspace,
     cwd: root,
     preferredPort: Number(process.env.OPENCODE_PORT) || 14180,
-    logFile: join(root, ".roster-flow", "opencode-serve.log"),
+    logFile: join(dataDir, "opencode-serve.log"),
     sessionKey: "sessions",
     client: "roster-flow",
   };
@@ -82,7 +77,7 @@ function freePort(preferred) {
         if (fallback) bind(0, false);
         else reject(new Error("No free port for opencode serve"));
       });
-      s.listen(port, "127.0.0.1", () => {
+      s.listen(port, opencodeHostname(), () => {
         const addr = s.address();
         const p = typeof addr === "object" && addr ? addr.port : port;
         s.close(() => resolve(p));
@@ -96,7 +91,7 @@ export async function healthCheck(port, timeoutMs = 1500) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}${HEALTH}`, { signal: ac.signal });
+    const res = await fetch(`http://${opencodeHostname()}:${port}${HEALTH}`, { signal: ac.signal });
     if (!res.ok) return null;
     const data = await res.json();
     return data && typeof data === "object" ? data : null;
@@ -109,8 +104,8 @@ export async function healthCheck(port, timeoutMs = 1500) {
 
 function writeCompanyConfig() {
   mkdirSync(companyWorkspace, { recursive: true });
-  mkdirSync(join(root, ".opencode"), { recursive: true });
-  const dest = join(root, ".opencode", "opencode.json");
+  mkdirSync(opencodeDir, { recursive: true });
+  const dest = join(opencodeDir, "opencode.json");
   const global = readGlobalOpenCodeConfig();
   let cfg = {
     $schema: "https://opencode.ai/config.json",
@@ -191,7 +186,7 @@ async function adoptIfHealthy(kind) {
   if (!h) return null;
   instances[k] = {
     port: s.preferredPort,
-    baseUrl: `http://127.0.0.1:${s.preferredPort}`,
+    baseUrl: `http://${opencodeHostname()}:${s.preferredPort}`,
     child: null,
     pid: null,
     healthy: true,
@@ -273,15 +268,15 @@ export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
 
   const port = await freePort(s.preferredPort);
   mkdirSync(s.workspace, { recursive: true });
-  mkdirSync(join(root, ".roster-flow"), { recursive: true });
+  mkdirSync(dataDir, { recursive: true });
 
-  const child = spawn(binary, ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
+  const child = spawn(binary, ["serve", "--hostname", opencodeHostname(), "--port", String(port)], {
     cwd: s.cwd,
     env: {
       ...serveChildEnv(),
       OPENCODE_CLIENT: s.client,
       NODE_PATH: [join(root, "node_modules"), process.env.NODE_PATH].filter(Boolean).join(":"),
-      ROSTER_API: process.env.ROSTER_API || `http://127.0.0.1:${process.env.ROSTER_API_PORT || 8787}`,
+      ROSTER_API: rosterApiUrl(),
     },
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
@@ -298,7 +293,7 @@ export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
 
   instances[k] = {
     port,
-    baseUrl: `http://127.0.0.1:${port}`,
+    baseUrl: `http://${opencodeHostname()}:${port}`,
     child,
     pid: child.pid,
     healthy: false,

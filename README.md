@@ -35,7 +35,23 @@ Slack proved work happens in conversation. OpenCode proved the unit of AI labor 
 - Every bot is an OpenCode agent you chose to run, not a skin on a chatbot
 - Room, harness, and chart are the same seats — ⌘. cycles the surface
 
-## Stand up (humans and Playwright agents)
+## Install (Docker or Podman)
+
+Official path — no host Node toolchain. Needs a container engine and this repo.
+
+```bash
+cp -n .env.example .env   # optional: add XAI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
+docker compose up --build
+# Podman: podman compose up --build
+```
+
+Then open http://127.0.0.1:5173/setup (install → owner → login → harness → welcome).
+
+State lives in the `roster-data` volume (survives `compose down`). Provider keys stay in `.env` / the environment — they are not baked into the image. Room, chart, and bus work if OpenCode is offline; Architect needs the System harness.
+
+Published URL is **5173** (UI, `/setup`, `/app`, and `/api` on the same origin). Override with `ROSTER_HTTP_PORT`. Host `npm run api` can keep using 8787.
+
+## Stand up (host Node, humans and Playwright agents)
 
 ```bash
 npm install
@@ -49,7 +65,7 @@ npm run standup
 - Settings (providers / models): http://127.0.0.1:5173/app/settings
 - CORE API: http://127.0.0.1:8787/api/v1/health
 
-Full agent path, selectors, seed data, and Playwright: [docs/STANDUP.md](docs/STANDUP.md).
+Full container and host paths, selectors, seed data, and Playwright: [docs/STANDUP.md](docs/STANDUP.md).
 
 ```bash
 npm run test:e2e

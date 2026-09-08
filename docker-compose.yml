@@ -1,0 +1,43 @@
+name: roster-flow
+
+services:
+  roster-flow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: roster-flow:local
+    init: true
+    ports:
+      - "${ROSTER_HTTP_PORT:-5173}:8787"
+    environment:
+      ROSTER_API_HOST: "0.0.0.0"
+      ROSTER_API_PORT: "8787"
+      ROSTER_API: "http://127.0.0.1:8787"
+      ROSTER_PUBLIC_URL: "http://127.0.0.1:${ROSTER_HTTP_PORT:-5173}"
+      ROSTER_DATA_DIR: /data
+      ROSTER_OPENCODE_DIR: /data/opencode
+      ROSTER_STATIC_DIR: /app/dist
+      OPENCODE_BIN: /usr/local/bin/opencode
+      HOME: /data/home
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+    volumes:
+      - roster-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+
+volumes:
+  roster-data:

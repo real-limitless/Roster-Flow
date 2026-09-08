@@ -1,11 +1,9 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { bootState, migrateState, starterState } from "./seed.mjs";
+import { dataDir } from "./paths.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const fromEnv = process.env.ROSTER_DATA_DIR;
-export const dataDir = fromEnv ? (isAbsolute(fromEnv) ? fromEnv : join(root, fromEnv)) : join(root, ".roster-flow");
+export { dataDir };
 export const statePath = join(dataDir, "state.json");
 
 function load() {

@@ -1,13 +1,12 @@
 /** Write Roster-flow bot seats through to OpenCode agent files + opencode.json. */
 import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { normalizeModelId } from "./seed.mjs";
+import { opencodeDir, systemWorkspace } from "./paths.mjs";
 import { readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const agentsDir = join(root, ".opencode", "agents");
-const systemRoot = join(root, ".roster-flow", "system");
+const agentsDir = join(opencodeDir, "agents");
+const systemRoot = systemWorkspace;
 const systemAgentsDir = join(systemRoot, ".opencode", "agents");
 const systemOcPath = join(systemRoot, ".opencode", "opencode.json");
 
