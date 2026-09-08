@@ -15,6 +15,7 @@ test("keyStatusForModel reports xai disconnected when no key is configured", () 
   assert.equal(st.modelID, "grok-4");
   assert.equal(typeof st.configured, "boolean");
   assert.equal(typeof st.connected, "boolean");
+  if (!st.configured) assert.equal(st.connected, false);
 });
 
 test("mergeModelLists prefers live then configured", () => {

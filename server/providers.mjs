@@ -265,7 +265,9 @@ export function firstConnectedModel() {
   const preferred = [
     ["infiniterouter-dev", "big-pickle"],
     ["infiniterouter-dev", "auto"],
+    ["infiniterouter", "small-tier"],
     ["standardcompute", "StandardComputeRouter"],
+    ["xai", "grok-4"],
   ];
   for (const [providerID, modelID] of preferred) {
     const hit = models.find((m) => m.providerID === providerID && m.modelID === modelID);
@@ -292,13 +294,76 @@ export function keyStatusForModel(model) {
     google: "GOOGLE_GENERATIVE_AI_API_KEY",
   };
   const envName = p?.apiKeyEnv || fallback[parsed.providerID];
-  const globalAuth = new Set(readGlobalAuthIds());
+  const inGlobal = Boolean(providerBlocks(readGlobalOpenCodeConfig())[parsed.providerID]);
   return {
     providerID: parsed.providerID || "",
     modelID: parsed.modelID || "",
-    configured: Boolean(p),
-    connected: Boolean(p?.connected || (envName && env[envName]) || globalAuth.has(parsed.providerID)),
+    configured: Boolean(p || inGlobal),
+    connected: Boolean((inGlobal && p?.connected) || p?.hasStoredKey || (envName && env[envName])),
   };
+}
+
+const AUTH_PRESETS = {
+  xai: {
+    name: "xAI",
+    npm: "@ai-sdk/openai-compatible",
+    baseURL: "https://api.x.ai/v1",
+    apiKeyEnv: "XAI_API_KEY",
+    models: { "grok-4": { name: "Grok 4" } },
+  },
+  anthropic: {
+    name: "Anthropic",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    models: { "claude-sonnet-4": { name: "Claude Sonnet 4" } },
+  },
+  openai: {
+    name: "OpenAI",
+    apiKeyEnv: "OPENAI_API_KEY",
+    models: { "gpt-4.1": { name: "GPT-4.1" } },
+  },
+  google: {
+    name: "Google",
+    apiKeyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
+    models: { "gemini-2.5-pro": { name: "Gemini 2.5 Pro" } },
+  },
+};
+
+/** Write built-in provider blocks when OpenCode already has that login. Never copies keys. */
+export function ensureAuthProviders() {
+  const ids = new Set(readGlobalAuthIds());
+  const env = process.env;
+  if (env.XAI_API_KEY) ids.add("xai");
+  if (env.ANTHROPIC_API_KEY) ids.add("anthropic");
+  if (env.OPENAI_API_KEY) ids.add("openai");
+  if (env.GOOGLE_GENERATIVE_AI_API_KEY) ids.add("google");
+  const cfg = readOpenCodeConfig();
+  const existing = providerBlocks(cfg);
+  let changed = false;
+  for (const id of ids) {
+    if (existing[id] || !AUTH_PRESETS[id]) continue;
+    const preset = AUTH_PRESETS[id];
+    const block = {
+      npm: preset.npm || "@ai-sdk/openai-compatible",
+      package: preset.npm || "@ai-sdk/openai-compatible",
+      name: preset.name || id,
+      options: {
+        ...(preset.baseURL ? { baseURL: preset.baseURL } : {}),
+        ...(preset.apiKeyEnv ? { apiKey: `{env:${preset.apiKeyEnv}}` } : {}),
+      },
+      settings: {
+        ...(preset.baseURL ? { baseURL: preset.baseURL } : {}),
+        ...(preset.apiKeyEnv ? { apiKey: `{env:${preset.apiKeyEnv}}` } : {}),
+      },
+      models: preset.models || {},
+    };
+    cfg.provider = cfg.provider || {};
+    cfg.providers = cfg.providers || {};
+    cfg.provider[id] = block;
+    cfg.providers[id] = block;
+    changed = true;
+  }
+  if (changed) writeOpenCodeConfig(cfg);
+  return changed;
 }
 
 export function parseModelRef(model) {

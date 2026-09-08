@@ -7,7 +7,7 @@ import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { serveChildEnv, readOpenCodeConfig, readGlobalOpenCodeConfig } from "./providers.mjs";
+import { serveChildEnv, readOpenCodeConfig, readGlobalOpenCodeConfig, ensureAuthProviders } from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
 
@@ -233,6 +233,7 @@ export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
   const k = harnessKind(kind);
   const s = spec(k);
   emit({ scope: "harness", step: "ensure.start", detail: { kind: k, forceRestart: Boolean(forceRestart) } });
+  if (k !== SYSTEM) ensureAuthProviders();
   if (k === SYSTEM) writeSystemConfig();
   else writeCompanyConfig();
 
