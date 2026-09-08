@@ -1,6 +1,6 @@
-# Campaign README — Roster-flow CORE
+# Campaign README — Roster-flow
 
-Internal marketing brief for the CORE branch. Positioning must stay true to the product: OpenCode is the harness; Roster-flow is the org, the room, and the chart.
+Internal marketing brief for the product on `DEVELOPMENT`. Positioning must stay true to the product: OpenCode is the harness; Roster-flow is the org, the room, and the chart. The public concept write-up lives on [`CORE`](https://github.com/real-limitless/roster-flow/tree/CORE).
 
 ## Campaign name
 

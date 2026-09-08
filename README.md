@@ -53,11 +53,19 @@ Full agent path, selectors, seed data, and Playwright: [docs/STANDUP.md](docs/ST
 npm run test:e2e
 ```
 
-## Docs on this branch (`system/core`)
+## Docs on this branch (`DEVELOPMENT`)
+
+This is the **product branch** — the runnable app, API, and tests. Concept and methodology live on [`CORE`](https://github.com/real-limitless/roster-flow/tree/CORE).
 
 - [Product / architecture](docs/ARCHITECTURE.md)
 - [Campaign README](docs/CAMPAIGN.md)
 - [CORE API](docs/API.md)
 - [OpenCode wrapper + plugin](docs/OPENCODE.md)
+- [Standup](docs/STANDUP.md)
+
+| Branch | Contents |
+|--------|----------|
+| **CORE** | Consensus only: why it exists, surfaces, methodology |
+| **DEVELOPMENT** (this branch) | Runnable workspace, CORE API, OpenCode wrapper |
 
 Apache-2.0. Part of the Flow family with [mcp-flow](https://github.com/real-limitless/mcp-flow), [skill-flow](https://github.com/real-limitless/skill-flow), and [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp).

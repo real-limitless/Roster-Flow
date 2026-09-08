@@ -2,7 +2,7 @@
 
 Roster-flow is a team workspace for **humans plus OpenCode agents**. It does not reimplement an agent loop. OpenCode (`opencode serve` / attach / sessions / tools) is the harness. Roster-flow is the org, the room, the bot bus, the chart, and the settings UI that write through to OpenCode config.
 
-This document matches the code on the `system/core` branch: a Vite marketing + workspace client, a local CORE API that wraps OpenCode, and an OpenCode plugin that maps org-chart seats onto harness agents.
+This document matches the code on the `DEVELOPMENT` branch: a Vite marketing + workspace client, a local CORE API that wraps OpenCode, and an OpenCode plugin that maps org-chart seats onto harness agents.
 
 ## What it is
 
