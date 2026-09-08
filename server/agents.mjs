@@ -23,7 +23,7 @@ function readJson(path, fallback) {
 function yamlEscape(value) {
   const s = String(value || "").replace(/\n/g, " ").trim();
   if (!s) return '""';
-  if (/[:#{}[\],&*?|<>=!%@`]/.test(s) || s.includes('"')) return JSON.stringify(s);
+  if (/\s/.test(s) || /[:#{}[\],&*?|<>=!%@`]/.test(s) || s.includes('"')) return JSON.stringify(s);
   return s;
 }
 
@@ -61,7 +61,7 @@ export function agentMarkdown(seat) {
     "---",
     `description: ${yamlEscape(seat.job || seat.name)}`,
     `mode: ${mode}`,
-    `model: ${model}`,
+    `model: ${yamlEscape(model)}`,
     "permissions:",
     perms || '  - { action: "read", resource: "*", effect: "allow" }',
     "---",
