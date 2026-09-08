@@ -74,6 +74,7 @@ test("routeChannelMessage posts a key warning and does not wait for a model", as
     throw new Error("wakeSeat should not run without a key");
   };
   deps.keyStatus = () => ({ providerID: "xai", modelID: "grok-4", configured: true, connected: false });
+  deps.fallbackModel = () => null;
   deps.followTicks = 0;
   const before = getState().messages.length;
   try {
@@ -85,6 +86,35 @@ test("routeChannelMessage posts a key warning and does not wait for a model", as
     await routed.pending;
     const added = getState().messages.slice(before);
     assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.nokey"));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("routeChannelMessage falls back to a connected OpenCode model", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  let woke = null;
+  deps.wakeSeat = async (to) => {
+    woke = to;
+    return { sessionId: "ses_fb", seat: to };
+  };
+  deps.pullAssistant = async () => [{ id: `a-${Date.now()}`, text: "Fallback supervisor is awake." }];
+  deps.keyStatus = () => ({ providerID: "xai", modelID: "grok-4", configured: false, connected: false });
+  deps.fallbackModel = () => ({ providerID: "infiniterouter-dev", modelID: "big-pickle", connected: true });
+  deps.followTicks = 1;
+  deps.followDelayMs = 0;
+  const before = getState().messages.length;
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "hi from fallback test" });
+    assert.equal(routed.wakes, 1);
+    await routed.pending;
+    assert.equal(woke, "channel");
+    const added = getState().messages.slice(before);
+    assert.ok(added.some((m) => /Using infiniterouter-dev\/big-pickle/.test(m.text) && m.system));
+    assert.ok(added.some((m) => m.text === "Fallback supervisor is awake."));
   } finally {
     Object.assign(deps, prev);
   }
