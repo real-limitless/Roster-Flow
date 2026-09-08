@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { OrgChart } from "./OrgChart";
-import { seats, seedMessages, runSteps } from "../data";
+import { seats, seedMessages, teams, projects } from "../data";
 import { ComposerPreview } from "./chat/Composer";
 import { MessageRow } from "./chat/MessageRow";
 
@@ -8,11 +8,9 @@ export type Mode = "room" | "harness" | "chart";
 
 export function WorkspaceMock({ compact = false, initialMode = "room" }: { compact?: boolean; initialMode?: Mode }) {
   const [mode, setMode] = useState<Mode>(initialMode);
-  const [step, setStep] = useState(2);
-  const liveId = runSteps[Math.min(step, runSteps.length - 1)]?.id;
 
   return (
-    <div className="frame" aria-label="Roster-flow workspace">
+    <div className={compact ? "frame compact" : "frame"} aria-label="Roster-flow workspace">
       <div className="frame-bar">
         <div className="seg" role="tablist">
           {(["room", "harness", "chart"] as Mode[]).map((m) => (
@@ -22,27 +20,17 @@ export function WorkspaceMock({ compact = false, initialMode = "room" }: { compa
           ))}
         </div>
         <span className="mono" style={{ color: "var(--muted)", fontSize: 11, marginLeft: "auto" }}>
-          #ship · run ship-billing · ses_8f2
+          #ship · Block Kit · ses_8f2
         </span>
       </div>
-      {mode === "room" && <RoomPreview step={step} />}
+      {mode === "room" && <RoomPreview />}
       {mode === "harness" && <HarnessPreview />}
-      {mode === "chart" && <ChartPreview liveId={liveId} onSeat={() => setMode("harness")} />}
-      {!compact && (
-        <div style={{ padding: "8px 12px", borderTop: "1px solid var(--hair)", display: "flex", gap: 8 }}>
-          <button className="pill-btn" onClick={() => setStep((s) => Math.min(s + 1, runSteps.length - 1))}>
-            Advance run
-          </button>
-          <button className="pill-btn" onClick={() => setStep(0)}>
-            Reset
-          </button>
-        </div>
-      )}
+      {mode === "chart" && <ChartPreview liveId="build" onSeat={() => setMode("harness")} />}
     </div>
   );
 }
 
-function RoomPreview({ step }: { step: number }) {
+function RoomPreview() {
   const msgs = seedMessages.filter((m) => m.channel === "ship");
   return (
     <div className="frame-body room">
@@ -57,13 +45,7 @@ function RoomPreview({ step }: { step: number }) {
       </div>
       <div className="main room-preview-main">
         {msgs.map((m) => (
-          <MessageRow
-            key={m.id}
-            msg={m}
-            roster={seats}
-            extra={m.run ? <RunCard step={step} /> : null}
-            onOpenSeat={() => undefined}
-          />
+          <MessageRow key={m.id} msg={m} roster={seats} onOpenSeat={() => undefined} />
         ))}
         <ComposerPreview channelName="#ship" />
       </div>
@@ -74,21 +56,6 @@ function RoomPreview({ step }: { step: number }) {
             <span className={`pip ${s.kind === "bot" ? "on" : ""}`} style={{ display: "inline-block", width: 6, height: 6, borderRadius: 99, background: s.kind === "bot" ? "var(--green)" : "var(--muted)", marginRight: 6 }} />
             {s.name}
           </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function RunCard({ step }: { step: number }) {
-  return (
-    <div className="run-card">
-      <div className="title">Pipeline ship-billing · Floor compiled</div>
-      <div className="steps">
-        {runSteps.map((s, i) => (
-          <span key={s.id} className={`step ${i < step ? "done" : i === step ? "live" : ""}`}>
-            {s.label}
-          </span>
         ))}
       </div>
     </div>
@@ -138,6 +105,8 @@ function ChartPreview({ liveId, onSeat }: { liveId?: string; onSeat: () => void 
         </label>
         <OrgChart
           roster={seats}
+          teams={teams}
+          projects={projects}
           showSystem={showSystem}
           liveId={liveId}
           selectedId={liveId || "build"}
@@ -162,4 +131,3 @@ function ChartPreview({ liveId, onSeat }: { liveId?: string; onSeat: () => void 
     </div>
   );
 }
-

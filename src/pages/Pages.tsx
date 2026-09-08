@@ -21,7 +21,7 @@ export function Product() {
         <div className="grid-3">
           <div className="card">
             <h3>Room</h3>
-            <p>Slack muscle memory. Threads, huddles, run cards. @eng fans out through Floor, not a broadcast storm.</p>
+            <p>Slack muscle memory. Threads, huddles, run cards. @eng fans out through Channel, not a broadcast storm.</p>
           </div>
           <div className="card">
             <h3>Org chart</h3>
@@ -84,13 +84,13 @@ export function Bots() {
 export function Orchestration() {
   return (
     <>
-      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, share_memory, depend_on, ask_human, report. Floor owns the graph." />
+      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, share_memory, depend_on, ask_human, report. Channel owns the graph." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         <blockquote className="card" style={{ fontSize: 20, letterSpacing: "-0.02em" }}>
           Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.
         </blockquote>
         <div className="timeline" style={{ marginTop: 20 }}>
-          {["You speak", "Floor compiles", "Product briefs", "@eng ships", "You confirm", "DevOps + QA"].map((t, i) => (
+          {["You speak", "Channel compiles", "Product briefs", "@eng ships", "You confirm", "DevOps + QA"].map((t, i) => (
             <div className="tl" key={t}>
               <div className="n">0{i + 1}</div>
               <h3>{t}</h3>

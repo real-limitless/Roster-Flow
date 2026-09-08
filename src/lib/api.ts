@@ -1,11 +1,46 @@
 const base = (import.meta.env.VITE_API_URL as string | undefined) || "";
+const TOKEN_KEY = "roster-flow-token";
+
+export type SetupStatus = {
+  skip: boolean;
+  hasUser: boolean;
+  authenticated: boolean;
+  harnessReady: boolean;
+  complete: boolean;
+  step: "install" | "first_user" | "login" | "harness" | "welcome" | "done";
+  checks: { api: boolean; opencode: boolean; providerKeys: boolean; dataDir: boolean };
+  binary: string | null;
+  email?: string | null;
+  name?: string | null;
+};
+
+export type AuthUser = { id: string; name: string; email: string; role: string; seatId: string };
+
+export function getAuthToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setAuthToken(token: string) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const token = getAuthToken();
+  if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`${base}${path}`, { ...init, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) throw new Error((data as { error?: string }).error || res.statusText);
   return data as T;
 }
 
@@ -17,10 +52,16 @@ export const api = {
       channels: import("../data").Channel[];
       messages: import("../data").Msg[];
       teams?: import("../data").Team[];
-      runs: Array<{ id: string; step: number; status: string }>;
+      projects?: import("../data").Project[];
+      organizations?: import("../data").Organization[];
     }>("/api/v1/state"),
   seats: () => req<import("../data").Seat[]>("/api/v1/seats"),
   teams: () => req<import("../data").Team[]>("/api/v1/teams"),
+  projects: () => req<import("../data").Project[]>("/api/v1/projects"),
+  createProject: (body: unknown) =>
+    req<import("../data").Project>("/api/v1/projects", { method: "POST", body: JSON.stringify(body) }),
+  patchProject: (id: string, body: unknown) =>
+    req<import("../data").Project>(`/api/v1/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   createTeam: (body: unknown) =>
     req<{ team: import("../data").Team; seats: import("../data").Seat[] }>("/api/v1/teams", {
       method: "POST",
@@ -29,13 +70,11 @@ export const api = {
   patchTeam: (id: string, body: unknown) =>
     req<import("../data").Team>(`/api/v1/teams/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   channels: () => req<import("../data").Channel[]>("/api/v1/channels"),
+  createChannel: (body: unknown) =>
+    req<import("../data").Channel>("/api/v1/channels", { method: "POST", body: JSON.stringify(body) }),
+  patchChannel: (id: string, body: unknown) =>
+    req<import("../data").Channel>(`/api/v1/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   messages: (channel: string) => req<import("../data").Msg[]>(`/api/v1/channels/${channel}/messages`),
-  startRun: (prompt: string) =>
-    req<{ id: string; mode?: string; step: number; status: string }>("/api/v1/runs", {
-      method: "POST",
-      body: JSON.stringify({ prompt, channel: "ship" }),
-    }),
-  runs: () => req<Array<{ id: string; step: number; status: string; mode?: string }>>("/api/v1/runs"),
   attach: (id: string) =>
     req<{ seat: string; sessionId?: string; attach?: string | null; harness?: { harness: string; port?: number } }>(
       `/api/v1/seats/${id}/attach`,
@@ -50,9 +89,10 @@ export const api = {
       attachments?: import("../data").MsgAttachment[];
       skills?: import("../data").MsgSkill[];
       files?: import("../data").MsgFile[];
+      blocks?: import("roster-flow-blocks").Block[];
     } = {},
   ) =>
-    req<{ id?: string; run?: unknown; messages?: import("../data").Msg[]; text?: string }>(
+    req<{ id?: string; messages?: import("../data").Msg[]; text?: string }>(
       `/api/v1/channels/${channel}/messages`,
       {
         method: "POST",
@@ -63,12 +103,35 @@ export const api = {
           attachments: extra.attachments,
           skills: extra.skills,
           files: extra.files,
+          blocks: extra.blocks,
         }),
       },
     ),
+  blockAction: (body: { messageId: string; actionId: string; value?: string; userId?: string }) =>
+    req("/api/v1/block-actions", { method: "POST", body: JSON.stringify(body) }),
   hire: (seat: unknown) => req("/api/v1/seats", { method: "POST", body: JSON.stringify(seat) }),
+  fire: (id: string) => req<{ id: string; reparentedTo?: string }>(`/api/v1/seats/${id}`, { method: "DELETE" }),
   patchSeat: (id: string, body: unknown) =>
     req(`/api/v1/seats/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  architectChat: (message: string, history: Array<{ role: string; text: string }> = []) =>
+    req<{
+      reply: string;
+      source?: string;
+      plan: {
+        id: string;
+        summary: string;
+        rationale: string[];
+        reply: string;
+        ops: Array<Record<string, unknown>>;
+      } | null;
+    }>("/api/v1/architect/chat", { method: "POST", body: JSON.stringify({ message, history }) }),
+  architectApply: (planId: string) =>
+    req<{
+      plan: { id: string; status?: string };
+      seats: import("../data").Seat[];
+      teams: import("../data").Team[];
+      projects: import("../data").Project[];
+    }>("/api/v1/architect/apply", { method: "POST", body: JSON.stringify({ planId }) }),
   providers: () =>
     req<
       Array<{
@@ -82,8 +145,89 @@ export const api = {
       }>
     >("/api/v1/providers"),
   upsertProvider: (body: unknown) => req("/api/v1/providers", { method: "PUT", body: JSON.stringify(body) }),
+  setAuth: (id: string, apiKey: string) =>
+    req<{ id: string; stored: boolean }>(`/api/v1/providers/${id}/auth`, {
+      method: "POST",
+      body: JSON.stringify({ apiKey }),
+    }),
   deleteProvider: (id: string) => req(`/api/v1/providers/${id}`, { method: "DELETE" }),
   models: () => req<Array<{ providerID: string; modelID: string; name: string }>>("/api/v1/models"),
-  harness: () => req<{ harness: string; version: string | null }>("/api/v1/harness"),
-  ensure: () => req("/api/v1/harness/ensure", { method: "POST", body: JSON.stringify({}) }),
+  harness: () =>
+    req<{
+      kind?: string;
+      harness: string;
+      binary?: string | null;
+      port?: number | null;
+      version?: string | null;
+      workspace?: string;
+      plugin?: string;
+      pid?: number | null;
+      systemHarness?: {
+        kind?: string;
+        harness: string;
+        binary?: string | null;
+        port?: number | null;
+        version?: string | null;
+        workspace?: string;
+        plugin?: string;
+        pid?: number | null;
+      };
+    }>("/api/v1/harness"),
+  ensure: (kind?: "company" | "system", opts?: { forceRestart?: boolean }) =>
+    req("/api/v1/harness/ensure", {
+      method: "POST",
+      body: JSON.stringify({ kind, forceRestart: Boolean(opts?.forceRestart) }),
+    }),
+  debugTrace: (query: { since?: string; channel?: string; scope?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.since) params.set("since", query.since);
+    if (query.channel) params.set("channel", query.channel);
+    if (query.scope) params.set("scope", query.scope);
+    if (query.limit) params.set("limit", String(query.limit));
+    const q = params.toString();
+    return req<{
+      events: Array<{
+        id: string;
+        ts: string;
+        level: string;
+        scope: string;
+        step: string;
+        channel: string | null;
+        seat: string | null;
+        detail: Record<string, unknown>;
+      }>;
+      harness: string;
+      systemHarness?: { harness: string };
+      providerKeys?: boolean;
+    }>(`/api/v1/debug/trace${q ? `?${q}` : ""}`);
+  },
+  setupStatus: () => req<SetupStatus>("/api/v1/setup/status"),
+  setupInstall: () => req<SetupStatus>("/api/v1/setup/install", { method: "POST", body: "{}" }),
+  setupFirstUser: (body: { name: string; email: string; password: string }) =>
+    req<{ user: AuthUser }>("/api/v1/setup/first-user", { method: "POST", body: JSON.stringify(body) }),
+  setupHarness: (skipped = false) =>
+    req<SetupStatus>("/api/v1/setup/harness", { method: "POST", body: JSON.stringify({ skipped }) }),
+  setupComplete: (template: "starter" | "empty") =>
+    req<SetupStatus & { state?: unknown }>("/api/v1/setup/complete", {
+      method: "POST",
+      body: JSON.stringify({ template }),
+    }),
+  login: (email: string, password: string) =>
+    req<{ token: string; user: AuthUser }>("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  me: () => req<AuthUser>("/api/v1/auth/me"),
+  logout: () => req<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST", body: "{}" }),
+  harnessSessions: () =>
+    req<{
+      sessions: Array<{
+        id: string;
+        title: string;
+        agent: string | null;
+        harness: string;
+        seatId: string | null;
+        channel: string | null;
+      }>;
+    }>("/api/v1/harness/sessions"),
 };

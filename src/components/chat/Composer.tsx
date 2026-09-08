@@ -7,7 +7,7 @@ import {
   type MsgFile,
   type MsgSkill,
 } from "../../data";
-import { PickerMenu } from "./PickerMenu";
+import { PickerMenu, type PickerItem } from "./PickerMenu";
 import { useSpeechToText } from "./useSpeechToText";
 
 export type ComposePayload = {
@@ -22,15 +22,19 @@ type DraftAttachment = MsgAttachment & { preview?: string };
 export function Composer({
   channelName,
   onSend,
+  sendError,
+  mentions = [],
 }: {
   channelName: string;
   onSend: (payload: ComposePayload) => void;
+  sendError?: string;
+  mentions?: PickerItem[];
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [skills, setSkills] = useState<MsgSkill[]>([]);
   const [files, setFiles] = useState<MsgFile[]>([]);
-  const [picker, setPicker] = useState<"skill" | "file" | null>(null);
+  const [picker, setPicker] = useState<"skill" | "file" | "mention" | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const draft = useRef({ text, attachments, skills, files });
@@ -168,6 +172,15 @@ export function Composer({
           </button>
           <button
             type="button"
+            className={`pill-btn ${picker === "mention" ? "on" : ""}`}
+            data-testid="composer-mention"
+            title="Mention a seat, team, or @channel"
+            onClick={() => setPicker((p) => (p === "mention" ? null : "mention"))}
+          >
+            @
+          </button>
+          <button
+            type="button"
             className={`pill-btn ${picker === "skill" ? "on" : ""}`}
             data-testid="composer-skill"
             title="Select skill"
@@ -200,6 +213,23 @@ export function Composer({
           Send
         </button>
       </div>
+      {sendError && (
+        <p className="compose-error" data-testid="composer-error">
+          {sendError}
+        </p>
+      )}
+      {picker === "mention" && (
+        <PickerMenu
+          label="Mentions"
+          items={mentions}
+          onClose={() => setPicker(null)}
+          onSelect={(it) => {
+            const token = it.title.startsWith("@") ? it.title : `@${it.title}`;
+            setText((prev) => (prev && !prev.endsWith(" ") ? `${prev} ${token} ` : `${prev}${token} `));
+            setPicker(null);
+          }}
+        />
+      )}
       {picker === "skill" && (
         <PickerMenu
           label="Skills"

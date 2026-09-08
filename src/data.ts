@@ -1,6 +1,23 @@
+import { examplePayload, type Block } from "roster-flow-blocks";
+
 export type SeatKind = "human" | "bot";
 export type SeatType = "human" | "supervisor" | "generic" | "specialist";
 export type SeatStatus = "idle" | "running" | "blocked" | "done";
+
+export type Organization = {
+  id: string;
+  name: string;
+};
+
+export type Project = {
+  id: string;
+  orgId: string;
+  name: string;
+  brief: string;
+  constitution?: string;
+  pmSeatId?: string;
+  teamIds: string[];
+};
 
 export type Seat = {
   id: string;
@@ -10,25 +27,41 @@ export type Seat = {
   seatType?: SeatType;
   reportsTo?: string;
   team?: string;
+  /** Unset = org-shared (Channel, Architect, services). */
+  projectId?: string;
   tools: string[];
   deny: string[];
   model?: string;
+  fallbackModel?: string;
   persona?: string;
   instructions?: string;
+  knowledge?: string;
+  skills?: string[];
   job: string;
   status: SeatStatus;
-  /** Hidden on the org chart unless “Show system seats” is on. Floor is the conductor. */
+  /** Hidden on the org chart unless “Show system seats” is on. Channel is the conductor. */
   system?: boolean;
+  preview?: "hire" | "fire";
 };
+
+export type ModelStrategy = "default" | "random" | "round_robin" | "fuse";
 
 export type Team = {
   id: string;
   name: string;
+  role?: string;
+  description?: string;
+  job?: string;
+  rules?: string;
   seatIds: string[];
   staffed?: boolean;
   supervisorSeatId?: string;
   genericSeatId?: string;
   defaultModel?: string;
+  fallbackModel?: string;
+  modelStrategy?: ModelStrategy;
+  allowedModels?: string[];
+  projectId?: string;
   seatCount?: number;
   models?: string[];
 };
@@ -36,6 +69,9 @@ export type Team = {
 export type Channel = {
   id: string;
   name: string;
+  topic?: string;
+  teamIds?: string[];
+  seatIds?: string[];
 };
 
 export type CatalogModel = {
@@ -45,19 +81,34 @@ export type CatalogModel = {
   connected?: boolean;
 };
 
+export const organizations: Organization[] = [{ id: "roster-flow", name: "Roster-flow" }];
+
+export const projects: Project[] = [
+  {
+    id: "billing",
+    orgId: "roster-flow",
+    name: "Billing",
+    brief: "Webhook idempotency and the ship train.",
+    constitution: "Acceptance over opinions. Confirm on deploy. Do not skip the QA gate.",
+    pmSeatId: "product",
+    teamIds: ["eng", "ship"],
+  },
+];
+
 export const seats: Seat[] = [
   { id: "you", name: "You", role: "Board", kind: "human", seatType: "human", job: "Approve deploys. Fire any seat.", tools: ["approve"], deny: [], status: "idle" },
   { id: "maya", name: "Maya", role: "VP Eng", kind: "human", seatType: "human", reportsTo: "you", job: "Owns product and engineering seats.", tools: ["approve"], deny: [], status: "idle" },
-  { id: "jules", name: "Jules", role: "Eng lead", kind: "human", seatType: "human", reportsTo: "maya", team: "eng", job: "Runs @eng. Attaches harness when a bot stalls.", tools: ["edit", "approve"], deny: ["deploy"], status: "idle" },
+  { id: "jules", name: "Jules", role: "Eng lead", kind: "human", seatType: "human", reportsTo: "maya", team: "eng", projectId: "billing", job: "Runs @eng. Attaches harness when a bot stalls.", tools: ["edit", "approve"], deny: ["deploy"], status: "idle" },
   { id: "priya", name: "Priya", role: "QA lead", kind: "human", seatType: "human", reportsTo: "you", job: "Owns the QA gate. Signs staging.", tools: ["approve"], deny: ["deploy"], status: "idle" },
-  { id: "floor", name: "Floor", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Route via the bus. Do not edit or deploy.", job: "Compile sentences into runs. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
-  { id: "product", name: "Product", role: "Brief", kind: "bot", seatType: "specialist", reportsTo: "maya", model: "xai/grok-4", persona: "Product brief writer. Acceptance over opinions.", instructions: "Turn channel talk into a brief and acceptance list. No edits, no bash write.", job: "Write acceptance. No edits.", tools: ["read", "grep", "webfetch"], deny: ["edit", "bash"], status: "idle" },
-  { id: "eng-supervisor", name: "Eng Supervisor", role: "Supervisor", kind: "bot", seatType: "supervisor", reportsTo: "jules", team: "eng", model: "xai/grok-4", persona: "Calm dispatcher. You assign work; you do not write code.", instructions: "When mail arrives for @eng, hand Generic undifferentiated work or a specialist whose job matches. Use roster_handoff. Never edit or deploy.", job: "Route @eng work to Generic or a specialist.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
-  { id: "eng-generic", name: "Eng Generic", role: "Generic", kind: "bot", seatType: "generic", reportsTo: "eng-supervisor", team: "eng", model: "xai/grok-4", persona: "Versatile eng teammate.", instructions: "Do whatever the Supervisor assigned. Stay in the worktree. Do not deploy.", job: "Default @eng worker for undifferentiated tasks.", tools: ["read", "edit", "bash"], deny: ["deploy"], status: "idle" },
-  { id: "build", name: "Eng.Build", role: "Implement", kind: "bot", seatType: "specialist", reportsTo: "eng-supervisor", team: "eng", model: "anthropic/claude-sonnet", persona: "Terse implementer. Own the worktree.", instructions: "Implement only what Product accepted. Open a PR. Do not deploy.", job: "Own a worktree. Ship the PR.", tools: ["read", "edit", "bash", "lsp"], deny: ["deploy"], status: "idle" },
-  { id: "review", name: "Eng.Review", role: "Gate", kind: "bot", seatType: "specialist", reportsTo: "eng-supervisor", team: "eng", model: "openai/gpt-5", persona: "Adversarial reviewer. Assume something is wrong.", instructions: "Read the diff against Product acceptance. Block on secrets or missing tests. Do not edit.", job: "Adversarial pass. Can block.", tools: ["read", "grep", "lsp"], deny: ["edit"], status: "idle" },
-  { id: "devops", name: "DevOps", role: "Deploy", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Staging-first operator.", instructions: "Deploy staging when confirmed. Prod needs a human. Never skip confirm.", job: "Staging deploy. Confirm on prod.", tools: ["bash", "deploy"], deny: ["skip-confirm"], status: "idle" },
-  { id: "qa", name: "QA", role: "Test", kind: "bot", seatType: "specialist", reportsTo: "priya", model: "xai/grok-4", persona: "Skeptical tester.", instructions: "Run checks against Product acceptance. Post a structured report. Cannot deploy.", job: "Run checks against acceptance.", tools: ["bash", "read"], deny: ["deploy"], status: "idle" },
+  { id: "channel", name: "Channel", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Own @channel. Route via the bus. Do not edit or deploy.", job: "Compile sentences into runs. Own @channel. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
+  { id: "architect", name: "Architect", role: "Org design", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Org architect. Dry, specific. Propose plans. Never ship code.", instructions: "Propose an OrgPlan JSON only: replace_org, create_project, create_team, hire, reparent, fire. Cap 48 ops. Do not apply. Do not edit or deploy.", job: "Staff projects and suggest layoffs. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
+  { id: "product", name: "Product", role: "Brief", kind: "bot", seatType: "specialist", reportsTo: "maya", projectId: "billing", model: "xai/grok-4", persona: "Product brief writer. Acceptance over opinions.", instructions: "Turn channel talk into a brief and acceptance list. No edits, no bash write.", knowledge: "Project billing: webhook idempotency. Acceptance over opinions. Confirm on deploy.", skills: ["brief"], job: "Write acceptance. No edits.", tools: ["read", "grep", "webfetch"], deny: ["edit", "bash"], status: "idle" },
+  { id: "eng-supervisor", name: "Eng Supervisor", role: "Supervisor", kind: "bot", seatType: "supervisor", reportsTo: "jules", team: "eng", projectId: "billing", model: "xai/grok-4", persona: "Calm dispatcher. You assign work; you do not write code.", instructions: "When mail arrives for @eng, hand Generic undifferentiated work or a specialist whose job matches. Use roster_handoff. Never edit or deploy.", job: "Route @eng work to Generic or a specialist.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
+  { id: "eng-generic", name: "Eng Generic", role: "Generic", kind: "bot", seatType: "generic", reportsTo: "eng-supervisor", team: "eng", projectId: "billing", model: "xai/grok-4", persona: "Versatile eng teammate.", instructions: "Do whatever the Supervisor assigned. Stay in the worktree. Do not deploy.", job: "Default @eng worker for undifferentiated tasks.", tools: ["read", "edit", "bash"], deny: ["deploy"], status: "idle" },
+  { id: "build", name: "Eng.Build", role: "Implement", kind: "bot", seatType: "specialist", reportsTo: "eng-supervisor", team: "eng", projectId: "billing", model: "anthropic/claude-sonnet", persona: "Terse implementer. Own the worktree.", instructions: "Implement only what Product accepted. Open a PR. Do not deploy.", job: "Own a worktree. Ship the PR.", tools: ["read", "edit", "bash", "lsp"], deny: ["deploy"], status: "idle" },
+  { id: "review", name: "Eng.Review", role: "Gate", kind: "bot", seatType: "specialist", reportsTo: "eng-supervisor", team: "eng", projectId: "billing", model: "openai/gpt-5", persona: "Adversarial reviewer. Assume something is wrong.", instructions: "Read the diff against Product acceptance. Block on secrets or missing tests. Do not edit.", job: "Adversarial pass. Can block.", tools: ["read", "grep", "lsp"], deny: ["edit"], status: "idle" },
+  { id: "devops", name: "DevOps", role: "Deploy", kind: "bot", seatType: "specialist", reportsTo: "you", projectId: "billing", model: "xai/grok-4", persona: "Staging-first operator.", instructions: "Deploy staging when confirmed. Prod needs a human. Never skip confirm.", job: "Staging deploy. Confirm on prod.", tools: ["bash", "deploy"], deny: ["skip-confirm"], status: "idle" },
+  { id: "qa", name: "QA", role: "Test", kind: "bot", seatType: "specialist", reportsTo: "priya", projectId: "billing", model: "xai/grok-4", persona: "Skeptical tester.", instructions: "Run checks against Product acceptance. Post a structured report. Cannot deploy.", job: "Run checks against acceptance.", tools: ["bash", "read"], deny: ["deploy"], status: "idle" },
   { id: "services-supervisor", name: "Services Supervisor", role: "Supervisor", kind: "bot", seatType: "supervisor", reportsTo: "services", team: "services", model: "xai/grok-4", persona: "Shared-services dispatcher.", instructions: "Route explore, docs, scan, and audit work to the matching specialist or Generic. No edits.", job: "Route @services work.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
   { id: "services-generic", name: "Services Generic", role: "Generic", kind: "bot", seatType: "generic", reportsTo: "services-supervisor", team: "services", model: "xai/grok-4", persona: "Generalist on the services lane.", instructions: "Handle small shared tasks the Supervisor assigns. Stay read-heavy. Do not deploy.", job: "Default @services worker.", tools: ["read", "grep", "webfetch"], deny: ["deploy"], status: "idle" },
   { id: "scout", name: "Scout", role: "Explore", kind: "bot", seatType: "specialist", reportsTo: "services-supervisor", team: "services", model: "xai/grok-4", persona: "Cheap, disposable searcher.", instructions: "Find the file, the stack, the last two hours. Hand off. Do not edit.", job: "Cheap, disposable search.", tools: ["read", "grep", "webfetch"], deny: ["edit"], status: "idle" },
@@ -73,31 +124,46 @@ export const teams: Team[] = [
     staffed: true,
     supervisorSeatId: "eng-supervisor",
     genericSeatId: "eng-generic",
+    role: "Engineering",
+    description: "Build and review product code.",
+    job: "Ship accepted work as a PR.",
+    rules: "Supervisor routes. Generic does undifferentiated work.",
     defaultModel: "xai/grok-4",
+    fallbackModel: "anthropic/claude-sonnet",
+    modelStrategy: "default",
+    allowedModels: ["xai/grok-4", "anthropic/claude-sonnet", "openai/gpt-5"],
+    projectId: "billing",
     seatIds: ["jules", "eng-supervisor", "eng-generic", "build", "review"],
   },
   {
     id: "services",
     name: "@services",
+    role: "Shared services",
+    description: "Explore, docs, scan, audit.",
+    job: "Support every product team without shipping code to prod.",
+    rules: "Read-heavy. Supervisor routes to the matching specialist.",
     staffed: true,
     supervisorSeatId: "services-supervisor",
     genericSeatId: "services-generic",
     defaultModel: "xai/grok-4",
+    modelStrategy: "default",
+    allowedModels: ["xai/grok-4"],
     seatIds: ["services-supervisor", "services-generic", "scout", "docs", "sec", "scribe"],
   },
   {
     id: "ship",
     name: "Ship train",
     staffed: false,
-    seatIds: ["floor", "product", "build", "review", "devops", "qa"],
+    projectId: "billing",
+    seatIds: ["channel", "product", "build", "review", "devops", "qa"],
   },
 ];
 
 export const channels: Channel[] = [
-  { id: "ship", name: "#ship" },
-  { id: "incidents", name: "#incidents" },
-  { id: "eng-agents", name: "#eng-agents" },
-  { id: "general", name: "#general" },
+  { id: "ship", name: "#ship", topic: "Ship train", teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya"] },
+  { id: "incidents", name: "#incidents", topic: "Incidents", teamIds: ["eng", "services"], seatIds: ["channel", "you", "jules", "scout"] },
+  { id: "eng-agents", name: "#eng-agents", topic: "Eng agents", teamIds: ["eng"], seatIds: ["channel"] },
+  { id: "general", name: "#general", topic: "Everyone", teamIds: [], seatIds: ["channel", "you", "maya", "jules", "priya"] },
 ];
 
 export type MsgAttachment = {
@@ -135,11 +201,14 @@ export type Msg = {
   kind: SeatKind;
   text: string;
   time: string;
-  run?: boolean;
   seatId?: string;
   attachments?: MsgAttachment[];
   skills?: MsgSkill[];
   files?: MsgFile[];
+  blocks?: Block[];
+  system?: boolean;
+  mirrored?: boolean;
+  sessionId?: string;
 };
 
 export const skills: Skill[] = [
@@ -158,9 +227,11 @@ export const workspaceFiles: WorkspaceFile[] = [
   { path: "constitution.md", name: "constitution.md" },
 ];
 
+const kit = examplePayload();
+
 export const seedMessages: Msg[] = [
   { id: "m1", channel: "ship", who: "Maya", kind: "human", seatId: "maya", text: "Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.", time: "21:04" },
-  { id: "m2", channel: "ship", who: "Floor", kind: "bot", seatId: "floor", text: "Compiled run ship-billing. Product → @eng → confirm → DevOps → QA.", time: "21:04", run: true },
+  { id: "m2", channel: "ship", who: "Channel", kind: "bot", seatId: "channel", text: kit.text, time: "21:04", blocks: kit.blocks },
   { id: "m3", channel: "ship", who: "Product", kind: "bot", seatId: "product", text: "Brief ready. Acceptance: webhook is idempotent, duplicate Stripe events do not double-charge, regression tests in billing/webhook.test.ts.", time: "21:05", files: [{ path: "billing/webhook.test.ts", name: "webhook.test.ts" }], skills: [{ id: "brief", name: "brief" }] },
   { id: "m4", channel: "incidents", who: "Jules", kind: "human", seatId: "jules", text: "Flaky 500 on /billing/webhook. Scout the last 2 hours then hand to Eng.Build.", time: "20:41" },
   { id: "m5", channel: "incidents", who: "Scout", kind: "bot", seatId: "scout", text: "Reproduced on staging. Stack in billing/webhook.ts:142. Handing off.", time: "20:42", files: [{ path: "billing/webhook.ts", name: "webhook.ts" }] },
@@ -185,15 +256,6 @@ export function fileTestId(path: string) {
   return path.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-export const runSteps = [
-  { id: "product", label: "Product" },
-  { id: "build", label: "Eng.Build" },
-  { id: "review", label: "Eng.Review" },
-  { id: "you", label: "Confirm" },
-  { id: "devops", label: "DevOps" },
-  { id: "qa", label: "QA" },
-];
-
 export const testimonials = [
   { q: "I told the channel to talk to Eng and QA. I opened Harness on DevOps when the deploy hung. Same session.", who: "Maya · VP Eng" },
   { q: "It feels like Slack until I hit ⌘. and I’m in OpenCode.", who: "Jules · Founding engineer" },
@@ -201,6 +263,8 @@ export const testimonials = [
 ];
 
 export const changelog = [
+  { date: "2026-09-07", title: "Roster Block Kit", items: ["Bots post rich blocks in the room", "In-app builder at /app/blocks", "SDK in roster-flow-blocks"] },
+  { date: "2026-09-07", title: "Chart Architect", items: ["Org → Project → Team → Seat", "Architect dock proposes plans", "Fire seats from the inspector"] },
   { date: "2026-09-07", title: "Team seats", items: ["Supervisor + Generic on every staffed team", "Specialist persona and instructions", "OpenCode agent write-through"] },
   { date: "2026-09-07", title: "CORE branch", items: ["OpenCode harness wrapper + plugin", "Teams/bots API", "Provider settings", "Org-chart connectors"] },
   { date: "2026-09-06", title: "Roster-flow named", items: ["Wordmark locked", "Room | Harness | Chart as mode 3"] },

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
+import { useAuth, workspaceHref } from "../lib/auth";
 import { Logo } from "./Logo";
 
 const links = [
@@ -14,6 +15,8 @@ const links = [
 
 export function Layout() {
   const [open, setOpen] = useState(false);
+  const { status } = useAuth();
+  const workspace = workspaceHref(status);
 
   return (
     <div className="shell">
@@ -25,7 +28,7 @@ export function Layout() {
               {label}
             </NavLink>
           ))}
-          <NavLink to="/app" className="pill on">
+          <NavLink to={workspace} className="pill on">
             Workspace
           </NavLink>
           <NavLink to="/app/settings" className="pill">

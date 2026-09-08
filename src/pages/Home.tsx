@@ -1,8 +1,10 @@
 import { Link } from "react-router-dom";
 import { WorkspaceMock } from "../components/WorkspaceMock";
 import { seats, testimonials } from "../data";
+import { useAuth, workspaceHref } from "../lib/auth";
 
 export function Home() {
+  const { status } = useAuth();
   return (
     <>
       <section className="wrap hero">
@@ -15,12 +17,12 @@ export function Home() {
             Every bot is an OpenCode agent. They message each other like a company. You flip between a Slack-like room, the real OpenCode TUI, and a living org chart — same seats, same session.
           </p>
           <div className="hero-ctas">
-            <Link to="/access" className="pill-btn primary">
+            <Link to={workspaceHref(status)} className="pill-btn primary">
+              Open workspace
+            </Link>
+            <Link to="/access" className="pill-btn ghost">
               Request access
             </Link>
-            <a href="#surfaces" className="pill-btn ghost">
-              See Room, Harness, and Chart
-            </a>
           </div>
           <div className="tag-row">
             <span className="tag hot">No credit card</span>
@@ -28,7 +30,7 @@ export function Home() {
             <span className="tag">SSO ready</span>
           </div>
         </div>
-        <WorkspaceMock />
+        <WorkspaceMock compact />
       </section>
 
       <section className="wrap" style={{ paddingBottom: 48 }}>
@@ -89,11 +91,11 @@ export function Home() {
       <section className="section wrap">
         <div className="kicker">Orchestration</div>
         <h2>“Talk to Product and Eng. When they finish, DevOps deploys. QA tests.”</h2>
-        <p className="sub">Floor compiles that sentence into a run. Specialists execute. You confirm the gate. The thread keeps the log.</p>
+        <p className="sub">Channel compiles that sentence into a run. Specialists execute. You confirm the gate. The thread keeps the log.</p>
         <div className="timeline">
           {[
             ["01", "You speak", "In #ship, like Slack."],
-            ["02", "Floor", "Compiles a run graph."],
+            ["02", "Channel", "Compiles a run graph."],
             ["03", "Product", "Brief + acceptance. No edits."],
             ["04", "@eng", "Build + Review, then gate."],
             ["05", "DevOps", "Staging. Confirm on prod."],

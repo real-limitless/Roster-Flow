@@ -1,160 +1,451 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { displayParentId, isServiceSeat, type Seat } from "../data";
+import { PointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Tree, { type CustomNodeElementProps, type TreeLinkDatum } from "react-d3-tree";
+import { type Project, type Seat, type Team } from "../data";
+import { SeatAvatar } from "./SeatAvatar";
+import type { ChartPreview } from "./chart/planPreview";
+import { buildOrgTree, toRawNodeDatum, type OrgTreeNode } from "./chart/orgTreeData";
+import { ORG_NODE_SIZE, ORG_SEPARATION, orgStepPath } from "./chart/orgPath";
 
-type Line = { x1: number; y1: number; x2: number; y2: number; live: boolean; childId: string };
+export const COLLAPSED_KEY = "roster-flow.chart-collapsed";
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const ids = raw ? (JSON.parse(raw) as string[]) : [];
+    return new Set(Array.isArray(ids) ? ids : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsed(ids: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+function indexNodes(node: OrgTreeNode, map = new Map<string, OrgTreeNode>()) {
+  map.set(node.id, node);
+  for (const c of node.children) indexNodes(c, map);
+  return map;
+}
+
+function cssId(id: string) {
+  return String(id).replace(/[^a-zA-Z0-9_-]/g, "-");
+}
 
 export function OrgChart({
   roster,
+  teams = [],
+  projects = [],
   showSystem,
   liveId,
   selectedId,
+  selectedTeamId = null,
+  selectedProjectId = null,
+  preview,
+  resetLayoutKey = 0,
   onSelect,
+  onSelectTeam,
+  onSelectProject,
   onAttach,
 }: {
   roster: Seat[];
+  teams?: Team[];
+  projects?: Project[];
   showSystem: boolean;
   liveId?: string;
   selectedId: string;
+  selectedTeamId?: string | null;
+  selectedProjectId?: string | null;
+  preview?: ChartPreview;
+  resetLayoutKey?: number;
   onSelect: (s: Seat) => void;
+  onSelectTeam?: (t: Team) => void;
+  onSelectProject?: (p: Project) => void;
   onAttach?: (s: Seat) => void;
 }) {
-  const treeSeats = roster.filter((s) => (showSystem || !s.system) && !isServiceSeat(s));
-  const services = roster.filter((s) => isServiceSeat(s) && (showSystem || !s.system));
-  const roots = treeSeats.filter((s) => {
-    const p = displayParentId(s, roster, showSystem);
-    return !p || !treeSeats.some((x) => x.id === p);
-  });
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const fittingRef = useRef(false);
+  const viewLocked = useRef(false);
+  const lastFitKey = useRef(-1);
+  const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const zoomRef = useRef(0.7);
+  const translateRef = useRef({ x: 400, y: 48 });
+  const [size, setSize] = useState({ w: 800, h: 520 });
+  const [translate, setTranslate] = useState({ x: 400, y: 48 });
+  const [zoom, setZoom] = useState(0.7);
+  const [treeKey, setTreeKey] = useState(0);
+  const [fitted, setFitted] = useState(false);
+  const [panning, setPanning] = useState(false);
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(loadCollapsed);
+  zoomRef.current = zoom;
+  translateRef.current = translate;
 
-  function kids(id: string) {
-    return treeSeats.filter((s) => displayParentId(s, roster, showSystem) === id);
+  function isChartControl(target: EventTarget | null) {
+    return target instanceof Element && Boolean(target.closest("button, input, textarea, select, a, .tree-card"));
   }
 
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const [lines, setLines] = useState<Line[]>([]);
-  const [box, setBox] = useState({ w: 800, h: 600 });
-
-  const measure = useCallback(() => {
-    const root = canvasRef.current;
-    if (!root) return;
-    const crate = root.getBoundingClientRect();
-    const visible = roster.filter((s) => (showSystem || !s.system) && !isServiceSeat(s));
-    const ids = new Set(visible.map((s) => s.id));
-    const next: Line[] = [];
-    for (const seat of visible) {
-      const parentId = displayParentId(seat, roster, showSystem);
-      if (!parentId || !ids.has(parentId)) continue;
-      const a = root.querySelector<HTMLElement>(`[data-seat-id="${parentId}"]`);
-      const b = root.querySelector<HTMLElement>(`[data-seat-id="${seat.id}"]`);
-      if (!a || !b) continue;
-      const ar = a.getBoundingClientRect();
-      const br = b.getBoundingClientRect();
-      next.push({
-        x1: ar.left + ar.width / 2 - crate.left + root.scrollLeft,
-        y1: ar.bottom - crate.top + root.scrollTop,
-        x2: br.left + br.width / 2 - crate.left + root.scrollLeft,
-        y2: br.top - crate.top + root.scrollTop,
-        live: liveId === seat.id || liveId === parentId,
-        childId: seat.id,
-      });
-    }
-    setLines((prev) => (sameLines(prev, next) ? prev : next));
-    const nextBox = { w: Math.max(root.scrollWidth, crate.width), h: Math.max(root.scrollHeight, crate.height) };
-    setBox((prev) => (Math.abs(prev.w - nextBox.w) < 1 && Math.abs(prev.h - nextBox.h) < 1 ? prev : nextBox));
-  }, [roster, showSystem, liveId]);
+  const tree = useMemo(
+    () => buildOrgTree(roster, teams, projects, preview, showSystem),
+    [roster, teams, projects, preview, showSystem],
+  );
+  const byId = useMemo(() => indexNodes(tree), [tree]);
+  const data = useMemo(() => toRawNodeDatum(tree, collapsedIds), [tree, collapsedIds]);
 
   useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const w = Math.max(320, r.width);
+      const h = Math.max(360, r.height);
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
     measure();
-    const root = canvasRef.current;
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => measure()) : null;
-    if (root && ro) ro.observe(root);
-    window.addEventListener("resize", measure);
-    const t = window.setTimeout(measure, 50);
-    const t2 = window.setTimeout(measure, 200);
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (ro) ro.observe(el);
+    return () => ro?.disconnect();
+  }, [treeKey]);
+
+  const fitTree = useCallback(() => {
+    if (viewLocked.current) return false;
+    const wrap = wrapRef.current;
+    const g = wrap?.querySelector<SVGGElement>(".rd3t-g, svg g");
+    if (!wrap || !g) return false;
+    let bbox: DOMRect;
+    try {
+      bbox = g.getBBox();
+    } catch {
+      return false;
+    }
+    if (bbox.width < 8 || bbox.height < 8) return false;
+    const wr = wrap.getBoundingClientRect();
+    const padX = 20;
+    const padY = 16;
+    const scale = Math.max(0.28, Math.min((wr.width - padX * 2) / bbox.width, (wr.height - padY * 2) / bbox.height, 0.95));
+    fittingRef.current = true;
+    setZoom(scale);
+    setTranslate({
+      x: wr.width / 2 - (bbox.x + bbox.width / 2) * scale,
+      y: padY - bbox.y * scale,
+    });
+    setFitted(true);
+    return true;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (viewLocked.current || lastFitKey.current === treeKey) return;
+    let n = 0;
+    const tryFit = () => {
+      if (viewLocked.current) return;
+      if (fitTree()) {
+        lastFitKey.current = treeKey;
+        return;
+      }
+      if (n > 10) return;
+      n += 1;
+      window.setTimeout(tryFit, 40);
+    };
+    const t = window.setTimeout(tryFit, 50);
+    return () => window.clearTimeout(t);
+  }, [treeKey, size.w, size.h, data, fitTree]);
+
+  useEffect(() => {
+    if (!resetLayoutKey) return;
+    viewLocked.current = false;
+    lastFitKey.current = -1;
+    setCollapsedIds(new Set());
+    saveCollapsed(new Set());
+    setFitted(false);
+    setTreeKey((n) => n + 1);
+  }, [resetLayoutKey]);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      viewLocked.current = true;
+      const rect = el.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const z = zoomRef.current;
+      const t = translateRef.current;
+      const next = Math.max(0.2, Math.min(1.8, z * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+      if (Math.abs(next - z) < 0.001) return;
+      const k = next / z;
+      setZoom(next);
+      setTranslate({
+        x: mx - (mx - t.x) * k,
+        y: my - (my - t.y) * k,
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const setCollapsed = useCallback((id: string, next?: boolean) => {
+    setCollapsedIds((prev) => {
+      const copy = new Set(prev);
+      const collapse = next === undefined ? !copy.has(id) : next;
+      if (collapse) copy.add(id);
+      else copy.delete(id);
+      saveCollapsed(copy);
+      return copy;
+    });
+  }, []);
+
+  const stampLinks = useCallback(() => {
+    const root = wrapRef.current;
+    if (!root) return;
+    const svg = root.querySelector("svg");
+    if (svg) {
+      svg.setAttribute("data-testid", "org-connectors");
+      svg.classList.add("org-connectors");
+    }
+    for (const path of root.querySelectorAll("path.org-line, path.rd3t-link")) {
+      path.setAttribute("data-testid", "org-line");
+      const cls = path.getAttribute("class") || "";
+      const m = cls.match(/org-child-([^\s]+)/);
+      if (m) path.setAttribute("data-child", m[1].replace(/--/g, ":").replace(/-slash-/g, "/"));
+      const raw = cls.match(/org-childid-([^\s]+)/);
+      if (raw) path.setAttribute("data-child", decodeURIComponent(raw[1].replace(/_/g, "%")));
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    stampLinks();
+    const t = window.setTimeout(stampLinks, 50);
+    const t2 = window.setTimeout(stampLinks, 240);
     return () => {
-      ro?.disconnect();
-      window.removeEventListener("resize", measure);
       window.clearTimeout(t);
       window.clearTimeout(t2);
     };
-  }, [measure]);
+  }, [data, size, translate, zoom, stampLinks]);
 
-  function Node({ seat }: { seat: Seat }) {
-    const children = kids(seat.id);
+  function pathClass(link: TreeLinkDatum) {
+    const id = String(link.target.data.attributes?.id || "");
+    const encoded = encodeURIComponent(id).replace(/%/g, "_");
+    const live = liveId && (id === liveId || String(link.source.data.attributes?.id || "") === liveId);
+    return `org-line rd3t-link ${live ? "live" : ""} org-childid-${encoded}`;
+  }
+
+  function renderNode({ nodeDatum }: CustomNodeElementProps) {
+    const id = String(nodeDatum.attributes?.id || "");
+    const meta = byId.get(id);
+    const hasChildren = Boolean(nodeDatum.attributes?.hasChildren);
+    const collapsed = collapsedIds.has(id);
+    if (meta?.kind === "project" && meta.project) {
+      return (
+        <TreeCard
+          width={168}
+          height={hasChildren ? 92 : 72}
+          testId={`org-project-${meta.project.id}`}
+        >
+          <button
+            type="button"
+            className={`org-project-head ${selectedProjectId === meta.project.id ? "on" : ""}`}
+            data-testid={`org-project-head-${meta.project.id}`}
+            onClick={() => onSelectProject?.(meta.project!)}
+          >
+            <strong>{meta.project.name}</strong>
+            {meta.project.brief && <span>{meta.project.brief}</span>}
+          </button>
+          {hasChildren && <CollapseHandle id={id} collapsed={collapsed} onToggle={(n) => setCollapsed(id, n)} />}
+        </TreeCard>
+      );
+    }
+    if (meta?.kind === "team" && meta.team) {
+      return (
+        <TreeCard width={160} height={hasChildren ? 88 : 68} testId={`org-team-${meta.team.id}`}>
+          <button
+            type="button"
+            className={`org-team-head ${selectedTeamId === meta.team.id ? "on" : ""}`}
+            data-testid={`org-team-head-${meta.team.id}`}
+            onClick={() => onSelectTeam?.(meta.team!)}
+          >
+            <strong>{meta.team.name}</strong>
+            {meta.team.job && <span>{meta.team.job}</span>}
+          </button>
+          {hasChildren && <CollapseHandle id={id} collapsed={collapsed} onToggle={(n) => setCollapsed(id, n)} />}
+        </TreeCard>
+      );
+    }
+    const seat = meta?.seat;
+    if (!seat) {
+      return (
+        <TreeCard width={140} height={64}>
+          <div className="seat">{nodeDatum.name}</div>
+        </TreeCard>
+      );
+    }
     return (
-      <div className="org-node">
-        <SeatBtn seat={seat} selectedId={selectedId} liveId={liveId} onSelect={onSelect} onAttach={onAttach} />
-        {children.length > 0 && (
-          <div className="org-children">
-            {children.map((c) => (
-              <Node key={c.id} seat={c} />
-            ))}
-          </div>
-        )}
-      </div>
+      <TreeCard width={148} height={hasChildren ? 108 : 88}>
+        <SeatBtn
+          seat={seat}
+          selectedId={selectedId}
+          liveId={liveId}
+          fire={Boolean(meta.fire)}
+          onSelect={onSelect}
+          onAttach={onAttach}
+        />
+        {hasChildren && <CollapseHandle id={id} collapsed={collapsed} onToggle={(n) => setCollapsed(id, n)} />}
+      </TreeCard>
     );
   }
 
+  function onPanStart(e: PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0 || isChartControl(e.target)) return;
+    viewLocked.current = true;
+    panRef.current = { x: e.clientX, y: e.clientY, tx: translate.x, ty: translate.y };
+    setPanning(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function onPanMove(e: PointerEvent<HTMLDivElement>) {
+    const start = panRef.current;
+    if (!start) return;
+    setTranslate({
+      x: start.tx + (e.clientX - start.x),
+      y: start.ty + (e.clientY - start.y),
+    });
+  }
+
+  function onPanEnd(e: PointerEvent<HTMLDivElement>) {
+    if (!panRef.current) return;
+    panRef.current = null;
+    setPanning(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* already released */
+    }
+  }
+
   return (
-    <div className="org-chart" data-testid="org-chart" ref={canvasRef}>
-      <svg className="org-connectors" data-testid="org-connectors" width={box.w} height={box.h} aria-hidden>
-        {lines.map((ln) => {
-          const midY = (ln.y1 + ln.y2) / 2;
-          const d = `M ${ln.x1} ${ln.y1} V ${midY} H ${ln.x2} V ${ln.y2}`;
-          return (
-            <path
-              key={`${ln.childId}-${ln.x1}-${ln.y2}`}
-              d={d}
-              className={ln.live ? "org-line live" : "org-line"}
-              data-testid="org-line"
-              data-child={ln.childId}
-            />
-          );
-        })}
-      </svg>
-      <div className="org-tree">
-        {roots.map((r) => (
-          <Node key={r.id} seat={r} />
-        ))}
-      </div>
-      {services.length > 0 && (
-        <>
-          <div className="services-label">Services lane</div>
-          <div className="services">
-            {services.map((s) => (
-              <SeatBtn key={s.id} seat={s} selectedId={selectedId} liveId={liveId} onSelect={onSelect} onAttach={onAttach} />
-            ))}
-          </div>
-        </>
-      )}
+    <div
+      className={`org-chart org-chart-d3 ${panning ? "is-panning" : ""}`}
+      data-testid="org-chart"
+      data-fitted={fitted ? "1" : "0"}
+      data-zoom={zoom.toFixed(3)}
+      ref={wrapRef}
+      onPointerDown={onPanStart}
+      onPointerMove={onPanMove}
+      onPointerUp={onPanEnd}
+      onPointerCancel={onPanEnd}
+    >
+      <Tree
+        key={treeKey}
+        data={data}
+        orientation="vertical"
+        collapsible={false}
+        zoomable={false}
+        draggable={false}
+        zoom={zoom}
+        translate={translate}
+        pathFunc={orgStepPath}
+        pathClassFunc={pathClass}
+        nodeSize={ORG_NODE_SIZE}
+        separation={ORG_SEPARATION}
+        hasInteractiveNodes
+        scaleExtent={{ min: 0.2, max: 1.4 }}
+        renderCustomNodeElement={renderNode}
+        onUpdate={(next) => {
+          if (fittingRef.current) {
+            fittingRef.current = false;
+            window.setTimeout(stampLinks, 30);
+            return;
+          }
+          if (panRef.current) return;
+          if (typeof next.zoom === "number" && Math.abs(next.zoom - zoom) > 0.001) {
+            setZoom(next.zoom);
+            if (next.translate) setTranslate(next.translate);
+          }
+          window.setTimeout(stampLinks, 30);
+        }}
+      />
+      <span className="sr-only">{cssId(tree.id)}</span>
     </div>
   );
 }
 
-function sameLines(a: Line[], b: Line[]) {
-  if (a.length !== b.length) return false;
-  return a.every((ln, i) => {
-    const o = b[i];
-    return (
-      Math.abs(ln.x1 - o.x1) < 0.5 &&
-      Math.abs(ln.y1 - o.y1) < 0.5 &&
-      Math.abs(ln.x2 - o.x2) < 0.5 &&
-      Math.abs(ln.y2 - o.y2) < 0.5 &&
-      ln.live === o.live &&
-      ln.childId === o.childId
-    );
-  });
+function TreeCard({
+  width,
+  height,
+  testId,
+  children,
+}: {
+  width: number;
+  height: number;
+  testId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <foreignObject width={width} height={height} x={-width / 2} y={-12} data-testid={testId}>
+      <div className="tree-card" style={{ width, height }}>
+        {children}
+      </div>
+    </foreignObject>
+  );
+}
+
+function CollapseHandle({
+  id,
+  collapsed,
+  onToggle,
+}: {
+  id: string;
+  collapsed: boolean;
+  onToggle: (next?: boolean) => void;
+}) {
+  const start = useRef<{ y: number } | null>(null);
+  function down(e: PointerEvent<HTMLButtonElement>) {
+    e.stopPropagation();
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    start.current = { y: e.clientY };
+  }
+  function up(e: PointerEvent<HTMLButtonElement>) {
+    e.stopPropagation();
+    if (!start.current) return;
+    const dy = e.clientY - start.current.y;
+    start.current = null;
+    if (Math.abs(dy) < 12) onToggle();
+    else onToggle(dy < 0);
+  }
+  return (
+    <button
+      type="button"
+      className={`tree-collapse ${collapsed ? "closed" : "open"}`}
+      data-testid={`tree-collapse-${id}`}
+      aria-label={collapsed ? "Expand" : "Collapse"}
+      aria-expanded={!collapsed}
+      onPointerDown={down}
+      onPointerUp={up}
+      onPointerCancel={() => {
+        start.current = null;
+      }}
+    >
+      <span className="tree-collapse-grip" />
+    </button>
+  );
 }
 
 function SeatBtn({
   seat,
   selectedId,
   liveId,
+  fire,
   onSelect,
   onAttach,
 }: {
   seat: Seat;
   selectedId: string;
   liveId?: string;
+  fire?: boolean;
   onSelect: (s: Seat) => void;
   onAttach?: (s: Seat) => void;
 }) {
@@ -163,16 +454,19 @@ function SeatBtn({
       type="button"
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
-      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""}`}
+      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""}`}
       onClick={() => onSelect(seat)}
       onDoubleClick={() => onAttach?.(seat)}
     >
+      <SeatAvatar seed={seat.id} kind={seat.kind} size={22} />
       <span className={`pip ${liveId === seat.id ? "run" : "on"}`} />
       {seat.name}
       <div style={{ color: "var(--muted)", fontSize: 10 }}>
         {seat.role}
         {seat.kind === "human" ? " · human" : ""}
         {seat.system ? " · system" : ""}
+        {seat.preview === "hire" ? " · proposed" : ""}
+        {fire ? " · fire" : ""}
       </div>
     </button>
   );
