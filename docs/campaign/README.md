@@ -12,6 +12,12 @@ Live captures of the marketing site and the Room / Harness / Chart workspace. Us
 | `docs/images/chat-room.png` | `/app` Room (`#ship`) |
 | `docs/images/chat-harness.png` | `/harness` mock TUI (`opencode attach eng.build`) |
 | `docs/images/chat-chart.png` | `/app?mode=chart` |
+| `docs/images/setup-install.png` | `/setup` installation checks |
+| `docs/images/setup-owner.png` | `/setup` create the owner |
+| `docs/images/setup-signin.png` | `/setup` first sign in |
+| `docs/images/setup-harness.png` | `/setup` OpenCode harness |
+| `docs/images/setup-welcome.png` | `/setup` starter vs empty org |
+| `docs/images/login.png` | `/login` local owner |
 
 ## Capture
 
@@ -21,7 +27,7 @@ cd docs/campaign
 ./capture.sh
 ```
 
-Requires the marketing + workspace client on `BASE_URL` (default `http://127.0.0.1:5173`). Uses the repo Playwright install.
+Requires the marketing + workspace client on `BASE_URL` (default `http://127.0.0.1:5173`). Workspace frames expect `ROSTER_SKIP_ONBOARDING=1`. Setup and login frames start a temporary CORE API so they do not rewrite `.roster-flow`. Uses the repo Playwright install.
 
 ## Story
 
@@ -31,3 +37,5 @@ Requires the marketing + workspace client on `BASE_URL` (default `http://127.0.0
 4. **Room** — humans and bots in one channel; the thread is the audit log
 5. **Harness** — the same seat opens as a real OpenCode session
 6. **Chart** — reporting lines are the control plane
+7. **Setup** — install, owner, sign in, harness, welcome
+8. **Login** — local owner after first run

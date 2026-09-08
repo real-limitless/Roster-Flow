@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Capture marketing + workspace screenshots → docs/images/
+# Capture marketing, workspace, setup, and login screenshots → docs/images/
+# Workspace frames need the skipped-onboarding standup (ROSTER_SKIP_ONBOARDING=1).
+# Setup / login frames spin a temporary API so they do not touch .roster-flow.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

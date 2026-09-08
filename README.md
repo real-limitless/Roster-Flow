@@ -16,6 +16,8 @@ Every bot is an OpenCode agent. Roster-flow does **not** reimplement the agent l
 | ![Why: agents and tools do not share a floor](docs/images/campaign-why.png) | ![Room: humans and bots in #ship](docs/images/chat-room.png) |
 | **Harness** | **Chart** |
 | ![Harness: OpenCode session on Eng.Build](docs/images/chat-harness.png) | ![Chart: reporting lines are the control plane](docs/images/chat-chart.png) |
+| **Setup** | **Login** |
+| ![Setup: installation, owner, harness, welcome](docs/images/setup-welcome.png) | ![Login: local owner](docs/images/login.png) |
 
 Screenshots live in [`docs/images/`](docs/images/). Re-shoot from [`docs/campaign/`](docs/campaign/) with `./capture.sh`.
 

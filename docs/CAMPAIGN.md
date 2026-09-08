@@ -53,7 +53,7 @@ Channel compiles a run. Product writes acceptance. Eng.Build and Eng.Review work
 - Homepage hero + Room | Harness | Chart mock (`/`).
 - Depth pages: `/product`, `/bots`, `/orchestration`, `/harness`, `/org`.
 - Conversion: `/access` (invite-only, work email).
-- README screenshots: [`docs/images/`](images/) — hero, why, orchestration, Room, Harness, Chart. Re-shoot with [`docs/campaign/capture.sh`](campaign/capture.sh).
+- README screenshots: [`docs/images/`](images/) — hero, why, orchestration, Room, Harness, Chart, setup, login. Re-shoot with [`docs/campaign/capture.sh`](campaign/capture.sh).
 - Tone: staff-engineer dry. Nouns: harness, session, run, handoff, permission, worktree.
 
 ## Offer
