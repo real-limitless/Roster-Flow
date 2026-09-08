@@ -6,6 +6,19 @@ import type { Seat } from "../data";
 
 type Status = "connecting" | "ready" | "closed" | "error" | "human";
 
+function harnessPtyUrl() {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  const env = (import.meta.env.VITE_API_URL as string | undefined) || "";
+  if (env) {
+    const u = new URL(env, window.location.origin);
+    return `${u.protocol === "https:" ? "wss" : "ws"}://${u.host}/api/v1/harness/pty`;
+  }
+  if (import.meta.env.DEV) {
+    return `ws://${window.location.hostname}:8787/api/v1/harness/pty`;
+  }
+  return `${proto}://${window.location.host}/api/v1/harness/pty`;
+}
+
 export function HarnessTerm({ seat }: { seat: Seat }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>(seat.kind === "human" ? "human" : "connecting");
@@ -36,13 +49,12 @@ export function HarnessTerm({ seat }: { seat: Seat }) {
     } catch {
       /* ignore */
     }
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const qs = new URLSearchParams({
       seat: seat.id,
       cols: String(term.cols || 100),
       rows: String(term.rows || 28),
     });
-    const ws = new WebSocket(`${proto}://${window.location.host}/api/v1/harness/pty?${qs}`);
+    const ws = new WebSocket(`${harnessPtyUrl()}?${qs}`);
     setStatus("connecting");
     ws.binaryType = "arraybuffer";
     ws.onmessage = (ev) => {

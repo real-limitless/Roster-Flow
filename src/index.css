@@ -181,7 +181,8 @@ h2, h2.section-title {
 
 .hero { margin-top: 28px; margin-bottom: 28px; display: grid; grid-template-columns: minmax(26rem, 1.05fr) minmax(0, 1fr); gap: 32px; align-items: start; }
 .hero > * { min-width: 0; }
-.hero .frame { min-width: 0; overflow: hidden; }
+.hero .frame { min-width: 0; overflow: hidden; min-height: 520px; }
+.hero .frame-body { min-height: 460px; }
 .hero h1 {
   max-width: none;
   font-size: clamp(1.85rem, 3.2vw, 2.35rem);
@@ -657,6 +658,15 @@ h2, h2.section-title {
 .harness-term { min-height: 280px; padding: 10px 12px 12px; }
 .harness-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11px; }
 .harness-xterm { flex: 1; min-height: 240px; width: 100%; }
+.frame-body.harness { min-height: 460px; }
+.frame-body.harness .harness-term {
+  min-height: 0;
+  height: 100%;
+  border: none;
+  padding: 8px 10px 10px;
+}
+.frame-body.harness .harness-xterm { min-height: 280px; }
+.frame.compact .frame-body.harness .harness-xterm { min-height: 260px; }
 .org-line-halo { fill: none; stroke: #0a0e14; stroke-width: 6; stroke-linecap: square; stroke-linejoin: miter; }
 .org-line, .rd3t-link, path.org-line {
   fill: none;

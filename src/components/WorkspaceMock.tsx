@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { OrgChart } from "./OrgChart";
+import { HarnessTerm } from "./HarnessTerm";
 import { seats, seedMessages, teams, projects } from "../data";
 import { ComposerPreview } from "./chat/Composer";
 import { MessageRow } from "./chat/MessageRow";
@@ -63,33 +64,24 @@ function RoomPreview() {
 }
 
 function HarnessPreview() {
-  const lines = useMemo(
-    () => [
-      { c: "dim", t: "opencode attach eng.build  ·  session ses_8f2  ·  worktree billing-fix" },
-      { c: "am", t: "agent  Eng.Build  model  anthropic/claude-sonnet" },
-      { c: "bl", t: "tool  read   billing/webhook.ts" },
-      { c: "bl", t: "tool  edit   billing/webhook.ts  +idempotency key on Stripe event" },
-      { c: "bl", t: "tool  bash   npm test -- billing/webhook.test.ts" },
-      { c: "gn", t: "ok    14/14 passing" },
-      { c: "am", t: "handoff → Eng.Review  PR #482" },
-      { c: "dim", t: "▌" },
-    ],
-    []
-  );
+  const bots = seats.filter((s) => s.kind === "bot" && !s.system);
+  const [seatId, setSeatId] = useState("build");
+  const seat = seats.find((s) => s.id === seatId) || bots[0];
   return (
     <div className="frame-body harness">
       <div className="rail">
-        <div className="ch on">ses_8f2 eng.build</div>
-        <div className="ch">ses_8e1 product</div>
-        <div className="ch">ses_7c0 devops</div>
-      </div>
-      <div className="tui">
-        {lines.map((l, i) => (
-          <div key={i} className={`line ${l.c}`}>
-            {l.t}
+        {bots.slice(0, 8).map((s) => (
+          <div
+            key={s.id}
+            className={`ch ${s.id === seat.id ? "on" : ""}`}
+            data-testid={`mock-harness-seat-${s.id}`}
+            onClick={() => setSeatId(s.id)}
+          >
+            {s.name}
           </div>
         ))}
       </div>
+      <HarnessTerm seat={seat} />
     </div>
   );
 }

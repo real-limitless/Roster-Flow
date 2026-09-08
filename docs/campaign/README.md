@@ -10,7 +10,7 @@ Live captures of the marketing site and the Room / Harness / Chart workspace. Us
 | `docs/images/campaign-why.png` | `/` problem section |
 | `docs/images/campaign-orchestration.png` | `/orchestration` run story |
 | `docs/images/chat-room.png` | `/app` Room (`#ship`) |
-| `docs/images/chat-harness.png` | `/harness` mock TUI (`opencode attach eng.build`) |
+| `docs/images/chat-harness.png` | `/harness` live OpenCode TUI on Eng.Build |
 | `docs/images/chat-chart.png` | `/app?mode=chart` |
 | `docs/images/setup-install.png` | `/setup` installation checks |
 | `docs/images/setup-owner.png` | `/setup` create the owner |

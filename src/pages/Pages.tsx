@@ -108,7 +108,7 @@ export function HarnessPage() {
     <>
       <PageHero kicker="Harness" title="Room when you’re talking. Terminal when you’re working." sub="Roster-flow does not reimplement the agent loop. OpenCode is the harness. Same session both sides." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
-        <WorkspaceMock />
+        <WorkspaceMock initialMode="harness" />
         <div className="grid-3" style={{ marginTop: 24 }}>
           <div className="card">
             <h3>Attach</h3>

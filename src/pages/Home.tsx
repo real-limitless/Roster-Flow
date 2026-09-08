@@ -30,7 +30,7 @@ export function Home() {
             <span className="tag">SSO ready</span>
           </div>
         </div>
-        <WorkspaceMock compact />
+        <WorkspaceMock compact initialMode="harness" />
       </section>
 
       <section className="wrap" style={{ paddingBottom: 48 }}>

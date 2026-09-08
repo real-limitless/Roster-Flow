@@ -21,6 +21,15 @@ const shots = [
     file: "campaign-hero.png",
     url: "/",
     ready: (page) => page.getByRole("heading", { level: 1 }),
+    prepare: async (page) => {
+      await page.getByTestId("harness-xterm").waitFor({ state: "visible" }).catch(() => undefined);
+      await page
+        .waitForFunction(() => /ready/i.test(document.querySelector("[data-testid=harness-meta]")?.textContent || ""), {
+          timeout: 20_000,
+        })
+        .catch(() => undefined);
+      await page.waitForTimeout(4000);
+    },
   },
   {
     file: "campaign-why.png",
@@ -54,10 +63,17 @@ const shots = [
   {
     file: "chat-harness.png",
     url: "/harness",
-    ready: (page) => page.getByRole("heading", { name: /room when you’re talking/i }),
+    ready: (page) => page.getByTestId("harness-xterm"),
     prepare: async (page) => {
       await page.getByTestId("mock-mode-harness").click();
-      await page.getByText("opencode attach eng.build").waitFor({ state: "visible" });
+      await page.getByTestId("harness-xterm").waitFor({ state: "visible" });
+      await page.getByTestId("harness-term").scrollIntoViewIfNeeded();
+      await page
+        .waitForFunction(() => /ready/i.test(document.querySelector("[data-testid=harness-meta]")?.textContent || ""), {
+          timeout: 20_000,
+        })
+        .catch(() => undefined);
+      await page.waitForTimeout(4000);
     },
   },
   {
