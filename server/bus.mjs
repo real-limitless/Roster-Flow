@@ -8,7 +8,7 @@ import {
   harnessKindForSeat,
   sessionKeyForKind,
 } from "./harness.mjs";
-import { resolveSeatModel } from "./providers.mjs";
+import { resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
@@ -108,7 +108,7 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
     });
   }
   const chain = modelChainForSeat(seat, team);
-  const refs = chain.length ? chain.map((m) => resolveSeatModel(seat, m)) : [resolveSeatModel(seat)];
+  const refs = chain.length ? chain.map((m) => resolveUsableModel(seat, m)) : [resolveUsableModel(seat)];
   let lastErr = null;
   for (const model of refs) {
     const body = promptBody(seat, to, text, meta, model);

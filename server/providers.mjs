@@ -53,13 +53,15 @@ function writeAuth(auth) {
 
 export function listProviders() {
   const cfg = readOpenCodeConfig();
-  const provider = providerBlocks(cfg);
+  const global = readGlobalOpenCodeConfig();
+  const provider = { ...providerBlocks(global), ...providerBlocks(cfg) };
   const auth = readAuth();
+  const globalAuth = new Set(readGlobalAuthIds());
   return Object.entries(provider).map(([id, raw]) => {
     const models = raw.models && typeof raw.models === "object" ? raw.models : {};
     const settings = raw.settings || raw.options || {};
     const keyEnv = String(settings.apiKey || "").match(/\{env:([^}]+)\}/)?.[1];
-    const connected = Boolean(auth[id] || (keyEnv && process.env[keyEnv]));
+    const connected = Boolean(auth[id] || (keyEnv && process.env[keyEnv]) || globalAuth.has(id));
     return {
       id,
       name: raw.name || id,
@@ -132,6 +134,23 @@ export function removeProvider(id) {
   return { ok: true };
 }
 
+function globalAuthPaths() {
+  return [join(homedir(), ".local/share/opencode", "auth.json"), join(homedir(), ".config/opencode", "auth.json")];
+}
+
+/** Provider ids stored by the OpenCode TUI. Values are never returned. */
+export function readGlobalAuthIds() {
+  const ids = new Set();
+  for (const path of globalAuthPaths()) {
+    const raw = readJson(path, null);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    for (const id of Object.keys(raw)) {
+      if (id) ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
 function flattenProviderModels(raw, connectedLookup = {}) {
   if (!raw || typeof raw !== "object") return [];
   const out = [];
@@ -182,7 +201,8 @@ export function listConfiguredModels() {
     })),
   );
   const globalCfg = readGlobalOpenCodeConfig();
-  const global = flattenProviderModels(providerBlocks(globalCfg));
+  const globalAuth = Object.fromEntries(readGlobalAuthIds().map((id) => [id, true]));
+  const global = flattenProviderModels(providerBlocks(globalCfg), globalAuth);
   const seen = new Set(workspace.map((m) => `${m.providerID}/${m.modelID}`));
   const extra = global.filter((m) => !seen.has(`${m.providerID}/${m.modelID}`));
   return [...workspace, ...extra];
@@ -239,6 +259,21 @@ export function hasProviderKey() {
   );
 }
 
+export function firstConnectedModel() {
+  const models = listModels().filter((m) => m.connected);
+  if (!models.length) return null;
+  const preferred = [
+    ["infiniterouter-dev", "big-pickle"],
+    ["infiniterouter-dev", "auto"],
+    ["standardcompute", "StandardComputeRouter"],
+  ];
+  for (const [providerID, modelID] of preferred) {
+    const hit = models.find((m) => m.providerID === providerID && m.modelID === modelID);
+    if (hit) return hit;
+  }
+  return models[0];
+}
+
 export function keyStatusForModel(model) {
   const parsed = parseModelRef(model) || {
     providerID: inferProviderId(model),
@@ -257,11 +292,12 @@ export function keyStatusForModel(model) {
     google: "GOOGLE_GENERATIVE_AI_API_KEY",
   };
   const envName = p?.apiKeyEnv || fallback[parsed.providerID];
+  const globalAuth = new Set(readGlobalAuthIds());
   return {
     providerID: parsed.providerID || "",
     modelID: parsed.modelID || "",
     configured: Boolean(p),
-    connected: Boolean(p?.connected || (envName && env[envName])),
+    connected: Boolean(p?.connected || (envName && env[envName]) || globalAuth.has(parsed.providerID)),
   };
 }
 
@@ -290,9 +326,20 @@ export function resolveSeatModel(seat, modelOverride) {
   const guess = inferProviderId(raw);
   const fromGuess = models.find((m) => m.providerID === guess);
   if (fromGuess) return { providerID: fromGuess.providerID, modelID: raw || fromGuess.modelID };
-  const connected = models.find((m) => m.connected);
+  const connected = firstConnectedModel();
   if (connected) return { providerID: connected.providerID, modelID: connected.modelID };
   return guess && raw ? { providerID: guess, modelID: raw } : undefined;
+}
+
+export function resolveUsableModel(seat, modelOverride) {
+  const resolved = resolveSeatModel(seat, modelOverride);
+  if (resolved) {
+    const st = keyStatusForModel(`${resolved.providerID}/${resolved.modelID}`);
+    if (st.connected) return resolved;
+  }
+  const fallback = firstConnectedModel();
+  if (fallback) return { providerID: fallback.providerID, modelID: fallback.modelID };
+  return resolved;
 }
 
 export function inferProviderId(model) {

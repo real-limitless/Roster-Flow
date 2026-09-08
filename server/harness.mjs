@@ -7,7 +7,7 @@ import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { serveChildEnv, readOpenCodeConfig } from "./providers.mjs";
+import { serveChildEnv, readOpenCodeConfig, readGlobalOpenCodeConfig } from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
 
@@ -111,12 +111,26 @@ function writeCompanyConfig() {
   mkdirSync(companyWorkspace, { recursive: true });
   mkdirSync(join(root, ".opencode"), { recursive: true });
   const dest = join(root, ".opencode", "opencode.json");
-  if (!existsSync(dest)) {
-    writeFileSync(
-      dest,
-      JSON.stringify({ $schema: "https://opencode.ai/config.json", plugin: ["roster-flow-opencode"] }, null, 2),
-    );
+  const global = readGlobalOpenCodeConfig();
+  let cfg = {
+    $schema: "https://opencode.ai/config.json",
+    plugin: ["roster-flow-opencode"],
+    provider: {},
+    providers: {},
+  };
+  if (existsSync(dest)) {
+    try {
+      cfg = { ...cfg, ...JSON.parse(readFileSync(dest, "utf8")) };
+    } catch {
+      /* keep defaults */
+    }
   }
+  if (!Array.isArray(cfg.plugin) || !cfg.plugin.includes("roster-flow-opencode")) {
+    cfg.plugin = [...(cfg.plugin || []), "roster-flow-opencode"];
+  }
+  cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}) };
+  cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}) };
+  writeFileSync(dest, JSON.stringify(cfg, null, 2));
 }
 
 function writeSystemConfig() {
@@ -125,6 +139,7 @@ function writeSystemConfig() {
   mkdirSync(join(ocDir, "agents"), { recursive: true });
   const dest = join(ocDir, "opencode.json");
   const company = readOpenCodeConfig();
+  const global = readGlobalOpenCodeConfig();
   let cfg = {
     $schema: "https://opencode.ai/config.json",
     plugin: ["roster-flow-opencode"],
@@ -140,8 +155,8 @@ function writeSystemConfig() {
     }
   }
   cfg.plugin = ["roster-flow-opencode"];
-  cfg.provider = { ...(cfg.provider || {}), ...(company.provider || {}) };
-  cfg.providers = { ...(cfg.providers || {}), ...(company.providers || {}) };
+  cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}), ...(company.provider || {}) };
+  cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}), ...(company.providers || {}) };
   writeFileSync(dest, JSON.stringify(cfg, null, 2));
 }
 
