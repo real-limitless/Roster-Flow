@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+console.log("Setup: http://127.0.0.1:5173/setup");
+
 const kids = [
   spawn(process.execPath, ["server/index.mjs"], { stdio: "inherit", env: process.env }),
   spawn("npm", ["run", "dev"], { stdio: "inherit", env: process.env, shell: true }),

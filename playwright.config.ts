@@ -14,12 +14,19 @@ export default defineConfig({
     {
       command: "node server/index.mjs",
       port: 8787,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        ROSTER_ARCHITECT_MODE: "template",
+        ROSTER_SKIP_ONBOARDING: "1",
+      },
     },
     {
       command: "npm run dev",
       url: "http://127.0.0.1:5173",
       reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
     },
   ],
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

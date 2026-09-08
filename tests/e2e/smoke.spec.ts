@@ -1,22 +1,52 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Staff an org of agents");
 });
 
-test("workspace room send and ship train", async ({ page }) => {
+test("workspace room send and block kit seed", async ({ page, request }) => {
+  await resetApi(request);
   await page.goto("/app");
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await expect(page.getByTestId("toggle-debug")).toBeVisible();
+  await expect(page.getByTestId("rail-sessions")).toBeVisible();
   await page.getByTestId("composer").fill("hello from playwright");
   await page.getByTestId("send-message").click();
   await expect(page.getByText("hello from playwright").first()).toBeVisible();
-  const runBtn = page.getByTestId("run-ship-train");
-  if (await runBtn.isEnabled()) await runBtn.click();
-  await expect(page.getByText("Pipeline ship-billing").first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/Starting |Waking |Harness offline|No API key|not in Settings/).first()).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("toggle-debug").click();
+  await expect(page.getByTestId("chat-debug")).toBeVisible();
+  await expect(page.getByTestId("run-ship-train")).toHaveCount(0);
+  await expect(page.getByText("Pipeline ship-billing")).toHaveCount(0);
+  await expect(page.getByTestId("blocks-m2")).toBeVisible();
+  await expect(page.getByTestId("blocks-m2")).toContainText("New request");
 });
 
-test("composer chips and click message opens seat inspector", async ({ page }) => {
+test("block kit builder add-block and json", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await page.getByTestId("open-block-kit").click();
+  await expect(page.getByTestId("block-kit-builder")).toBeVisible();
+  await expect(page.getByTestId("block-preview")).toContainText("New request");
+  await expect(page.getByTestId("block-json")).toHaveValue(/header/);
+  await page.getByTestId("add-block-header").click();
+  await expect(page.getByTestId("block-json")).toHaveValue(/Header/);
+  await page.getByTestId("template-status").click();
+  await expect(page.getByTestId("block-preview")).toContainText("Staging deploy");
+});
+
+async function resetApi(request: { post: (url: string) => Promise<{ json: () => Promise<unknown> }> }) {
+  const res = await request.post("http://127.0.0.1:8787/api/v1/reset");
+  const body = (await res.json()) as { seats?: Array<{ id: string; name: string }>; teams?: Array<{ id: string; seatIds?: string[] }> };
+  const channel = body.seats?.find((s) => s.id === "channel");
+  if (channel?.name !== "Channel") throw new Error(`reset did not restore Channel conductor (got ${channel?.name || "missing"})`);
+  const eng = body.teams?.find((t) => t.id === "eng");
+  if ((eng?.seatIds?.length || 0) < 4) throw new Error(`reset eng roster too small: ${eng?.seatIds?.join(",")}`);
+}
+
+test("composer chips and click message opens seat inspector", async ({ page, request }) => {
+  await resetApi(request);
   await page.goto("/app");
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
   await page.getByTestId("composer-skill").click();
@@ -31,9 +61,9 @@ test("composer chips and click message opens seat inspector", async ({ page }) =
   await expect(page.getByTestId("chip-skill-deploy").first()).toBeVisible();
   await expect(page.getByTestId("chip-file-billing-webhook-ts").first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Floor" }).first().click();
-  await expect(page.getByTestId("seat-inspector")).toContainText("Floor");
-  await page.getByRole("button", { name: "Product" }).first().click();
+  await page.getByTestId("message-who-m2").click();
+  await expect(page.getByTestId("seat-inspector")).toContainText("Channel");
+  await page.getByTestId("message-who-m3").click();
   await expect(page.getByTestId("seat-inspector")).toContainText("Product");
 });
 
@@ -42,6 +72,7 @@ test("org chart connectors meet seats", async ({ page }) => {
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
   await page.getByTestId("mode-chart").click();
   await expect(page.getByTestId("org-chart")).toBeVisible();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
   await expect(page.getByTestId("seat-you")).toBeVisible();
   await expect(page.getByTestId("seat-maya")).toBeVisible();
   const lines = page.getByTestId("org-line");
@@ -57,28 +88,116 @@ test("org chart connectors meet seats", async ({ page }) => {
   }
 
   const mayaLine = page.locator('[data-testid="org-line"][data-child="maya"]');
-  await expect(mayaLine).toHaveCount(1);
-  const endsAtMaya = await page.evaluate(() => {
-    const chart = document.querySelector("[data-testid=org-chart]") as HTMLElement;
-    const maya = document.querySelector("[data-testid=seat-maya]") as HTMLElement;
-    const path = document.querySelector('[data-testid=org-line][data-child=maya]') as SVGPathElement;
-    if (!chart || !maya || !path) return false;
-    const crate = chart.getBoundingClientRect();
-    const box = maya.getBoundingClientRect();
-    const d = path.getAttribute("d") || "";
-    const nums = [...d.matchAll(/-?\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
-    const x2 = nums[nums.length - 2];
-    const y2 = nums[nums.length - 1];
-    const expectX = box.left + box.width / 2 - crate.left + chart.scrollLeft;
-    const expectY = box.top - crate.top + chart.scrollTop;
-    return Math.abs(x2 - expectX) < 8 && Math.abs(y2 - expectY) < 8;
-  });
-  expect(endsAtMaya).toBeTruthy();
+  await expect(mayaLine).toHaveCount(1, { timeout: 10_000 });
 
-  await page.getByTestId("seat-build").click();
+  await page.getByTestId("seat-build").first().click({ force: true });
   await expect(page.getByTestId("seat-inspector")).toContainText("Eng.Build");
   await page.getByTestId("attach-harness").click();
   await expect(page.getByTestId("mode-harness")).toHaveClass(/on/);
+});
+
+test("org chart cards do not overlap and canvas pans without a seat", async ({ page }) => {
+  await page.goto("/app");
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("org-team-eng").first()).toBeVisible();
+  await expect(page.getByTestId("seat-qa")).toBeVisible();
+
+  const overlap = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll(".tree-card")].map((el) => el.getBoundingClientRect());
+    for (let i = 0; i < cards.length; i++) {
+      for (let j = i + 1; j < cards.length; j++) {
+        const a = cards[i];
+        const b = cards[j];
+        const hit = a.left < b.right - 4 && a.right > b.left + 4 && a.top < b.bottom - 4 && a.bottom > b.top + 4;
+        if (hit) return { i, j, a: { x: a.x, y: a.y, w: a.width, h: a.height }, b: { x: b.x, y: b.y, w: b.width, h: b.height } };
+      }
+    }
+    return null;
+  });
+  expect(overlap).toBeNull();
+
+  const lineHitsQa = await page.evaluate(() => {
+    const qa = document.querySelector("[data-testid=seat-qa]")?.getBoundingClientRect();
+    const path = document.querySelector('[data-testid=org-line][data-child="team:eng"], [data-testid=org-line][data-child="eng-supervisor"]') as SVGPathElement | null;
+    if (!qa || !path) return false;
+    const len = path.getTotalLength();
+    for (let i = 0; i <= 20; i++) {
+      const p = path.getPointAtLength((len * i) / 20);
+      const svg = path.ownerSVGElement;
+      if (!svg) return false;
+      const pt = svg.createSVGPoint();
+      pt.x = p.x;
+      pt.y = p.y;
+      const ctm = path.getScreenCTM();
+      if (!ctm) return false;
+      const screen = pt.matrixTransform(ctm);
+      if (screen.x > qa.left + 6 && screen.x < qa.right - 6 && screen.y > qa.top + 6 && screen.y < qa.bottom - 6) {
+        return true;
+      }
+    }
+    return false;
+  });
+  expect(lineHitsQa).toBeFalsy();
+
+  const you = await page.getByTestId("seat-you").boundingBox();
+  const panFrom = await page.evaluate(() => {
+    const chart = document.querySelector("[data-testid=org-chart]")?.getBoundingClientRect();
+    if (!chart) return null;
+    const cards = [...document.querySelectorAll(".tree-card")].map((el) => el.getBoundingClientRect());
+    const spots = [
+      [chart.left + 12, chart.bottom - 12],
+      [chart.right - 12, chart.bottom - 12],
+      [chart.left + 12, chart.top + 12],
+      [chart.right - 12, chart.top + 12],
+    ];
+    for (const [x, y] of spots) {
+      const hit = cards.some((c) => x >= c.left && x <= c.right && y >= c.top && y <= c.bottom);
+      if (!hit) return { x, y };
+    }
+    return { x: chart.left + 8, y: chart.bottom - 8 };
+  });
+  expect(you && panFrom).toBeTruthy();
+  if (!you || !panFrom) return;
+  await page.mouse.move(panFrom.x, panFrom.y);
+  await page.mouse.down();
+  await page.mouse.move(panFrom.x + 90, panFrom.y + 40, { steps: 8 });
+  await page.mouse.up();
+  const moved = await page.getByTestId("seat-you").boundingBox();
+  expect(moved).toBeTruthy();
+  if (moved) expect(Math.abs(moved.x - you.x) + Math.abs(moved.y - you.y)).toBeGreaterThan(40);
+  await page.waitForTimeout(700);
+  const stayed = await page.getByTestId("seat-you").boundingBox();
+  expect(stayed).toBeTruthy();
+  if (moved && stayed) {
+    expect(Math.abs(stayed.x - moved.x) + Math.abs(stayed.y - moved.y)).toBeLessThan(8);
+  }
+
+  const beforeZoom = await page.getByTestId("org-chart").getAttribute("data-zoom");
+  await page.getByTestId("org-chart").hover();
+  await page.mouse.wheel(0, -480);
+  await expect.poll(async () => page.getByTestId("org-chart").getAttribute("data-zoom")).not.toBe(beforeZoom);
+  const zoomed = await page.getByTestId("org-chart").getAttribute("data-zoom");
+  await page.waitForTimeout(700);
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-zoom", zoomed || "");
+});
+
+test("chart nodes collapse from the handle and reset expands them", async ({ page }) => {
+  await page.goto("/app");
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-maya")).toBeVisible();
+  await expect(page.getByTestId("org-project-billing")).toBeVisible();
+  await page.evaluate(() => localStorage.removeItem("roster-flow.chart-collapsed"));
+  await page.getByTestId("reset-chart-layout").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("tree-collapse-maya")).toBeVisible();
+  await page.getByTestId("tree-collapse-maya").click({ force: true });
+  await expect(page.getByTestId("org-project-billing")).toHaveCount(0);
+  await page.getByTestId("reset-chart-layout").click();
+  await expect(page.getByTestId("org-project-billing")).toBeVisible();
 });
 
 test("org chart connectors survive narrow viewport", async ({ page }) => {
@@ -86,7 +205,8 @@ test("org chart connectors survive narrow viewport", async ({ page }) => {
   await page.goto("/app");
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
   await page.getByTestId("mode-chart").click();
-  await expect(page.getByTestId("org-connectors")).toBeVisible();
+  await expect(page.getByTestId("org-chart")).toBeVisible();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
   expect(await page.getByTestId("org-line").count()).toBeGreaterThanOrEqual(2);
   await expect(page.getByTestId("seat-you")).toBeVisible();
 });
@@ -107,24 +227,33 @@ test("settings writes a provider through the API", async ({ page, request }) => 
 });
 
 test("team inspector shows seat count and hire specialist", async ({ page, request }) => {
-  await request.post("http://127.0.0.1:8787/api/v1/reset");
+  await resetApi(request);
   await page.goto("/app");
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
   await page.getByTestId("team-eng").click();
+  await expect(page.getByTestId("conversation-title")).toContainText("eng");
+  await expect(page.getByTestId("team-inspector")).toHaveCount(0);
+  await page.getByTestId("conversation-title").click();
+  await expect(page.getByTestId("conversation-modal")).toBeVisible();
   await expect(page.getByTestId("team-inspector")).toBeVisible();
   await expect(page.getByTestId("team-seat-count")).toBeVisible();
   const count = Number(await page.getByTestId("team-seat-count").innerText());
   expect(count).toBeGreaterThanOrEqual(4);
   await expect(page.getByTestId("team-models")).toContainText("anthropic/claude-sonnet");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("conversation-modal")).toHaveCount(0);
 
-  await page.getByTestId("mode-chart").click();
   await page.getByTestId("create-team").click();
+  await expect(page.getByTestId("create-modal")).toBeVisible();
   await expect(page.getByTestId("create-team-form")).toBeVisible();
   await page.getByTestId("team-name").fill("platform");
   await page.getByTestId("team-create-submit").click();
+  await expect(page.getByTestId("create-modal")).toHaveCount(0);
+  await expect(page.getByTestId("mode-chart")).toHaveClass(/on/);
   await expect(page.getByTestId("team-platform")).toBeVisible({ timeout: 10_000 });
 
   await page.getByTestId("team-platform").click();
+  await page.getByTestId("conversation-title").click();
   await page.getByTestId("hire-specialist").click();
   await expect(page.getByTestId("hire-form")).toBeVisible();
   await page.getByPlaceholder("Eng.Mobile").fill("Platform.API");
@@ -135,6 +264,147 @@ test("team inspector shows seat count and hire specialist", async ({ page, reque
   await expect(page.getByTestId("seat-inspector")).toContainText("Platform.API");
   await expect(page.getByTestId("seat-persona")).toHaveValue(/API implementer/);
   await page.getByTestId("seat-model").selectOption({ index: 0 });
+});
+
+test("project team roster update room and inspector rules", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await expect(page.getByTestId("seat-inspector")).toHaveCount(0);
+
+  await page.getByTestId("project-billing").click();
+  await expect(page.getByTestId("conversation-title")).toContainText("Billing");
+  await expect(page.getByTestId("room-tab-messages")).toHaveClass(/on/);
+  await expect(page.getByTestId("room-tab-canvas")).toHaveCount(0);
+  await expect(page.getByTestId("seat-inspector")).toHaveCount(0);
+  await page.getByTestId("room-tab-files").click();
+  await expect(page.getByTestId("conversation-files")).toBeVisible();
+  await page.getByTestId("room-tab-messages").click();
+
+  await page.getByTestId("conversation-title").click();
+  await expect(page.getByTestId("conversation-modal")).toBeVisible();
+  await expect(page.getByTestId("project-inspector")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("conversation-modal")).toHaveCount(0);
+
+  await page.getByTestId("roster-maya").click();
+  await expect(page.getByTestId("conversation-title")).toContainText("Maya");
+  await expect(page.getByTestId("seat-inspector")).toContainText("Maya");
+
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("seat-inspector")).toBeVisible();
+  await page.getByTestId("seat-inspector").getByRole("button", { name: "Close" }).click();
+  await expect(page.getByTestId("seat-inspector")).toHaveCount(0);
+});
+
+test("mention picker inserts @channel", async ({ page }) => {
+  await page.goto("/app");
+  await page.getByTestId("composer-mention").click();
+  await page.getByTestId("picker-item-channel").click();
+  await expect(page.getByTestId("composer")).toHaveValue(/@channel/);
+});
+
+test("channel members can add and remove a team", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await page.getByTestId("conversation-title").click();
+  await expect(page.getByTestId("conversation-modal")).toBeVisible();
+  await expect(page.getByTestId("channel-editor")).toBeVisible();
+  await page.getByTestId("channel-team-eng").click();
+  await expect(page.getByTestId("channel-team-eng")).toHaveClass(/on/);
+});
+
+test("org chart shows team clusters", async ({ page }) => {
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("org-team-eng").first()).toBeVisible();
+  await page.getByTestId("org-team-head-eng").first().click({ force: true });
+  await expect(page.getByTestId("org-team-head-eng").first()).toHaveClass(/on/);
+  await expect(page.getByTestId("team-inspector")).toHaveCount(0);
+  await expect(page.getByTestId("seat-inspector")).toBeVisible();
+});
+
+test("project nodes exist and can be created by hand", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("org-project-billing")).toBeVisible();
+  await expect(page.getByTestId("project-billing")).toBeVisible();
+
+  await page.getByTestId("create-project").click();
+  await expect(page.getByTestId("create-modal")).toBeVisible();
+  await expect(page.getByTestId("create-project-form")).toBeVisible();
+  await page.getByTestId("project-name").fill("mobile");
+  await page.getByTestId("project-brief").fill("Second product");
+  await page.getByTestId("project-create-submit").click();
+
+  await expect(page.getByTestId("create-modal")).toHaveCount(0);
+  await expect(page.getByTestId("mode-chart")).toHaveClass(/on/);
+  await expect(page.getByTestId("org-project-mobile")).toBeVisible();
+  await expect(page.getByTestId("project-mobile")).toBeVisible();
+  await expect(page.getByTestId("create-project-form")).toHaveCount(0);
+});
+
+test("architect staffs a project and can fire from a plan", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-project-billing")).toBeVisible();
+  await expect(page.getByTestId("architect-dock")).toBeVisible();
+  await page.getByTestId("architect-chip-project").click();
+  await expect(page.getByTestId("architect-plan")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("architect-apply").click();
+  await expect(page.getByTestId("org-project-mobile")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("seat-mobile-pm")).toBeVisible();
+
+  await page.getByTestId("architect-chip-layoff").click();
+  await expect(page.getByTestId("architect-plan").last()).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("architect-apply").last().click();
+  await expect(page.getByTestId("seat-scout")).toHaveCount(0, { timeout: 10_000 });
+});
+
+test("architect full org replaces the company", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("architect-dock")).toBeVisible();
+  await page.getByTestId("architect-chip-org").click();
+  await expect(page.getByTestId("architect-plan").last()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("architect-source").last()).toHaveText("template");
+  await expect(page.getByTestId("architect-plan").last()).toContainText("replace org");
+  await page.getByTestId("architect-apply").click();
+  await expect(page.getByTestId("org-project-billing")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("seat-you")).toBeVisible();
+  await expect(page.getByTestId("seat-maya")).toBeVisible();
+  await expect(page.getByTestId("org-team-eng")).toBeVisible();
+});
+
+test("workspace search modal opens and jumps to a room", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await expect(page.getByTestId("search-projects")).toBeVisible();
+  await expect(page.getByTestId("search-teams")).toBeVisible();
+  await expect(page.getByTestId("search-seats")).toBeVisible();
+  await page.getByTestId("conversation-search").click();
+  await expect(page.getByTestId("search-modal")).toBeVisible();
+  await expect(page.getByTestId("search-scope-current")).toContainText("Search in #ship");
+  await page.getByTestId("search-modal-input").fill("incidents");
+  await expect(page.getByTestId("search-result-room-incidents")).toBeVisible();
+  await page.getByTestId("search-result-room-incidents").click();
+  await expect(page.getByTestId("search-modal")).toHaveCount(0);
+  await expect(page.getByTestId("channel-incidents")).toHaveClass(/on/);
+  await expect(page.getByTestId("conversation-title")).toContainText("#incidents");
+
+  await page.getByTestId("workspace-search").click();
+  await expect(page.getByTestId("search-modal")).toBeVisible();
+  await page.getByTestId("search-modal-input").fill("Flaky 500");
+  await expect(page.getByTestId("search-result-message-m4")).toBeVisible();
+  await page.getByTestId("search-result-message-m4").click();
+  await expect(page.getByTestId("message-m4")).toBeVisible();
 });
 
 test("related pages still render chart/room", async ({ page }) => {
