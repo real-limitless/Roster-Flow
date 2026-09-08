@@ -25,7 +25,7 @@ Screenshots live in [`docs/images/`](docs/images/). Re-shoot from [`docs/campaig
 
 Slack proved work happens in conversation. OpenCode proved the unit of AI labor is a harnessed agent. Those still live in different tabs.
 
-![Floor compiles a sentence into a run you still own](docs/images/campaign-orchestration.png)
+![Channel compiles a sentence into a run you still own](docs/images/campaign-orchestration.png)
 
 **You need this when:**
 
@@ -42,6 +42,7 @@ npm run standup
 ```
 
 - Marketing: http://127.0.0.1:5173/
+- First-run setup: http://127.0.0.1:5173/setup
 - Workspace: http://127.0.0.1:5173/app
 - Settings (providers / models): http://127.0.0.1:5173/app/settings
 - CORE API: http://127.0.0.1:8787/api/v1/health

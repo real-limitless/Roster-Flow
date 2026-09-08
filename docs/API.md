@@ -2,22 +2,41 @@
 
 Base URL: `http://127.0.0.1:8787` (Vite proxies `/api` there in `npm run dev`).
 
-Local standup has **no real auth**. Optional header: `Authorization: Bearer roster-demo`.
+Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`.
+
+Existing `.roster-flow/state.json` without an `onboarding` field is treated as already complete.
 
 All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, `qa`, …).
+
+## Setup and auth
+
+Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/setup/status` | Wizard resume (`step`: install / first_user / login / harness / welcome / done) |
+| POST | `/api/v1/setup/install` | Mark the installation checklist seen |
+| POST | `/api/v1/setup/first-user` | Create the owner `{ name, email, password }` — **409** if a user exists |
+| POST | `/api/v1/setup/harness` | `{ skipped?: true }` — mark harness step done |
+| POST | `/api/v1/setup/complete` | `{ template: "starter" \| "empty" }` applies the org and finishes setup |
+| POST | `/api/v1/auth/login` | `{ email, password }` → `{ token, user }` |
+| GET | `/api/v1/auth/me` | Current owner |
+| POST | `/api/v1/auth/logout` | Drop this token |
+
+`GET /api/v1/state` never includes `users` or `authSessions`. Passwords are scrypt hashes.
 
 ## Health and harness
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/health` | API + OpenCode status (`harness: "up" \| "offline"`) |
-| POST | `/api/v1/harness/ensure` | Start or reuse `opencode serve` (Everflow ensure pattern) |
-| GET | `/api/v1/harness` | Port, version, workspace, plugin path |
+| GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness` |
+| POST | `/api/v1/harness/ensure` | Start or reuse `opencode serve` (`{ forceRestart, kind?: "company" \| "system" }`) |
+| GET | `/api/v1/harness` | Company serve plus `systemHarness` (Architect / Channel) |
 | WS | `/api/v1/harness/pty?seat=<id>` | xterm PTY: `opencode attach --session` |
 | POST | `/api/v1/seats/:id/attach` | Ensure serve, wake seat, return real `sessionId` + attach command |
 | GET | `/api/v1/opencode/config` | Current `opencode.json` written by settings |
 
-`POST /api/v1/harness/ensure` body: `{ "forceRestart": false }`.
+`POST /api/v1/harness/ensure` body: `{ "forceRestart": false, "kind": "company" }`. `kind: "system"` starts the dedicated System serve (port `OPENCODE_SYSTEM_PORT` / 14181, workspace `.roster-flow/system`). Architect chat auto-ensures System.
 
 ## Teams and bots
 
@@ -26,33 +45,65 @@ Staffed teams (`eng`, `services`) always have a **Supervisor** and a **Generic**
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/v1/teams` | Rosters plus `seatCount` and `models[]` in use |
-| POST | `/api/v1/teams` | Create a staffed team (Supervisor + Generic) |
+| POST | `/api/v1/teams` | Create a staffed team (Supervisor + Generic + optional specialists) |
 | GET | `/api/v1/teams/:id` | One team, enriched |
-| PATCH | `/api/v1/teams/:id` | Default model (Generic inherits) |
+| PATCH | `/api/v1/teams/:id` | Charter, default/fallback model, strategy |
 | GET | `/api/v1/bots` | Bot seats only |
 | GET | `/api/v1/seats` | Full org (humans + bots) |
-| POST | `/api/v1/seats` | Hire a seat (specialist when `team` is set) |
+| GET | `/api/v1/organizations` | Single starter org |
+| GET | `/api/v1/projects` | Projects under the org |
+| POST | `/api/v1/projects` | Create a project (`name`, `brief`, `constitution`) |
+| GET | `/api/v1/projects/:id` | One project |
+| PATCH | `/api/v1/projects/:id` | Brief, constitution, PM seat, teams |
+| POST | `/api/v1/seats` | Hire a seat (specialist when `team` is set; `projectId` + `asPm` for a project PM) |
 | PATCH | `/api/v1/seats/:id` | Reparent, model, persona, instructions, tools |
+| DELETE | `/api/v1/seats/:id` | Fire a seat (not `you` or system). Orphans reparent to the manager. |
 
 `POST /api/v1/teams`:
 
 ```json
-{ "name": "platform", "defaultModel": "anthropic/claude-sonnet" }
+{
+  "name": "platform",
+  "role": "Platform",
+  "description": "Shared infra",
+  "job": "Keep CI green",
+  "rules": "No prod deploys",
+  "defaultModel": "anthropic/claude-sonnet",
+  "fallbackModel": "xai/grok-4",
+  "modelStrategy": "round_robin",
+  "specialists": [{ "name": "Platform.API", "persona": "API implementer." }]
+}
 ```
 
-Creates `platform-supervisor` and `platform-generic`. `POST /api/v1/seats` with `{ "team": "platform", "seatType": "specialist", "persona": "…", "instructions": "…" }` appends to `seatIds`.
+Creates `platform-supervisor` and `platform-generic`. Optional `specialists[]` hire at create time. `modelStrategy` is `default` | `random` | `round_robin` | `fuse`.
 
 `to: "team:eng"` on the bus wakes that team's Supervisor.
 
 Seat `model` is an OpenCode catalog id (`provider/model`). Changing a bot seat rewrites `.opencode/agents/<id>.md`.
 
+`POST /api/v1/teams` accepts `projectId` to hang the team under a project. Unset `projectId` means org-shared (services).
+
+## Architect
+
+Chart-mode planner. Proposes an `OrgPlan`; nothing mutates until Apply.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/architect/chat` | `{ message, history? }` → `{ reply, plan, source }` |
+| POST | `/api/v1/architect/apply` | `{ planId }` applies ops via hire / team / fire / create_project |
+| GET | `/api/v1/architect/plans/:id` | Stored plan |
+
+`source` is `live` when the Architect System-harness session answered. Keyword templates run only when `ROSTER_ARCHITECT_MODE=template` (tests). Missing OpenCode is an error, not a silent mock. Ops: `replace_org`, `create_project`, `create_team`, `hire`, `reparent`, `fire` (max 48). `replace_org` keeps You / Channel / Architect and clears the rest before later ops.
+
 ## Rooms and threads
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/channels` | Channels |
+| GET | `/api/v1/channels` | Channels plus membership |
+| POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
+| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
-| POST | `/api/v1/channels/:id/messages` | Post as You (or `{ "who": "Maya" }`) |
+| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake |
 | GET | `/api/v1/threads` | Thread index |
 | GET | `/api/v1/threads/:id` | One thread |
 
@@ -69,7 +120,7 @@ Seat `model` is an OpenCode catalog id (`provider/model`). Changing a bot seat r
 }
 ```
 
-`text` may be empty when at least one of `skills`, `files`, or `attachments` is present. Those fields are stored on the message (metadata only — no blob store). If the text looks like a ship-train sentence, the API compiles a run (same as the workspace “Run ship train” button).
+`text` may be empty when at least one of `skills`, `files`, `attachments`, or `blocks` is present. Mentions wake the bus: `@build` a seat, `@eng` the team Supervisor, `@channel` notifies members and wakes the Channel conductor.
 
 ## Bot / team messaging
 
@@ -101,25 +152,27 @@ Seat `model` is an OpenCode catalog id (`provider/model`). Changing a bot seat r
 
 `wake: true` starts (or continues) the recipient’s OpenCode session when the harness is up.
 
-## Autonomous runs
+`POST /api/v1/messages` and `POST /api/v1/bus/send` also accept optional `blocks` (Roster Block Kit array). `text` may be omitted when `blocks` is present.
+
+## Roster Block Kit
+
+Bots can attach a Slack-shaped `blocks` array on room messages. Types: `header`, `section`, `divider`, `context`, `image`, `actions`, `markdown`. Buttons with `action_id` post back to the originating seat.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/runs` | Compile + start a run |
-| GET | `/api/v1/runs` | Recent runs |
-| GET | `/api/v1/runs/:id` | Status, steps, bus ids |
-| POST | `/api/v1/runs/:id/cancel` | Kill switch |
+| POST | `/api/v1/block-actions` | `{ messageId, actionId, value?, userId? }` → bus `block_actions` + wake |
 
-`POST /api/v1/runs`:
+Builder UI: `/app/blocks`. SDK: `roster-flow-blocks` (`Blocks`, `Elements`, `validateBlocks`).
 
 ```json
 {
-  "prompt": "Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.",
-  "channel": "ship"
+  "text": "New request",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "New request" } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*Type:* Paid Time Off" } }
+  ]
 }
 ```
-
-Steps default to Product → Eng.Build → Eng.Review → You (confirm) → DevOps → QA. Each bot step posts to the channel and sends a bus handoff to the next seat. With OpenCode up, bot steps also `prompt` that seat’s session.
 
 ## OpenCode sessions (proxy)
 

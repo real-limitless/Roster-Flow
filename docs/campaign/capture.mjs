@@ -44,7 +44,7 @@ const shots = [
     ready: (page) => page.getByTestId("workspace-shell"),
     prepare: async (page) => {
       await page.getByTestId("channel-ship").click();
-      await page.getByText("Compiled run ship-billing").first().waitFor({ state: "visible" });
+      await page.getByTestId("blocks-m2").waitFor({ state: "visible" });
     },
   },
   {

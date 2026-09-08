@@ -9,7 +9,7 @@ Goal: an AI agent can install, seed, open the site, and bug-test Room / Harness 
 - Optional: [OpenCode CLI](https://opencode.ai) on `PATH`, or `OPENCODE_BIN=/path/to/opencode`
 - Optional provider keys in the environment (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …)
 
-No login. Local demo is open. Seed roster loads automatically.
+First run: open http://127.0.0.1:5173/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds.
 
 ## Install
 
@@ -31,7 +31,7 @@ This starts:
 | Process | URL | Role |
 |---|---|---|
 | CORE API | http://127.0.0.1:8787 | Teams, bots, bus, harness wrapper |
-| Vite | http://127.0.0.1:5173 | Marketing + `/app` workspace |
+| Vite | http://127.0.0.1:5173 | Marketing + `/setup` + `/app` workspace |
 
 Or separately:
 
@@ -52,6 +52,8 @@ curl -s http://127.0.0.1:5173/app
 | URL | What to test |
 |---|---|
 | http://127.0.0.1:5173/ | Marketing home |
+| http://127.0.0.1:5173/setup | First-run wizard (skipped when `ROSTER_SKIP_ONBOARDING=1`) |
+| http://127.0.0.1:5173/login | Owner sign-in after setup |
 | http://127.0.0.1:5173/app | Live workspace (Room default) |
 | http://127.0.0.1:5173/app?mode=chart | Org chart |
 | http://127.0.0.1:5173/app/settings | Providers / models |
@@ -60,29 +62,29 @@ curl -s http://127.0.0.1:5173/app
 
 ## Auth
 
-None. If you send `Authorization: Bearer roster-demo` the API accepts it. Do not invent other tokens.
+Local owner after `/setup`. Playwright sets `ROSTER_SKIP_ONBOARDING=1`; then `Authorization: Bearer roster-demo` is still accepted. Do not invent other tokens.
 
 ## Seed / demo data
 
-On first API boot, `server/seed.mjs` writes `.roster-flow/state.json` from the same starter company as `src/data.ts`:
+On first API boot **with skip** (or after the welcome step picks **starter company**), `server/seed.mjs` writes `.roster-flow/state.json` from the same starter company as `src/data.ts`. Welcome can also pick an **empty org** (You + Channel + Architect, `#general` only). Existing data dirs without an `onboarding` field migrate as already complete. The starter roster:
 
 - Channels: `#ship`, `#incidents`, `#eng-agents`, `#general`
-- Seats: You, Maya, Jules, Priya, Floor, Product, Eng Supervisor + Eng Generic, Eng.Build, Eng.Review, DevOps, QA, Services Supervisor + Generic, Scout, Docs, Sec, Scribe
+- Seats: You, Maya, Jules, Priya, Channel, Architect, Product, Eng Supervisor + Eng Generic, Eng.Build, Eng.Review, DevOps, QA, Services Supervisor + Generic, Scout, Docs, Sec, Scribe
 - Staffed teams: `@eng` and `@services` (Supervisor + Generic). `ship` is a run roster.
 - Seed messages in `#ship` and `#incidents`
 
-Reset:
+Reset (starter company, skip wizard):
 
 ```bash
 rm -rf .roster-flow/state.json
-npm run api
+ROSTER_SKIP_ONBOARDING=1 npm run api
 ```
 
 ## Stable selectors (use these, not CSS soup)
 
 | `data-testid` | Where |
 |---|---|
-| `team-eng` `team-inspector` `team-seat-count` | Teams rail + inspector |
+| `team-eng` `team-inspector` `team-seat-count` | Teams rail + title-modal inspector |
 | `hire-form` `hire-persona` `seat-model` | Specialist hire + seat model |
 | `workspace-shell` | `/app` root |
 | `mode-room` `mode-harness` `mode-chart` | Triple-mode toggle |
@@ -94,25 +96,43 @@ npm run api
 | `picker-item-{id}` | Picker row (`deploy`, `billing-webhook-ts`) |
 | `message-{id}` | Thread row, e.g. `message-m2` |
 | `chip-skill-{id}` `chip-file-{slug}` | Chips on a sent message |
-| `run-ship-train` | Starts the compiled pipeline |
+| `open-block-kit` | Opens `/app/blocks` builder |
 | `org-chart` | Chart canvas |
+| `architect-dock` `architect-plan` `architect-source` | Chart Architect |
 | `org-connectors` | SVG overlay (paths should hit seats) |
 | `seat-{id}` | Seat button, e.g. `seat-build` |
-| `seat-inspector` | Right inspector |
+| `conversation-header` `conversation-title` `conversation-members` `conversation-search` | Slack-style room chrome (Search opens modal) |
+| `workspace-search` | Top-bar search icon button |
+| `search-projects` `search-teams` `search-seats` | Rail search icon buttons |
+| `search-modal` `search-modal-input` | Workspace-wide search dialog |
+| `search-scope-current` `search-scope-chip` | Scope to this conversation |
+| `search-recent-{n}` | Recent query row |
+| `search-result-{kind}-{id}` | Result row (`room`, `seat`, `team`, `project`, `message`) |
+| `room-tab-messages` `room-tab-files` | Room tabs |
+| `conversation-modal` | Title-click About modal |
+| `roster-{id}` | Roster rail row (opens DM) |
+| `toggle-inspector` | Show / hide seat panel |
+| `seat-inspector` | Right person inspector |
 | `attach-harness` | Inspector attach |
 | `harness-term` `harness-xterm` | Live OpenCode TUI (xterm) |
 | `settings-providers` | Settings form |
 | `provider-id` `provider-save` | Add provider |
 | `access-form` | `/access` |
+| `setup-page` `setup-step-install` `setup-step-first-user` `setup-step-login` `setup-step-harness` `setup-step-welcome` | `/setup` wizard |
+| `setup-name` `setup-email` `setup-password` `setup-create-owner` | First user |
+| `setup-login-email` `setup-login-password` `setup-login-submit` | First login |
+| `setup-skip-harness` `setup-template-empty` `setup-enter-workspace` | Harness skip + welcome |
+| `login-page` | `/login` |
 
 ## Playwright
 
 ```bash
 # API + Vite are started by webServer in playwright.config.ts
+# The API always starts with ROSTER_SKIP_ONBOARDING=1 (does not reuse a leftover :8787).
 npm run test:e2e
 ```
 
-Smoke covers: home render, workspace room send, skill/file chips, click message to open seat inspector, ship-train run card, org chart connectors present, settings provider save.
+Smoke covers: home render, workspace room send, skill/file chips, click message to open seat inspector, Block Kit seed + builder, org chart connectors present, settings provider save, Architect staff-a-project apply, layoff apply. `tests/e2e/onboarding.spec.ts` walks `/setup` against an isolated API (no skip).
 
 Headed (watch the agent):
 
@@ -125,9 +145,10 @@ npm run test:e2e -- --headed
 ```bash
 export OPENCODE_BIN=$(command -v opencode)
 curl -s -X POST http://127.0.0.1:8787/api/v1/harness/ensure -H 'content-type: application/json' -d '{"forceRestart":false}'
+curl -s -X POST http://127.0.0.1:8787/api/v1/harness/ensure -H 'content-type: application/json' -d '{"kind":"system"}'
 ```
 
-If the CLI is missing, health returns `"harness":"offline"` and the room still works. That is expected — do not treat it as a site bug.
+If the CLI is missing, health returns `"harness":"offline"` and the room still works. Chart Architect needs the **System** harness (`systemHarness`); without OpenCode it errors instead of mocking a plan. Playwright sets `ROSTER_ARCHITECT_MODE=template` so CI does not need the CLI.
 
 Two-bot proof (needs a provider key in env or Settings):
 
@@ -135,7 +156,7 @@ Two-bot proof (needs a provider key in env or Settings):
 npm run prove:two-bot
 ```
 
-This posts `product → build` with `wake: true`. It does **not** click Run ship train. Exit 2 means no key; exit 1 is a real failure.
+This posts `product → build` with `wake: true`. Exit 2 means no key; exit 1 is a real failure.
 
 Plugin + bus unit tests:
 
@@ -147,9 +168,9 @@ npm run test:unit
 
 1. `/` — hero, Room \| Harness \| Chart mock toggles.
 2. `/app` — send a message in `#ship`; it appears. Attach a skill and a workspace file; chips land on the message.
-3. Click a Floor or Product message — inspector shows that seat.
-4. Click **Run ship train** — Floor run card + bot messages land.
-5. Mode **Chart** — connectors from parent seats to children (not floating mid-canvas). Resize to ~390px; lines still meet seats.
+3. Click a Channel or Product message — right Seat inspector shows that seat. Click Project/Team in the rail — Room header switches; inspector stays closed until a person is clicked. Title click opens the About modal.
+4. Click **Block Kit** — builder preview + JSON. Seed Channel message in `#ship` shows rich blocks.
+5. Mode **Chart** — connectors stay in the gutter between rows (they should not cut through sibling boxes). Drag empty canvas to pan; scroll to zoom; the view must stay put until Reset layout. Seats still click to select. Resize to ~390px; lines still meet seats.
 6. Click `seat-build` — inspector shows tools; **Attach harness** flips mode.
 7. `/app/settings` — add a custom provider; GET `/api/v1/providers` shows it.
 8. `/access` — submit form, success copy.

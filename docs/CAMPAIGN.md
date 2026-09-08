@@ -26,7 +26,7 @@ Roster-flow puts those on one floor. You say, in `#ship`:
 
 > Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.
 
-Floor compiles a run. Product writes acceptance. Eng.Build and Eng.Review work. You confirm. DevOps deploys. QA reports. The thread is the audit log. Any seat opens in Harness mode on the same OpenCode session.
+Channel compiles a run. Product writes acceptance. Eng.Build and Eng.Review work. You confirm. DevOps deploys. QA reports. The thread is the audit log. Any seat opens in Harness mode on the same OpenCode session.
 
 ## Differentiators (do not overclaim)
 

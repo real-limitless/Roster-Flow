@@ -16,7 +16,7 @@ Three surfaces, same seats and (when the harness is up) the same OpenCode sessio
 | **Harness** | OpenCode TUI / CLI | Session, tool trace, attach |
 | **Chart** | Living org tree | Seat, reporting line, run path |
 
-A **bot** is an OpenCode agent with a Roster-flow identity: name, reports-to, allow/deny tools, model, owner. A **team** is a named roster you can @mention (`@eng`, `@qa`). **Floor** is the conductor: it compiles a human sentence into a run graph; it does not ship code.
+A **bot** is an OpenCode agent with a Roster-flow identity: name, reports-to, allow/deny tools, model, owner. A **team** is a named roster you can @mention (`@eng`, `@qa`). **Channel** is the conductor: it compiles a human sentence into a run graph and owns `@channel`. It does not ship code. A **room** (`#ship`) is a membership list of teams and seats.
 
 ## Hierarchy
 
@@ -24,12 +24,12 @@ A **bot** is an OpenCode agent with a Roster-flow identity: name, reports-to, al
 Organization
  └── Project          (repo / product)
       └── Team        (named roster)
-           ├── Conductor (Floor)
+           ├── Conductor (Channel)
            ├── Specialist bots  (each = OpenCode agent)
            └── Human members
 ```
 
-The starter company in `src/data.ts` and the API seed is the same tree: You / Maya / Jules / Priya plus Product, Eng.Build, Eng.Review, DevOps, QA, and a services lane (Scout, Docs, Sec, Scribe).
+The starter company is one **organization** (`roster-flow`) with project **billing** (today’s ship-train). Product is that project’s PM. `@eng`, DevOps, and QA hang off billing. `@services` is org-shared. **Architect** is a system seat: it proposes org plans on the Chart from a dedicated **System** OpenCode harness (not the company serve used by product bots). The Channel conductor still compiles ship-train runs and owns `@channel`. Multiple projects can sit under the org; each project PM has its own persona, instructions, knowledge, and skills.
 
 ## How OpenCode is used (Everflow pattern)
 
@@ -43,9 +43,9 @@ The starter company in `src/data.ts` and the API seed is the same tree: You / Ma
 
 Roster-flow CORE does the same locally, without Everflow sandboxes:
 
-- `server/harness.mjs` resolves `OPENCODE_BIN` or `opencode` on `PATH`, binds a free port, runs `opencode serve --hostname 127.0.0.1 --port <n>`, waits on `/global/health`.
-- `server/index.mjs` exposes Roster-flow resources (teams, bots, threads, runs, bus) and **proxies** OpenCode session/prompt when the harness is healthy.
-- If OpenCode is not installed, the API stays up in **harness-offline** mode: room, chart, bus, and scripted ship-train still work; prompts are not faked as a real model.
+- `server/harness.mjs` resolves `OPENCODE_BIN` or `opencode` on `PATH` and can run **two** serves: company (product bots, default port 14180) and System (Architect / Channel, port 14181, cwd `.roster-flow/system`).
+- `server/index.mjs` exposes Roster-flow resources (teams, bots, threads, runs, bus) and **proxies** OpenCode session/prompt when the matching harness is healthy.
+- If OpenCode is not installed, the API stays up in **harness-offline** mode: room, chart, bus, and scripted ship-train still work; Architect chat fails clearly instead of faking a model. `ROSTER_ARCHITECT_MODE=template` is test-only.
 
 ## Bot-to-bot (Grok Bot + Oh My OpenAgent)
 
@@ -53,7 +53,7 @@ Faithful behaviors we implement (not UI-only):
 
 - **Autonomous work** — a run wakes each seat in order (or in parallel when the graph says so). Each bot has its own OpenCode session when the harness is up.
 - **Inter-bot mail** — `send_message` / `handoff` / `report` / `ask_human` on an audited bus (Oh My OpenAgent team mailbox pattern: fire-and-forget, inbox, wake idle recipient).
-- **Chief of staff** — Floor routes; specialists execute; humans confirm deploy/merge.
+- **Chief of staff** — Channel routes; specialists execute; humans confirm deploy/merge.
 - **Group thread** — the Room channel is the shared log (Grok Bot group chat).
 
 The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools so an agent inside the harness can talk to peers through the same bus.
@@ -68,12 +68,14 @@ CORE API (:8787)
     ├── store  (.roster-flow/state.json)
     ├── bus    (messages, cycle detect)
     ├── providers → writes .opencode/opencode.json + auth sidecar
-    └── harness → opencode serve → sessions / prompt
-              └── plugin roster-flow-opencode (roster_* tools → API)
+    └── harness
+          ├── company serve → product-bot sessions
+          └── system serve  → Architect / Channel
+                    └── plugin roster-flow-opencode (roster_* tools → API)
 ```
 
 ## What is not in this slice
 
 - Multi-tenant cloud sandboxes (that is Everflow’s product).
-- Real SSO. Local demo uses no login, or `Authorization: Bearer roster-demo`.
+- Real SSO. Local first-run is an owner account (name, email, password) plus a bearer session. `ROSTER_SKIP_ONBOARDING=1` keeps the open-API demo path and still accepts `Authorization: Bearer roster-demo`.
 - OpenChamber / OpenCode web iframe. Harness embeds `opencode attach` in xterm (PTY), not a second web app.
