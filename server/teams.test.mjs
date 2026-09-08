@@ -24,6 +24,26 @@ test("createStaffedTeam adds Supervisor and Generic", () => {
   assert.equal(teamWakeTarget("team:platform", state.teams), "platform-supervisor");
 });
 
+test("createStaffedTeam stores charter and specialists", () => {
+  const state = emptyState();
+  const { team, seats } = createStaffedTeam(state, {
+    name: "platform",
+    role: "Platform",
+    description: "Shared infra",
+    job: "Keep CI green",
+    rules: "No prod deploys",
+    defaultModel: "openai/gpt-5",
+    fallbackModel: "xai/grok-4",
+    modelStrategy: "round_robin",
+    specialists: [{ name: "Platform.API", job: "Own the API", persona: "API implementer." }],
+  });
+  assert.equal(team.role, "Platform");
+  assert.equal(team.job, "Keep CI green");
+  assert.equal(team.modelStrategy, "round_robin");
+  assert.ok(seats.some((s) => s.id === "platform-api"));
+  assert.match(seats[0].instructions, /Team charter/);
+});
+
 test("attachSeatToTeam keeps seatIds unique", () => {
   const state = emptyState();
   attachSeatToTeam(state, "eng", "build");

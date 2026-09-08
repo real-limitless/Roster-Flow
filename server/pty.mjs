@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { ensure, status as harnessStatus, whichOpenCode } from "./harness.mjs";
+import { ensure, status as harnessStatus, whichOpenCode, harnessKindForSeat, workspacePath } from "./harness.mjs";
 import { getState } from "./store.mjs";
 import { ensureSeatSession } from "./bus.mjs";
 
@@ -121,17 +121,18 @@ async function handlePty(ws, seatId, params) {
       return;
     }
     send({ type: "status", status: "connecting" });
+    const kind = harnessKindForSeat(seat);
     try {
-      await ensure({});
+      await ensure({ kind });
     } catch (err) {
       send({ type: "status", status: "error", detail: err.message || "ensure failed" });
       ws.close();
       return;
     }
-    const h = harnessStatus();
+    const h = harnessStatus(kind);
     const binary = whichOpenCode();
     if (h.harness !== "up" || !binary || !h.port) {
-      send({ type: "status", status: "error", detail: "OpenCode harness is offline" });
+      send({ type: "status", status: "error", detail: kind === "system" ? "System OpenCode harness is offline" : "OpenCode harness is offline" });
       ws.close();
       return;
     }
@@ -150,7 +151,7 @@ async function handlePty(ws, seatId, params) {
       sessionId,
       cols,
       rows,
-      cwd: root,
+      cwd: kind === "system" ? workspacePath("system") : root,
       env: process.env,
     });
     send({

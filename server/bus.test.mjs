@@ -48,6 +48,34 @@ test("wakeSeat routes team: addresses to the Supervisor", async () => {
   }
 });
 
+test("wakeSeat stores Architect sessions on systemSessions", async () => {
+  const prompts = [];
+  const kinds = [];
+  const prev = { ...deps };
+  deps.harnessStatus = (kind) => ({ harness: kind === "system" ? "up" : "offline" });
+  deps.createSession = async ({ title }, kind) => {
+    kinds.push(kind);
+    return { id: `ses_${title}` };
+  };
+  deps.promptSession = async (id, body, kind) => {
+    prompts.push({ id, agent: body.agent, kind });
+  };
+  mutate((s) => {
+    s.systemSessions = { ...(s.systemSessions || {}) };
+    delete s.systemSessions.architect;
+  });
+  try {
+    const result = await wakeSeat("architect", "propose a plan", { from: "you", kind: "architect" });
+    assert.ok(result.sessionId);
+    assert.equal(result.harness, "system");
+    assert.deepEqual(kinds, ["system"]);
+    assert.equal(prompts[0].kind, "system");
+    assert.equal(prompts[0].agent, "architect");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("wakeSeat recreates session after 404", async () => {
   const prompts = [];
   const prev = { ...deps };

@@ -25,25 +25,45 @@ export function buildTools(tool, fetchApi = api) {
   const z = tool.schema;
   return {
     roster_list_seats: tool({
-      description: "List Roster-flow org-chart seats (humans and OpenCode bots) and teams.",
+      description: "List Roster-flow org-chart seats (humans and OpenCode bots), teams, and projects.",
       args: {},
       async execute() {
-        const [seats, teams] = await Promise.all([fetchApi("/api/v1/seats"), fetchApi("/api/v1/teams")]);
-        return { title: "Roster", output: JSON.stringify({ seats, teams }, null, 2) };
+        const [seats, teams, projects] = await Promise.all([
+          fetchApi("/api/v1/seats"),
+          fetchApi("/api/v1/teams"),
+          fetchApi("/api/v1/projects").catch(() => []),
+        ]);
+        return { title: "Roster", output: JSON.stringify({ seats, teams, projects }, null, 2) };
+      },
+    }),
+    roster_propose_org: tool({
+      description: "Propose an OrgPlan (replace_org, create_project, hire, fire). Does not apply. Human Apply commits.",
+      args: {
+        message: z.string().describe("What to staff, create, or cut"),
+      },
+      async execute(args) {
+        const out = await fetchApi("/api/v1/architect/chat", {
+          method: "POST",
+          body: JSON.stringify({ message: args.message }),
+        });
+        return { title: out.plan?.summary || "Org plan", output: JSON.stringify(out) };
       },
     }),
     roster_send_message: tool({
-      description: "Send a message to a seat id, team:eng, or channel:ship on the audited bus.",
+      description:
+        "Send a message to a seat id, team:eng, or channel:ship on the audited bus. Optional blocks is a Roster Block Kit JSON array.",
       args: {
         to: z.string().describe("Seat id, team:<id>, or channel:<id>"),
-        text: z.string().describe("Message body"),
+        text: z.string().describe("Message body (fallback if blocks are set)"),
         from: z.string().optional().describe("Your seat id if known"),
+        blocks: z.string().optional().describe("Optional Roster Block Kit JSON array"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
+        const blocks = parseBlocks(args.blocks);
         const entry = await fetchApi("/api/v1/messages", {
           method: "POST",
-          body: JSON.stringify({ to: args.to, text: args.text, from, wake: true }),
+          body: JSON.stringify({ to: args.to, text: args.text, from, wake: true, blocks }),
         });
         return { title: `→ ${args.to}`, output: JSON.stringify(entry) };
       },
@@ -65,15 +85,17 @@ export function buildTools(tool, fetchApi = api) {
       },
     }),
     roster_report: tool({
-      description: "Post a structured result back to the originating Room thread.",
+      description: "Post a structured result back to the originating Room thread. Optional blocks is Roster Block Kit JSON.",
       args: {
         text: z.string(),
         channel: z.string().optional(),
         from: z.string().optional(),
+        blocks: z.string().optional().describe("Optional Roster Block Kit JSON array"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
         const channel = args.channel || "ship";
+        const blocks = parseBlocks(args.blocks);
         const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
           body: JSON.stringify({
@@ -83,6 +105,7 @@ export function buildTools(tool, fetchApi = api) {
             text: args.text,
             channel,
             wake: false,
+            blocks,
           }),
         });
         return { title: "report", output: JSON.stringify(entry) };
@@ -109,10 +132,16 @@ export function buildTools(tool, fetchApi = api) {
   };
 }
 
+function parseBlocks(raw) {
+  if (!raw) return undefined;
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  return Array.isArray(parsed) ? parsed : parsed?.blocks;
+}
+
 function guessSeat(agent) {
-  if (!agent) return "floor";
+  if (!agent) return "channel";
   const a = String(agent).toLowerCase().replace(/[^a-z0-9-]/g, "");
-  return a || "floor";
+  return a || "channel";
 }
 
 /** @type {import('@opencode-ai/plugin').Plugin} */
@@ -144,7 +173,11 @@ export async function RosterFlowPlugin(_input) {
     },
     async "experimental.chat.system.transform"(_input, output) {
       try {
-        const seats = await api("/api/v1/seats");
+        const [seats, teams, channels] = await Promise.all([
+          api("/api/v1/seats"),
+          api("/api/v1/teams"),
+          api("/api/v1/channels"),
+        ]);
         const roster = seats
           .filter((s) => s.kind === "bot")
           .map((s) => {
@@ -159,11 +192,18 @@ export async function RosterFlowPlugin(_input) {
             return bits.filter(Boolean).join(" · ");
           })
           .join("\n");
+        const rooms = (channels || [])
+          .map((c) => `${c.name} teams=${(c.teamIds || []).join(",") || "—"} seats=${(c.seatIds || []).join(",") || "—"}`)
+          .join("\n");
         output.system.push(
           "You are a Roster-flow seat. Stay in your persona and follow your instructions.",
           "Peers are other OpenCode agents on the same org chart.",
           "Talk through roster_send_message / roster_handoff / roster_report. Do not impersonate peers.",
-          "Mail to team:<id> reaches that team's Supervisor. ask_human walks reports_to. Floor owns the org run graph.",
+          "You may attach Roster Block Kit via roster_send_message / roster_report `blocks` (JSON array of header|section|divider|context|image|actions|markdown).",
+          "Mail to team:<id> reaches that team's Supervisor. @channel notifies room members and wakes the Channel conductor.",
+          "ask_human walks reports_to. Channel owns the org run graph. Architect proposes OrgPlan JSON; humans Apply.",
+          `Teams: ${(teams || []).map((t) => t.name).join(", ")}`,
+          `Rooms:\n${rooms}`,
           `Roster:\n${roster}`,
         );
       } catch {

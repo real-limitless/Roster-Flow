@@ -1,22 +1,24 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { emptyState, migrateState } from "./seed.mjs";
+import { bootState, migrateState, starterState } from "./seed.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const dataDir = join(root, ".roster-flow");
+const fromEnv = process.env.ROSTER_DATA_DIR;
+export const dataDir = fromEnv ? (isAbsolute(fromEnv) ? fromEnv : join(root, fromEnv)) : join(root, ".roster-flow");
 export const statePath = join(dataDir, "state.json");
 
 function load() {
-  if (!existsSync(statePath)) return emptyState();
+  if (!existsSync(statePath)) return migrateState(bootState());
   try {
-    return migrateState({ ...emptyState(), ...JSON.parse(readFileSync(statePath, "utf8")) });
+    return migrateState({ ...starterState(), ...JSON.parse(readFileSync(statePath, "utf8")) });
   } catch {
-    return emptyState();
+    return migrateState(bootState());
   }
 }
 
 let state = load();
+save();
 
 export function getState() {
   return state;
@@ -35,7 +37,7 @@ export function mutate(fn) {
 }
 
 export function resetState() {
-  state = migrateState(emptyState());
+  state = migrateState(bootState());
   save();
   return state;
 }

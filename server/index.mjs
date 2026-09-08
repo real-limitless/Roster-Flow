@@ -1,12 +1,21 @@
 import { createServer } from "node:http";
-import { getState, mutate, save, resetState, clock, uid } from "./store.mjs";
-import { emptyState, runSteps, stepCopy, normalizeSeat, normalizeModelId } from "./seed.mjs";
-import { ensure, status as harnessStatus, listSessions, createSession, promptSession } from "./harness.mjs";
-import { listProviders, upsertProvider, setAuth, removeProvider, listModels, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
-import { postBus, wakeSeat, cycleSafe, pullAssistant } from "./bus.mjs";
+import { getState, mutate, save, resetState, uid } from "./store.mjs";
+import { normalizeSeat, normalizeModelId } from "./seed.mjs";
+import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
+import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
+import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
+import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
+import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
-import { syncBotAgents, syncSeatAgent } from "./agents.mjs";
+import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
+import { createChannel, patchChannel } from "./channels.mjs";
+import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
+import { listTrace } from "./trace.mjs";
+import { createProject, patchProject } from "./projects.mjs";
+import { fireSeat, hireSeat } from "./seats.mjs";
+import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
+import { fallbackText, validateBlocks } from "roster-flow-blocks";
 
 const PORT = Number(process.env.ROSTER_API_PORT || 8787);
 
@@ -33,15 +42,6 @@ async function readBody(req) {
   return JSON.parse(raw);
 }
 
-function looksLikeShip(text) {
-  return /product|eng|devops|qa/i.test(text);
-}
-
-function resolveSeatId(who) {
-  const s = getState().seats.find((x) => x.name === who || x.id === who);
-  return s?.id;
-}
-
 function asList(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -66,138 +66,37 @@ function composeExtras(body = {}) {
   if (attachments.length) extras.attachments = attachments;
   if (skills.length) extras.skills = skills;
   if (files.length) extras.files = files;
+  if (body.blocks !== undefined) {
+    const result = validateBlocks(body.blocks);
+    if (!result.ok) {
+      const err = new Error(result.errors[0] || "invalid blocks");
+      err.status = 400;
+      throw err;
+    }
+    extras.blocks = result.blocks;
+  }
   return extras;
 }
 
-function postMessage(channel, who, kind, text, extra = {}) {
-  const msg = { id: uid("msg"), channel, who, kind, text, time: clock(), ...extra };
-  if (!msg.seatId) msg.seatId = resolveSeatId(who);
-  mutate((s) => {
-    s.messages = [...s.messages, msg];
-  });
-  return msg;
+function messageText(body, extras) {
+  const text = String(body.text || "").trim();
+  if (text) return text;
+  if (extras.blocks) return fallbackText(extras.blocks);
+  return "";
 }
 
-function wantLive(mode) {
-  if (mode === "scripted") return false;
-  if (mode === "live") return true;
-  return harnessStatus().harness === "up";
-}
-
-async function startRun({ prompt, channel = "ship", who = "You", mode }) {
-  const live = wantLive(mode);
-  const run = {
-    id: uid("run"),
-    prompt,
-    channel,
-    step: 0,
-    status: "running",
-    mode: live ? "live" : "scripted",
-    createdAt: new Date().toISOString(),
-    steps: runSteps.map((s) => ({ ...s, status: "pending" })),
-  };
-  mutate((s) => {
-    s.runs = [run, ...s.runs];
-  });
-  postMessage(channel, who, "human", prompt);
-  postMessage(channel, "Floor", "bot", `Compiled run ${run.id}. Product → @eng → confirm → DevOps → QA.`, {
-    run: true,
-    runId: run.id,
-  });
-  postBus({ from: "floor", to: "product", kind: "handoff", text: prompt, runId: run.id, wake: live });
-  if (live) {
-    await wakeSeat("product", prompt, { from: "floor", kind: "run", runId: run.id });
-    void followLiveRun(run.id);
-  } else {
-    void tickRun(run.id);
-  }
-  return run;
-}
-
-async function followLiveRun(runId) {
-  const seen = new Set();
-  for (let i = 0; i < 120; i++) {
-    const run = getState().runs.find((r) => r.id === runId);
-    if (!run || run.status !== "running") return;
-    if ((getState().bus || []).some((b) => b.runId === runId && b.kind === "report")) {
-      mutate((s) => {
-        const r = s.runs.find((x) => x.id === runId);
-        if (r) r.status = "done";
-      });
-      return;
-    }
-    for (const seatId of Object.keys(getState().sessions || {})) {
-      const parts = await pullAssistant(seatId);
-      for (const p of parts) {
-        if (!p.id || seen.has(p.id)) continue;
-        seen.add(p.id);
-        if (getState().messages.some((m) => m.text === p.text)) continue;
-        const seat = getState().seats.find((s) => s.id === seatId);
-        postMessage(run.channel, seat?.name || seatId, "bot", p.text, { runId, mirrored: true });
-      }
-    }
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-  mutate((s) => {
-    const r = s.runs.find((x) => x.id === runId);
-    if (r && r.status === "running") r.status = "done";
-  });
-}
-
-async function tickRun(runId) {
-  const run = getState().runs.find((r) => r.id === runId);
-  if (!run || run.status !== "running") return;
-  const i = run.step;
-  if (i >= runSteps.length) {
-    mutate((s) => {
-      const r = s.runs.find((x) => x.id === runId);
-      if (r) r.status = "done";
-    });
-    return;
-  }
-  const spec = runSteps[i];
-  const seat = getState().seats.find((x) => x.id === spec.id);
-  const text = stepCopy[spec.id] || `${spec.label} complete.`;
-  postMessage(run.channel, seat?.name || spec.label, spec.kind, text, { runId });
-  mutate((s) => {
-    const r = s.runs.find((x) => x.id === runId);
-    if (!r) return;
-    r.steps[i].status = "done";
-    r.step = i + 1;
-    const st = s.seats.find((x) => x.id === spec.id);
-    if (st) st.status = i + 1 >= runSteps.length ? "done" : "running";
-  });
-  const next = runSteps[i + 1];
-  if (next) {
-    postBus({
-      from: spec.id,
-      to: next.id,
-      kind: spec.kind === "human" ? "ask_human" : "handoff",
-      text,
-      runId,
-      wake: next.kind === "bot",
-    });
-  } else {
-    postBus({ from: spec.id, to: "channel:ship", kind: "report", text, runId });
-  }
-  if (spec.kind === "bot") {
-    await wakeSeat(spec.id, `${run.prompt}\n\nYour step: ${spec.label}\nExpected: ${text}`, {
-      from: "floor",
-      kind: "run",
-      runId,
-    });
-  }
-  setTimeout(() => void tickRun(runId), 850);
+function isPublicPath(method, pathname) {
+  if (method === "GET" && pathname === "/api/v1/health") return true;
+  if (method === "GET" && pathname === "/api/v1/setup/status") return true;
+  if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
+  if (method === "POST" && pathname === "/api/v1/setup/install") return true;
+  if (method === "POST" && pathname === "/api/v1/auth/login") return true;
+  return false;
 }
 
 save();
-mutate((s) => {
-  for (const r of s.runs || []) {
-    if (r.status === "running") r.status = "done";
-  }
-});
 try {
-  syncBotAgents(getState().seats);
+  syncBotAgents(getState().seats, getState().teams);
 } catch {
   /* agent files are best-effort */
 }
@@ -216,18 +115,190 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
     const { pathname } = url;
     const method = req.method || "GET";
+    const token = parseBearer(req);
+    const user = userFromToken(getState(), token);
+
+    if (!skipOnboarding() && !isPublicPath(method, pathname) && !user) {
+      json(res, 401, { error: "authentication required" });
+      return;
+    }
+
+    if (pathname === "/api/v1/setup/status" && method === "GET") {
+      json(
+        res,
+        200,
+        setupStatus(getState(), {
+          user,
+          binary: whichOpenCode(),
+          providerKeys: hasProviderKey(),
+          dataWritable: true,
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/v1/setup/install" && method === "POST") {
+      mutate((s) => markInstallSeen(s));
+      json(
+        res,
+        200,
+        setupStatus(getState(), {
+          user,
+          binary: whichOpenCode(),
+          providerKeys: hasProviderKey(),
+          dataWritable: true,
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/v1/setup/first-user" && method === "POST") {
+      const body = await readBody(req);
+      const created = await addFirstUser(getState(), body);
+      save();
+      json(res, 201, { user: publicUser(created) });
+      return;
+    }
+    if (pathname === "/api/v1/setup/harness" && method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      mutate((s) => markHarnessStep(s, { skipped: Boolean(body.skipped) }));
+      json(
+        res,
+        200,
+        setupStatus(getState(), {
+          user,
+          binary: whichOpenCode(),
+          providerKeys: hasProviderKey(),
+          dataWritable: true,
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/v1/setup/complete" && method === "POST") {
+      const body = await readBody(req);
+      let next = null;
+      mutate((s) => {
+        next = completeSetup(s, { template: body.template, ownerName: user?.name });
+        return next;
+      });
+      try {
+        syncBotAgents(next.seats, next.teams);
+      } catch {
+        /* agent files are best-effort */
+      }
+      json(res, 200, { ...setupStatus(next, { user, binary: whichOpenCode(), providerKeys: hasProviderKey(), dataWritable: true }), state: publicState(next) });
+      return;
+    }
+    if (pathname === "/api/v1/auth/login" && method === "POST") {
+      const body = await readBody(req);
+      const out = await loginUser(getState(), body);
+      save();
+      json(res, 200, out);
+      return;
+    }
+    if (pathname === "/api/v1/auth/me" && method === "GET") {
+      json(res, 200, publicUser(user));
+      return;
+    }
+    if (pathname === "/api/v1/auth/logout" && method === "POST") {
+      mutate((s) => revokeSession(s, token));
+      json(res, 200, { ok: true });
+      return;
+    }
 
     if (pathname === "/api/v1/health" && method === "GET") {
       json(res, 200, {
         ok: true,
-        ...harnessStatus(),
+        ...combinedStatus(),
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
       });
       return;
     }
     if (pathname === "/api/v1/reset" && method === "POST") {
-      json(res, 200, resetState());
+      const st = resetState();
+      try {
+        syncBotAgents(st.seats, st.teams);
+      } catch {
+        /* agent files are best-effort */
+      }
+      json(res, 200, publicState(st));
+      return;
+    }
+    if (pathname === "/api/v1/organizations" && method === "GET") {
+      json(res, 200, getState().organizations || []);
+      return;
+    }
+    if (pathname === "/api/v1/projects" && method === "GET") {
+      json(res, 200, getState().projects || []);
+      return;
+    }
+    if (pathname === "/api/v1/projects" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createProject(s, body);
+      });
+      json(res, 201, created);
+      return;
+    }
+    const projectOne = pathname.match(/^\/api\/v1\/projects\/([^/]+)$/);
+    if (projectOne && method === "GET") {
+      const project = (getState().projects || []).find((p) => p.id === decodeURIComponent(projectOne[1]));
+      if (!project) {
+        json(res, 404, { error: "project not found" });
+        return;
+      }
+      json(res, 200, project);
+      return;
+    }
+    if (projectOne && method === "PATCH") {
+      const id = decodeURIComponent(projectOne[1]);
+      const body = await readBody(req);
+      let updated = null;
+      mutate((s) => {
+        updated = patchProject(s, id, body);
+      });
+      if (!updated) {
+        json(res, 404, { error: "project not found" });
+        return;
+      }
+      json(res, 200, updated);
+      return;
+    }
+    if (pathname === "/api/v1/architect/chat" && method === "POST") {
+      const body = await readBody(req);
+      const out = await chatArchitect(getState(), body);
+      save();
+      json(res, 200, out);
+      return;
+    }
+    if (pathname === "/api/v1/architect/apply" && method === "POST") {
+      const body = await readBody(req);
+      const planId = body.planId || body.id;
+      const existing = getPlan(getState(), planId);
+      if (!existing) {
+        json(res, 404, { error: "plan not found" });
+        return;
+      }
+      let result = null;
+      mutate((s) => {
+        const plan = getPlan(s, planId);
+        result = applyPlan(s, plan);
+      });
+      for (const seat of result.created.seats || []) {
+        if (seat.kind === "bot") syncSeatAgent(seat);
+      }
+      for (const team of result.created.teams || []) syncTeamAgent(team);
+      json(res, 200, { ...result, seats: getState().seats, teams: enrichTeams(getState().teams, getState().seats), projects: getState().projects });
+      return;
+    }
+    const planGet = pathname.match(/^\/api\/v1\/architect\/plans\/([^/]+)$/);
+    if (planGet && method === "GET") {
+      const plan = getPlan(getState(), decodeURIComponent(planGet[1]));
+      if (!plan) {
+        json(res, 404, { error: "plan not found" });
+        return;
+      }
+      json(res, 200, plan);
       return;
     }
     if (pathname === "/api/v1/teams" && method === "GET") {
@@ -242,6 +313,7 @@ const server = createServer(async (req, res) => {
         created = createStaffedTeam(s, body);
       });
       for (const seat of created.seats) syncSeatAgent(seat);
+      syncTeamAgent(created.team);
       json(res, 201, created);
       return;
     }
@@ -259,6 +331,9 @@ const server = createServer(async (req, res) => {
       }
       const generic = getState().seats.find((s) => s.id === updated.genericSeatId);
       if (generic) syncSeatAgent(generic);
+      const supervisor = getState().seats.find((s) => s.id === updated.supervisorSeatId);
+      if (supervisor) syncSeatAgent(supervisor);
+      syncTeamAgent(updated);
       json(res, 200, updated);
       return;
     }
@@ -283,48 +358,9 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/seats" && method === "POST") {
       const body = await readBody(req);
-      const id = String(body.id || body.name || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "")
-        .slice(0, 32);
-      if (!id) {
-        json(res, 400, { error: "name required" });
-        return;
-      }
-      if (getState().seats.some((s) => s.id === id)) {
-        json(res, 409, { error: "seat exists" });
-        return;
-      }
-      const kind = body.kind === "human" ? "human" : "bot";
-      const teamId = body.team || undefined;
-      const team = teamId ? getState().teams.find((t) => t.id === teamId) : null;
-      const seatType =
-        body.seatType ||
-        (kind === "human" ? "human" : team ? "specialist" : "specialist");
-      const reportsTo =
-        body.reportsTo ||
-        (team && kind === "bot" ? team.supervisorSeatId : undefined) ||
-        undefined;
-      const seat = normalizeSeat({
-        id,
-        name: body.name || id,
-        role: body.role || (kind === "human" ? "Teammate" : seatType === "supervisor" ? "Supervisor" : seatType === "generic" ? "Generic" : "Specialist"),
-        kind,
-        seatType,
-        reportsTo,
-        team: teamId,
-        tools: body.tools || (kind === "human" ? ["approve"] : ["read"]),
-        deny: body.deny || (kind === "bot" ? ["deploy"] : []),
-        model: kind === "human" ? undefined : normalizeModelId(body.model) || team?.defaultModel || "xai/grok-4",
-        persona: body.persona,
-        instructions: body.instructions,
-        job: body.job || "New seat.",
-        status: "idle",
-      });
+      let seat = null;
       mutate((s) => {
-        s.seats = [...s.seats, seat];
-        if (teamId) attachSeatToTeam(s, teamId, seat.id);
+        seat = hireSeat(s, body);
       });
       if (seat.kind === "bot") syncSeatAgent(seat);
       json(res, 201, seat);
@@ -340,6 +376,7 @@ const server = createServer(async (req, res) => {
           if (seat.id !== id) return seat;
           const next = { ...seat, ...body, id };
           if (body.model) next.model = normalizeModelId(body.model);
+          if (body.fallbackModel !== undefined) next.fallbackModel = normalizeModelId(body.fallbackModel) || undefined;
           updated = normalizeSeat(next);
           return updated;
         });
@@ -353,19 +390,30 @@ const server = createServer(async (req, res) => {
       json(res, 200, updated);
       return;
     }
+    if (seatPatch && method === "DELETE") {
+      const id = decodeURIComponent(seatPatch[1]);
+      let result = null;
+      mutate((s) => {
+        result = fireSeat(s, id);
+      });
+      json(res, 200, result);
+      return;
+    }
     const attach = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/attach$/);
     if (attach && method === "POST") {
       const id = decodeURIComponent(attach[1]);
+      const seat = getState().seats.find((s) => s.id === id);
+      const kind = harnessKindForSeat(seat);
       try {
-        await ensure({});
+        await ensure({ kind });
       } catch (err) {
         if (err.code !== "OPENCODE_MISSING") throw err;
       }
       const woke = (await wakeSeat(id, "Attached from Roster-flow chart.", { from: "you", kind: "attach" })) || {
         seat: id,
       };
-      const h = harnessStatus();
-      const sessionId = woke.sessionId || getState().sessions?.[id] || null;
+      const h = harnessStatus(kind);
+      const sessionId = woke.sessionId || getState()[sessionKeyForKind(kind)]?.[id] || null;
       json(res, 200, {
         seat: id,
         ...woke,
@@ -379,6 +427,40 @@ const server = createServer(async (req, res) => {
       json(res, 200, getState().channels);
       return;
     }
+    if (pathname === "/api/v1/channels" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createChannel(s, body);
+      });
+      json(res, 201, created);
+      return;
+    }
+    const chOne = pathname.match(/^\/api\/v1\/channels\/([^/]+)$/);
+    if (chOne && method === "GET") {
+      const id = decodeURIComponent(chOne[1]);
+      const ch = getState().channels.find((c) => c.id === id);
+      if (!ch) {
+        json(res, 404, { error: "channel not found" });
+        return;
+      }
+      json(res, 200, ch);
+      return;
+    }
+    if (chOne && method === "PATCH") {
+      const id = decodeURIComponent(chOne[1]);
+      const body = await readBody(req);
+      let updated = null;
+      mutate((s) => {
+        updated = patchChannel(s, id, body);
+      });
+      if (!updated) {
+        json(res, 404, { error: "channel not found" });
+        return;
+      }
+      json(res, 200, updated);
+      return;
+    }
     const chMsg = pathname.match(/^\/api\/v1\/channels\/([^/]+)\/messages$/);
     if (chMsg && method === "GET") {
       const id = decodeURIComponent(chMsg[1]);
@@ -388,19 +470,23 @@ const server = createServer(async (req, res) => {
     if (chMsg && method === "POST") {
       const id = decodeURIComponent(chMsg[1]);
       const body = await readBody(req);
-      const text = String(body.text || "").trim();
       const extras = composeExtras(body);
-      if (!text && !extras.attachments && !extras.skills && !extras.files) {
-        json(res, 400, { error: "text or attachment required" });
-        return;
-      }
-      if (text && looksLikeShip(text) && id === "ship") {
-        const run = await startRun({ prompt: text, channel: id, who: body.who || "You" });
-        json(res, 201, { run, messages: getState().messages.filter((m) => m.channel === id) });
+      const text = messageText(body, extras);
+      if (!text && !extras.attachments && !extras.skills && !extras.files && !extras.blocks) {
+        json(res, 400, { error: "text, blocks, or attachment required" });
         return;
       }
       const msg = postMessage(id, body.who || "You", body.kind || "human", text, extras);
-      json(res, 201, msg);
+      const routed = text
+        ? await routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
+        : { mentions: [], wakes: [], notify: [] };
+      json(res, 201, {
+        ...msg,
+        mentions: routed.mentions,
+        wakes: routed.wakes,
+        notify: routed.notify,
+        messages: getState().messages.filter((m) => m.channel === id),
+      });
       return;
     }
     if (pathname === "/api/v1/threads" && method === "GET") {
@@ -426,9 +512,10 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const from = body.from || "you";
       const to = body.to;
-      const text = String(body.text || "").trim();
-      if (!to || !text) {
-        json(res, 400, { error: "to and text required" });
+      const extras = composeExtras(body);
+      const text = messageText(body, extras);
+      if (!to || (!text && !extras.blocks)) {
+        json(res, 400, { error: "to and text or blocks required" });
         return;
       }
       if (!cycleSafe(from, to)) {
@@ -438,7 +525,7 @@ const server = createServer(async (req, res) => {
       let channel = "ship";
       if (String(to).startsWith("channel:")) channel = to.slice("channel:".length);
       const fromSeat = getState().seats.find((s) => s.id === from);
-      postMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text);
+      postMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from });
       const entry = postBus({ from, to, kind: "send_message", text, wake: body.wake !== false && !String(to).startsWith("channel:") });
       json(res, 201, entry);
       return;
@@ -449,8 +536,10 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/bus/send" && method === "POST") {
       const body = await readBody(req);
-      if (!body.from || !body.to || !body.text) {
-        json(res, 400, { error: "from, to, text required" });
+      const extras = composeExtras(body);
+      const text = messageText(body, extras);
+      if (!body.from || !body.to || (!text && !extras.blocks)) {
+        json(res, 400, { error: "from, to, and text or blocks required" });
         return;
       }
       if (!cycleSafe(body.from, body.to)) {
@@ -458,66 +547,85 @@ const server = createServer(async (req, res) => {
         return;
       }
       const fromSeat = getState().seats.find((s) => s.id === body.from);
-      postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", body.text);
-      json(res, 201, postBus(body));
-      return;
-    }
-    if (pathname === "/api/v1/runs" && method === "GET") {
-      json(res, 200, getState().runs);
-      return;
-    }
-    if (pathname === "/api/v1/runs" && method === "POST") {
-      const body = await readBody(req);
-      const prompt = String(body.prompt || "").trim();
-      if (!prompt) {
-        json(res, 400, { error: "prompt required" });
-        return;
-      }
-      json(res, 201, await startRun({ prompt, channel: body.channel || "ship", who: body.who || "You", mode: body.mode }));
-      return;
-    }
-    const runGet = pathname.match(/^\/api\/v1\/runs\/([^/]+)$/);
-    if (runGet && method === "GET") {
-      const run = getState().runs.find((r) => r.id === decodeURIComponent(runGet[1]));
-      if (!run) {
-        json(res, 404, { error: "run not found" });
-        return;
-      }
-      json(res, 200, run);
-      return;
-    }
-    const runCancel = pathname.match(/^\/api\/v1\/runs\/([^/]+)\/cancel$/);
-    if (runCancel && method === "POST") {
-      let run = null;
-      mutate((s) => {
-        run = s.runs.find((r) => r.id === decodeURIComponent(runCancel[1]));
-        if (run) run.status = "cancelled";
+      postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
+        ...extras,
+        seatId: extras.seatId || body.from,
       });
-      if (!run) {
-        json(res, 404, { error: "run not found" });
+      json(res, 201, postBus({ ...body, text }));
+      return;
+    }
+    if (pathname === "/api/v1/block-actions" && method === "POST") {
+      const body = await readBody(req);
+      const messageId = String(body.messageId || "");
+      const actionId = String(body.actionId || "");
+      const value = String(body.value || "");
+      const userId = String(body.userId || "you");
+      const msg = getState().messages.find((m) => m.id === messageId);
+      if (!msg) {
+        json(res, 404, { error: "message not found" });
         return;
       }
-      json(res, 200, run);
+      if (!actionId) {
+        json(res, 400, { error: "actionId required" });
+        return;
+      }
+      const to = msg.seatId || "channel";
+      const text = `block_actions ${actionId}${value ? `=${value}` : ""}`;
+      const entry = postBus({
+        from: userId,
+        to,
+        kind: "block_actions",
+        text,
+        channel: msg.channel,
+        actionId,
+        value,
+        messageId,
+        wake: true,
+      });
+      void wakeSeat(to, `User clicked ${actionId}${value ? ` (${value})` : ""} on your Block Kit message.`, {
+        from: userId,
+        kind: "block_actions",
+        messageId,
+        actionId,
+        value,
+      });
+      json(res, 201, entry);
       return;
     }
     if (pathname === "/api/v1/harness" && method === "GET") {
-      json(res, 200, harnessStatus());
+      json(res, 200, combinedStatus());
       return;
     }
     if (pathname === "/api/v1/harness/ensure" && method === "POST") {
       const body = await readBody(req).catch(() => ({}));
+      const kind = body.kind === "system" ? "system" : "company";
       try {
-        json(res, 200, await ensure({ forceRestart: Boolean(body.forceRestart) }));
+        await ensure({ forceRestart: Boolean(body.forceRestart), kind });
+        json(res, 200, combinedStatus());
       } catch (err) {
-        json(res, err.status || 409, { error: err.message, code: err.code, ...harnessStatus() });
+        json(res, err.status || 409, { error: err.message, code: err.code, ...combinedStatus() });
       }
+      return;
+    }
+    if (pathname === "/api/v1/debug/trace" && method === "GET") {
+      json(res, 200, {
+        events: listTrace({
+          since: url.searchParams.get("since") || undefined,
+          channel: url.searchParams.get("channel") || undefined,
+          scope: url.searchParams.get("scope") || undefined,
+          limit: url.searchParams.get("limit") || 80,
+        }),
+        ...combinedStatus(),
+        providerKeys: hasProviderKey(),
+      });
       return;
     }
     if (pathname === "/api/v1/harness/sessions" && method === "GET") {
       try {
-        json(res, 200, await listSessions());
+        const sessions = await listBoundSessions();
+        json(res, 200, { sessions, ...combinedStatus() });
       } catch (err) {
-        json(res, 200, { harness: "offline", sessions: [], error: err.message });
+        json(res, 200, { harness: "offline", sessions: [], error: err.message, ...combinedStatus() });
       }
       return;
     }
@@ -552,7 +660,8 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/models" && method === "GET") {
-      json(res, 200, listModels());
+      const live = await listLiveModels().catch(() => []);
+      json(res, 200, mergeModelLists(live, listModels()));
       return;
     }
     if (pathname === "/api/v1/opencode/config" && method === "GET") {
@@ -560,11 +669,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/state" && method === "GET") {
-      json(res, 200, getState());
-      return;
-    }
-    if (pathname === "/api/v1/state" && method === "GET") {
-      json(res, 200, emptyState());
+      json(res, 200, publicState(getState()));
       return;
     }
     json(res, 404, { error: "not found", path: pathname });
@@ -582,6 +687,8 @@ server.on("clientError", (err, socket) => {
   }
 });
 
+startSessionSync();
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`roster-flow CORE API http://127.0.0.1:${PORT}`);
+  console.log(`Setup: http://127.0.0.1:5173/setup`);
 });

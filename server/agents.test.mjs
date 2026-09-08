@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync, existsSync } from "node:fs";
-import { agentMarkdown, syncSeatAgent } from "./agents.mjs";
+import { agentMarkdown, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("agentMarkdown uses provider/model and persona", () => {
   const md = agentMarkdown({
@@ -58,4 +62,41 @@ test("syncSeatAgent writes .opencode/agents/<id>.md", () => {
   assert.ok(file && existsSync(file));
   const text = readFileSync(file, "utf8");
   assert.match(text, /model: xai\/grok-4/);
+});
+
+test("system seats write into the System workspace pack", () => {
+  const file = syncSeatAgent({
+    id: "architect",
+    name: "Architect",
+    role: "Org design",
+    kind: "bot",
+    seatType: "specialist",
+    system: true,
+    model: "xai/grok-4",
+    persona: "Org architect.",
+    instructions: "Propose an OrgPlan.",
+    job: "Staff projects.",
+    tools: ["bus", "read"],
+    deny: ["edit", "deploy"],
+  });
+  assert.ok(file && existsSync(file));
+  assert.ok(file.startsWith(join(root, ".roster-flow", "system")));
+  const text = readFileSync(file, "utf8");
+  assert.match(text, /Propose an OrgPlan/);
+});
+
+test("teamAgentSeat is a primary OpenCode alias", () => {
+  const seat = teamAgentSeat({
+    id: "eng",
+    name: "@eng",
+    role: "Engineering",
+    job: "Ship PRs",
+    rules: "Supervisor routes",
+    staffed: true,
+    supervisorSeatId: "eng-supervisor",
+    defaultModel: "xai/grok-4",
+  });
+  assert.equal(seat.id, "eng");
+  assert.equal(seat.seatType, "supervisor");
+  assert.match(seat.instructions, /Supervisor/);
 });

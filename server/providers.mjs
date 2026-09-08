@@ -1,6 +1,7 @@
 /** OpenChamber-shaped write-through to OpenCode config + local auth sidecar. */
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { normalizeModelId } from "./seed.mjs";
 
@@ -131,28 +132,78 @@ export function removeProvider(id) {
   return { ok: true };
 }
 
-const FALLBACK_CATALOG = [
-  { providerID: "xai", modelID: "grok-4", name: "Grok 4" },
-  { providerID: "anthropic", modelID: "claude-sonnet", name: "Claude Sonnet" },
-  { providerID: "openai", modelID: "gpt-5", name: "GPT-5" },
-];
+function flattenProviderModels(raw, connectedLookup = {}) {
+  if (!raw || typeof raw !== "object") return [];
+  const out = [];
+  for (const [id, block] of Object.entries(raw)) {
+    const models = block?.models && typeof block.models === "object" ? block.models : {};
+    for (const [mid, m] of Object.entries(models)) {
+      out.push({
+        providerID: id,
+        modelID: mid,
+        name: (m && m.name) || mid,
+        connected: Boolean(connectedLookup[id]),
+        source: "config",
+      });
+    }
+  }
+  return out;
+}
 
-export function listModels() {
-  const fromProviders = listProviders().flatMap((p) =>
+export function globalOpenCodePaths() {
+  if (process.env.OPENCODE_CONFIG) return [process.env.OPENCODE_CONFIG];
+  const home = homedir();
+  return [
+    join(home, ".config", "opencode", "opencode.json"),
+    join(home, ".opencode", "opencode.json"),
+  ];
+}
+
+export function readGlobalOpenCodeConfig() {
+  for (const path of globalOpenCodePaths()) {
+    if (!existsSync(path)) continue;
+    try {
+      return JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      /* skip broken global config */
+    }
+  }
+  return {};
+}
+
+export function listConfiguredModels() {
+  const workspace = listProviders().flatMap((p) =>
     p.models.map((m) => ({
       providerID: p.id,
       modelID: m.id,
       name: m.name,
       connected: p.connected,
+      source: "workspace",
     })),
   );
-  const seen = new Set(fromProviders.map((m) => `${m.providerID}/${m.modelID}`));
-  const extra = FALLBACK_CATALOG.filter((m) => !seen.has(`${m.providerID}/${m.modelID}`)).map((m) => ({
-    ...m,
-    connected: false,
-    fallback: true,
-  }));
-  return [...fromProviders, ...extra];
+  const globalCfg = readGlobalOpenCodeConfig();
+  const global = flattenProviderModels(providerBlocks(globalCfg));
+  const seen = new Set(workspace.map((m) => `${m.providerID}/${m.modelID}`));
+  const extra = global.filter((m) => !seen.has(`${m.providerID}/${m.modelID}`));
+  return [...workspace, ...extra];
+}
+
+export function mergeModelLists(...lists) {
+  const seen = new Set();
+  const out = [];
+  for (const list of lists) {
+    for (const m of list || []) {
+      const key = `${m.providerID}/${m.modelID}`;
+      if (!m.providerID || !m.modelID || seen.has(key)) continue;
+      seen.add(key);
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+export function listModels() {
+  return listConfiguredModels();
 }
 
 /** Merge stored Settings keys into env so `{env:VAR}` in opencode.json resolves. */
@@ -188,6 +239,32 @@ export function hasProviderKey() {
   );
 }
 
+export function keyStatusForModel(model) {
+  const parsed = parseModelRef(model) || {
+    providerID: inferProviderId(model),
+    modelID: String(model || "")
+      .split("/")
+      .filter(Boolean)
+      .pop() || "",
+  };
+  const providers = listProviders();
+  const p = providers.find((x) => x.id === parsed.providerID);
+  const env = serveChildEnv();
+  const fallback = {
+    xai: "XAI_API_KEY",
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  };
+  const envName = p?.apiKeyEnv || fallback[parsed.providerID];
+  return {
+    providerID: parsed.providerID || "",
+    modelID: parsed.modelID || "",
+    configured: Boolean(p),
+    connected: Boolean(p?.connected || (envName && env[envName])),
+  };
+}
+
 export function parseModelRef(model) {
   const normalized = normalizeModelId(model);
   if (!normalized) return null;
@@ -198,23 +275,24 @@ export function parseModelRef(model) {
   return null;
 }
 
-export function resolveSeatModel(seat) {
+export function resolveSeatModel(seat, modelOverride) {
   const models = listModels();
-  const parsed = parseModelRef(seat?.model);
+  const raw = modelOverride || seat?.model;
+  const parsed = parseModelRef(raw);
   if (parsed) {
     const exact = models.find((m) => m.providerID === parsed.providerID && m.modelID === parsed.modelID);
     return exact ? { providerID: exact.providerID, modelID: exact.modelID } : parsed;
   }
-  if (seat?.model) {
-    const exact = models.find((m) => m.modelID === seat.model || m.name === seat.model);
+  if (raw) {
+    const exact = models.find((m) => m.modelID === raw || m.name === raw);
     if (exact) return { providerID: exact.providerID, modelID: exact.modelID };
   }
-  const guess = inferProviderId(seat?.model);
+  const guess = inferProviderId(raw);
   const fromGuess = models.find((m) => m.providerID === guess);
-  if (fromGuess) return { providerID: fromGuess.providerID, modelID: seat?.model || fromGuess.modelID };
+  if (fromGuess) return { providerID: fromGuess.providerID, modelID: raw || fromGuess.modelID };
   const connected = models.find((m) => m.connected);
   if (connected) return { providerID: connected.providerID, modelID: connected.modelID };
-  return guess && seat?.model ? { providerID: guess, modelID: seat.model } : undefined;
+  return guess && raw ? { providerID: guess, modelID: raw } : undefined;
 }
 
 export function inferProviderId(model) {

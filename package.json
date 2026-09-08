@@ -11,15 +11,17 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
     "test:e2e": "playwright test",
-    "test:unit": "node --test packages/roster-flow-opencode/index.test.mjs server/bus.test.mjs server/teams.test.mjs server/agents.test.mjs",
+    "test:unit": "node --test packages/roster-flow-blocks/index.test.mjs packages/roster-flow-opencode/index.test.mjs server/bus.test.mjs server/teams.test.mjs server/agents.test.mjs server/mentions.test.mjs server/channels.test.mjs server/models.test.mjs server/providers.test.mjs server/projects.test.mjs server/architect.test.mjs server/chat.test.mjs server/auth.test.mjs server/setup.test.mjs",
     "prove:two-bot": "node scripts/prove-two-bot.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "react": "^19.1.1",
+    "react-d3-tree": "^3.6.6",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.2",
+    "roster-flow-blocks": "file:packages/roster-flow-blocks",
     "roster-flow-opencode": "file:packages/roster-flow-opencode",
     "ws": "^8.21.3"
   },
