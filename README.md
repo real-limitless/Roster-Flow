@@ -2,11 +2,7 @@
 
 **Staff an org of OpenCode agents. Talk in a room, open the harness, or run the company from the org chart.**
 
-This is the **CORE** branch: concept, methodology, and orientation. It is **documentation only** — not the application source tree.
-
-The **runnable software** lives on the product branch:
-
-→ **[`DEVELOPMENT`](https://github.com/real-limitless/roster-flow/tree/DEVELOPMENT)**
+This is the **CORE** branch: concept, methodology, and orientation. Docs only. The runnable app lives on **[`DEVELOPMENT`](https://github.com/real-limitless/roster-flow/tree/DEVELOPMENT)**.
 
 | | |
 |---|---|
@@ -14,9 +10,9 @@ The **runnable software** lives on the product branch:
 | **Install / code** | [DEVELOPMENT](https://github.com/real-limitless/roster-flow/tree/DEVELOPMENT) |
 | **Stand up** | [INSTALLATION.md](INSTALLATION.md) |
 
-Every bot is an OpenCode agent. Roster-flow does **not** reimplement the agent loop — it wraps `opencode serve` (the Everflow pattern), maps org-chart seats onto those sessions, and gives humans a Slack-like room plus a living chart.
+Every bot is an OpenCode agent. Roster-flow does **not** reimplement the agent loop: it wraps `opencode serve` (the Everflow pattern), maps org-chart seats onto those sessions, and gives humans a Slack-like room plus a living chart.
 
-![Hero: staff an org of agents — talk in a room or open the harness](docs/images/campaign-hero.png)
+![Hero: staff an org of agents: talk in a room or open the harness](docs/images/campaign-hero.png)
 
 ---
 
@@ -39,9 +35,9 @@ Slack proved work happens in conversation. OpenCode proved the unit of AI labor 
 
 ![Channel compiles a sentence into a run you still own](docs/images/campaign-orchestration.png)
 
-**You need this when:**
+Typical cases:
 
-- The channel should be the audit log — Product briefs, Eng ships, you confirm, DevOps deploys, QA signs
+- The channel should be the audit log. Product briefs, Eng ships, you confirm, DevOps deploys, QA signs
 - Every bot is an OpenCode agent you chose to run, not a skin on a chatbot
 - Room, harness, and chart are the same seats
 
@@ -49,11 +45,11 @@ Slack proved work happens in conversation. OpenCode proved the unit of AI labor 
 
 ## Core ideas
 
-1. **OpenCode is the harness** — session, tools, permissions, attach. Roster-flow does not invent a second agent runtime.
-2. **Same seats, three surfaces** — Room, Harness, and Chart are views of one org, not three products.
-3. **Reporting lines are permission lines** — the org chart is the control plane, not wallpaper.
-4. **Channel conducts, specialists execute** — a human sentence becomes a run graph; humans still confirm deploy and merge.
-5. **The thread is the audit log** — inter-bot mail, handoffs, and human gates are visible in the room.
+1. **OpenCode is the harness**: session, tools, permissions, attach. Roster-flow does not invent a second agent runtime.
+2. **Same seats, three surfaces**. Room, Harness, and Chart are views of one org, not three products.
+3. **Reporting lines are permission lines**: the org chart is the control plane, not wallpaper.
+4. **Channel conducts, specialists execute**: a human sentence becomes a run graph; humans still confirm deploy and merge.
+5. **The thread is the audit log**: inter-bot mail, handoffs, and human gates are visible in the room.
 
 ### Typical flow
 
@@ -107,21 +103,21 @@ The starter company is one organization with a ship-train project. Product is th
 | **Seat** | Human or bot; maps to an OpenCode agent / session |
 | **Room** | Shared log and @mentions |
 | **Bus** | Inter-bot mail: send, handoff, report, ask-human |
-| **Harness** | Real `opencode serve` — company bots and a System serve for Architect / Channel |
+| **Harness** | Real `opencode serve`: company bots and a System serve for Architect / Channel |
 
 **Design principles we optimize for:**
 
-- **Wrap, do not reimplement** — OpenCode owns the loop; Roster-flow owns org, room, bus, and chart.
-- **Confirm on deploy** — autonomous work is allowed; skipping the human gate is not the product.
-- **Honest offline** — if OpenCode is not installed, the room and chart still work; Architect does not fake a model.
-- **Write-through settings** — providers and models land in OpenCode config, not a parallel secret store.
-- **Open methodology, open code** — concept lives here on CORE; implementation is open on DEVELOPMENT under Apache-2.0.
+- **Wrap, do not reimplement**. OpenCode owns the loop; Roster-flow owns org, room, bus, and chart.
+- **Confirm on deploy**: autonomous work is allowed; skipping the human gate is not the product.
+- **Honest offline**: if OpenCode is not installed, the room and chart still work; Architect does not fake a model.
+- **Write-through settings**: providers and models land in OpenCode config, not a parallel secret store.
+- **Open methodology, open code**: concept lives here on CORE; implementation is open on DEVELOPMENT under Apache-2.0.
 
 Family join points (owned by sibling products, not reimplemented here):
 
-- **Skills** — [skill-flow](https://github.com/real-limitless/skill-flow)
-- **MCP** — [mcp-flow](https://github.com/real-limitless/mcp-flow)
-- **Integrations** — [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp) and [OpenFlow](https://github.com/real-limitless/OpenFlow)
+- **Skills**: [skill-flow](https://github.com/real-limitless/skill-flow)
+- **MCP**: [mcp-flow](https://github.com/real-limitless/mcp-flow)
+- **Integrations**: [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp) and [OpenFlow](https://github.com/real-limitless/OpenFlow)
 
 ---
 
@@ -161,19 +157,19 @@ git checkout DEVELOPMENT
 
 ### Private work
 
-GitHub **cannot** hide individual branches on a public repository. For personal experiments or internal notes, use a **private fork** or **private sibling repository** — never push secrets or internal-only docs to this public remote.
+GitHub **cannot** hide individual branches on a public repository. For personal experiments or internal notes, use a **private fork** or **private sibling repository**: never push secrets or internal-only docs to this public remote.
 
 ---
 
 ## Resources
 
-- [Product README](https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/README.md) — standup, workspace, tests
-- [Architecture (product)](https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/docs/ARCHITECTURE.md) — implementation map
+- [Product README](https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/README.md): standup, workspace, tests
+- [Architecture (product)](https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/docs/ARCHITECTURE.md): implementation map
 - [CORE API](https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/docs/API.md)
 - [OpenCode wrapper](https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/docs/OPENCODE.md)
-- [Campaign brief](docs/CAMPAIGN.md) — positioning (this branch)
-- [Conceptual architecture](docs/ARCHITECTURE.md) — consensus (this branch)
-- [Project Everflow](https://github.com/real-limitless/ProjectEverflow) — governance platform that also wraps OpenCode
+- [Campaign brief](docs/CAMPAIGN.md): positioning (this branch)
+- [Conceptual architecture](docs/ARCHITECTURE.md): consensus (this branch)
+- [Project Everflow](https://github.com/real-limitless/ProjectEverflow): governance platform that also wraps OpenCode
 
 ---
 
@@ -181,10 +177,10 @@ GitHub **cannot** hide individual branches on a public repository. For personal 
 
 **Chen Chiu** · Creator · [@real-limitless](https://github.com/real-limitless)
 
-Part of the Flow family with [mcp-flow](https://github.com/real-limitless/mcp-flow), [skill-flow](https://github.com/real-limitless/skill-flow), [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp), [OpenFlow](https://github.com/real-limitless/OpenFlow), and [ProjectEverflow](https://github.com/real-limitless/ProjectEverflow). Powered by OpenCode — not an official OpenCode, Slack, or xAI product.
+Part of the Flow family with [mcp-flow](https://github.com/real-limitless/mcp-flow), [skill-flow](https://github.com/real-limitless/skill-flow), [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp), [OpenFlow](https://github.com/real-limitless/OpenFlow), and [ProjectEverflow](https://github.com/real-limitless/ProjectEverflow). Powered by OpenCode: not an official OpenCode, Slack, or xAI product.
 
 ---
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0: see [LICENSE](LICENSE).
