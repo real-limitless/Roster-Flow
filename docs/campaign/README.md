@@ -1,16 +1,37 @@
 # Campaign storyboard
 
-Static HTML frames used to produce README marketing screenshots.
+Static HTML frames plus live product screenshots used in the CORE README.
 
-## Frames
+## README images (live app)
+
+These files are what `README.md` embeds. Recapture them on DEVELOPMENT (`ROSTER_SKIP_ONBOARDING=1 npm run standup` then `docs/campaign/capture.sh`) and copy onto CORE. Do not overwrite `campaign-hero.png` or `campaign-why.png` with the HTML storyboard capture.
+
+| File |
+| --- |
+| `docs/images/campaign-hero.png` |
+| `docs/images/campaign-why.png` |
+| `docs/images/campaign-orchestration.png` |
+| `docs/images/chat-room.png` |
+| `docs/images/chat-harness.png` |
+| `docs/images/chat-chart.png` |
+| `docs/images/setup-install.png` |
+| `docs/images/setup-owner.png` |
+| `docs/images/setup-signin.png` |
+| `docs/images/setup-harness.png` |
+| `docs/images/setup-welcome.png` |
+| `docs/images/login.png` |
+
+## Extra HTML frames
+
+`./capture.sh` also writes storyboard-only PNGs. Keep these; they are not in the product README.
 
 | File | Output PNG |
 | --- | --- |
-| `frames/hero.html` | `docs/images/campaign-hero.png` |
-| `frames/why.html` | `docs/images/campaign-why.png` |
-| `frames/wiki.html` | `docs/images/campaign-wiki.png` |
-| `frames/roster.html` | `docs/images/campaign-roster.png` |
-| `frames/flow.html` | `docs/images/campaign-flow.png` |
+| `frames/seats.html` | `docs/images/campaign-seats.png` |
+| `frames/timeline.html` | `docs/images/campaign-timeline.png` |
+| `frames/room.html` | `docs/images/campaign-room.png` |
+
+HTML `frames/hero.html` and `frames/why.html` exist for the storyboard, but running `./capture.sh` on CORE would clobber the live hero/why shots the README shows. Restore those two files from DEVELOPMENT after a full capture.
 
 ## Capture
 
@@ -20,13 +41,3 @@ cd docs/campaign
 ```
 
 Requires network once for Google Fonts (or frames fall back to system fonts). Uses Playwright via a temp install when available.
-
-Manual: open a frame in a browser at 100% zoom and screenshot the 1440×900 `#frame` canvas.
-
-## Story
-
-1. **Hero** — hire a wiki workforce; paste `owner/repo`; OpenCode is the intended runtime
-2. **Why** — code is a liability; understanding is the asset
-3. **Wiki** — tree, Mermaid, source chips, Ask; sample `acme/ledger`
-4. **Roster** — named agents, timeline, deliverable (not chat bubbles)
-5. **Flow** — MCP Flow canvas + Generate driving node and roster state
