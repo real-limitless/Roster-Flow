@@ -2,7 +2,7 @@
  * Prove two seats talk via OpenCode + the bus. Do not start the scripted ship train.
  * Usage: npm run standup (elsewhere) && npm run prove:two-bot
  */
-const API = process.env.ROSTER_API || "http://127.0.0.1:8787";
+const API = process.env.ROSTER_API || "http://127.0.0.1:8790";
 
 async function req(path, init = {}) {
   const headers = { ...(init.headers || {}) };

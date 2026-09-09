@@ -9,6 +9,7 @@ services:
     init: true
     ports:
       - "${ROSTER_HTTP_PORT:-5173}:8787"
+      - "${ROSTER_API_PUBLISH:-8790}:8787"
     environment:
       ROSTER_API_HOST: "0.0.0.0"
       ROSTER_API_PORT: "8787"

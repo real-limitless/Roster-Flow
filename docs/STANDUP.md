@@ -16,6 +16,7 @@ docker compose up --build
 | Process | URL | Role |
 |---|---|---|
 | Product (static UI + CORE) | http://127.0.0.1:5173 | Marketing, `/setup`, `/app`; `/api` on the same origin |
+| CORE API (host / family port) | http://127.0.0.1:8790/api/v1/health | Same API published beside mcp-flow's 8787 |
 | CORE API (same process) | http://127.0.0.1:5173/api/v1/health | Teams, bots, bus, setup/auth, harness wrapper |
 | Company OpenCode | inside the container (`127.0.0.1:14180`) | Product-bot sessions |
 | System OpenCode | inside the container (`127.0.0.1:14181`) | Architect / Channel |
@@ -31,7 +32,7 @@ curl -s http://127.0.0.1:5173/setup
 
 First run: http://127.0.0.1:5173/setup. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`.
 
-If 5173 is busy: `ROSTER_HTTP_PORT=8080 docker compose up --build`. To also publish CORE on host 8787, add `8787:8787` in a gitignored `docker-compose.override.yml`.
+If 5173 is busy: `ROSTER_HTTP_PORT=8080 docker compose up --build`. Family API port is 8790 (mcp-flow keeps 8787).
 
 Optional bind mount instead of the named volume (Fedora/Podman SELinux: add `:Z`):
 
@@ -50,7 +51,7 @@ Production-like without a container engine (same CORE + `dist/` process the imag
 ```bash
 npm install
 npm run build
-npm run start:static   # http://127.0.0.1:8787/setup
+npm run start:static   # http://127.0.0.1:8790/setup
 ```
 
 ## Host prerequisites
@@ -81,20 +82,20 @@ This starts:
 
 | Process | URL | Role |
 |---|---|---|
-| CORE API | http://127.0.0.1:8787 | Teams, bots, bus, harness wrapper |
+| CORE API | http://127.0.0.1:8790 | Teams, bots, bus, harness wrapper |
 | Vite | http://127.0.0.1:5173 | Marketing + `/setup` + `/app` workspace |
 
 Or separately:
 
 ```bash
-npm run api          # :8787
-npm run dev          # :5173, proxies /api → :8787
+npm run api          # :8790
+npm run dev          # :5173, proxies /api → :8790
 ```
 
 Health check:
 
 ```bash
-curl -s http://127.0.0.1:8787/api/v1/health
+curl -s http://127.0.0.1:8790/api/v1/health
 curl -s http://127.0.0.1:5173/app
 ```
 
@@ -179,7 +180,7 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 
 ```bash
 # API + Vite are started by webServer in playwright.config.ts
-# The API always starts with ROSTER_SKIP_ONBOARDING=1 (does not reuse a leftover :8787).
+# The API always starts with ROSTER_SKIP_ONBOARDING=1 (does not reuse a leftover :8790).
 npm run test:e2e
 ```
 
@@ -195,8 +196,8 @@ npm run test:e2e -- --headed
 
 ```bash
 export OPENCODE_BIN=$(command -v opencode)
-curl -s -X POST http://127.0.0.1:8787/api/v1/harness/ensure -H 'content-type: application/json' -d '{"forceRestart":false}'
-curl -s -X POST http://127.0.0.1:8787/api/v1/harness/ensure -H 'content-type: application/json' -d '{"kind":"system"}'
+curl -s -X POST http://127.0.0.1:8790/api/v1/harness/ensure -H 'content-type: application/json' -d '{"forceRestart":false}'
+curl -s -X POST http://127.0.0.1:8790/api/v1/harness/ensure -H 'content-type: application/json' -d '{"kind":"system"}'
 ```
 
 If the CLI is missing, health returns `"harness":"offline"` and the room still works. Chart Architect needs the **System** harness (`systemHarness`); without OpenCode it errors instead of mocking a plan. Playwright sets `ROSTER_ARCHITECT_MODE=template` so CI does not need the CLI.
