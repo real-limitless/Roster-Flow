@@ -9,6 +9,9 @@ This is the **CORE** branch: concept, methodology, and orientation. Docs only. T
 | **License** | [Apache-2.0](LICENSE) |
 | **Install / code** | [DEVELOPMENT](https://github.com/real-limitless/roster-flow/tree/DEVELOPMENT) |
 | **Stand up** | [INSTALLATION.md](INSTALLATION.md) |
+| **Branches** | [BRANCHES.md](BRANCHES.md) |
+| **Species** | [SPECIES.md](SPECIES.md) |
+| **Voice** | [VOICE.md](VOICE.md) |
 
 Every bot is an OpenCode agent. Roster-flow does **not** reimplement the agent loop: it wraps `opencode serve` (the Everflow pattern), maps org-chart seats onto those sessions, and gives humans a Slack-like room plus a living chart.
 
@@ -113,8 +116,15 @@ The starter company is one organization with a ship-train project. Product is th
 - **Write-through settings**: providers and models land in OpenCode config, not a parallel secret store.
 - **Open methodology, open code**: concept lives here on CORE; implementation is open on DEVELOPMENT under Apache-2.0.
 
-Family join points (owned by sibling products, not reimplemented here):
+Family join points (owned by sibling products, not reimplemented here). Written standard: private TheFLOW.
 
+- skill-flow: Agent Skills catalog and install
+- mcp-flow: MCP gateway
+- ansible-flow-mcp: Ansible for agents
+- OpenFlow: workflows
+- wiki-flow: wiki workspace
+- CleanFlow: clean-room dock
+- ProjectEverflow: governance platform
 - **Skills**: [skill-flow](https://github.com/real-limitless/skill-flow)
 - **MCP**: [mcp-flow](https://github.com/real-limitless/mcp-flow)
 - **Integrations**: [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp) and [OpenFlow](https://github.com/real-limitless/OpenFlow)
