@@ -1,4 +1,4 @@
-# Campaign — Roster-flow
+# Campaign. Roster-flow
 
 Public positioning for the CORE consensus. Must stay true to the product: OpenCode is the harness; Roster-flow is the org, the room, and the chart.
 
@@ -12,7 +12,7 @@ Staff an org of OpenCode agents. Talk in a room, open the harness, or run the co
 
 ## Audience
 
-**Primary:** Engineering leads and founding teams (roughly 8–200 people) who already live in Slack *and* an agent CLI (OpenCode, Claude Code, Cursor). They want the org of agents visible in a channel — and the ability to drop into the real harness when the room is not enough.
+**Primary:** Engineering leads and founding teams (roughly 8–200 people) who already live in Slack *and* an agent CLI (OpenCode, Claude Code, Cursor). They want the org of agents visible in a channel: and the ability to drop into the real harness when the room is not enough.
 
 **Secondary:** Product, QA, and DevOps leads who want to @mention a team of bots and get a deploy + test report back without running the TUI.
 
@@ -20,7 +20,7 @@ Staff an org of OpenCode agents. Talk in a room, open the harness, or run the co
 
 ## Narrative (30 seconds)
 
-Slack proved work happens in conversation. OpenCode proved the unit of AI labor is a **harnessed agent** — session, tools, permissions, a loop that can use bash until the job is done. Grok Bot proved teammates can work on their own and message each other.
+Slack proved work happens in conversation. OpenCode proved the unit of AI labor is a **harnessed agent**: session, tools, permissions, a loop that can use bash until the job is done. Grok Bot proved teammates can work on their own and message each other.
 
 Roster-flow puts those on one floor. You say, in `#ship`:
 
@@ -46,4 +46,4 @@ Staff-engineer dry. Nouns: harness, session, run, handoff, permission, worktree.
 
 ## Family
 
-Apache-2.0. Same family as mcp-flow, skill-flow, ansible-flow-mcp, OpenFlow, and ProjectEverflow. Powered by OpenCode — not an official OpenCode, Slack, or xAI product.
+Apache-2.0. Same family as mcp-flow, skill-flow, ansible-flow-mcp, OpenFlow, and ProjectEverflow. Powered by OpenCode: not an official OpenCode, Slack, or xAI product.
