@@ -230,4 +230,26 @@ export const api = {
         channel: string | null;
       }>;
     }>("/api/v1/harness/sessions"),
+  familyStatus: () =>
+    req<{
+      mcpFlow: { url: string; ok: boolean; status?: number; error?: string; admin: boolean };
+      skillFlow: { url: string; bin: string; ok: boolean; status?: number; error?: string };
+    }>("/api/v1/family/status"),
+  familySkillAudit: (source: string) =>
+    req<{ ok: boolean; json?: unknown; stderr?: string; error?: string }>("/api/v1/family/skills/audit", {
+      method: "POST",
+      body: JSON.stringify({ source }),
+    }),
+  familySkillInstall: (source: string) =>
+    req<{ ok: boolean; json?: unknown; stderr?: string; error?: string }>("/api/v1/family/skills/install", {
+      method: "POST",
+      body: JSON.stringify({ source, confirm: true }),
+    }),
+  familyMcpBackends: () =>
+    req<{ ok: boolean; backends: unknown[]; error?: string }>("/api/v1/family/mcp/backends"),
+  familyRegisterMcp: (body: { slug: string; url?: string; command?: string[]; title?: string }) =>
+    req<{ ok: boolean; backend?: unknown; error?: string }>("/api/v1/family/mcp/backends", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
