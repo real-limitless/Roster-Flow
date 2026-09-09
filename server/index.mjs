@@ -15,6 +15,7 @@ import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
+import { auditSkill, familyStatus, installSkill, listMcpBackends, registerMcpBackend } from "./family.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
 import { isDataWritable } from "./paths.mjs";
@@ -216,6 +217,30 @@ const server = createServer(async (req, res) => {
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
       });
+      return;
+    }
+    if (pathname === "/api/v1/family/status" && method === "GET") {
+      json(res, 200, await familyStatus());
+      return;
+    }
+    if (pathname === "/api/v1/family/skills/audit" && method === "POST") {
+      const body = await readBody(req);
+      json(res, 200, await auditSkill(body.source));
+      return;
+    }
+    if (pathname === "/api/v1/family/skills/install" && method === "POST") {
+      const body = await readBody(req);
+      json(res, 200, await installSkill(body.source, { confirm: Boolean(body.confirm) }));
+      return;
+    }
+    if (pathname === "/api/v1/family/mcp/backends" && method === "GET") {
+      json(res, 200, await listMcpBackends());
+      return;
+    }
+    if (pathname === "/api/v1/family/mcp/backends" && method === "POST") {
+      const body = await readBody(req);
+      const created = await registerMcpBackend(body);
+      json(res, created.ok ? 201 : 400, created);
       return;
     }
     if (pathname === "/api/v1/reset" && method === "POST") {
