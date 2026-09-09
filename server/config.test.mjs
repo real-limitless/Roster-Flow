@@ -15,9 +15,9 @@ test("api bind defaults stay loopback for host standup", () => {
   delete process.env.OPENCODE_HOSTNAME;
   try {
     assert.equal(apiHost(), "127.0.0.1");
-    assert.equal(apiPort(), 8787);
+    assert.equal(apiPort(), 8790);
     assert.equal(publicUrl(), "http://127.0.0.1:5173");
-    assert.equal(rosterApiUrl(), "http://127.0.0.1:8787");
+    assert.equal(rosterApiUrl(), "http://127.0.0.1:8790");
     assert.equal(opencodeHostname(), "127.0.0.1");
   } finally {
     if (prevHost === undefined) delete process.env.ROSTER_API_HOST;

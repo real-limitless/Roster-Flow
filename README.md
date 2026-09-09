@@ -49,7 +49,7 @@ Then open http://127.0.0.1:5173/setup (install → owner → login → harness �
 
 State lives in the `roster-data` volume (survives `compose down`). Provider keys stay in `.env` / the environment: they are not baked into the image. Room, chart, and bus work if OpenCode is offline; Architect needs the System harness.
 
-Published URL is **5173** (UI, `/setup`, `/app`, and `/api` on the same origin). Override with `ROSTER_HTTP_PORT`. Host `npm run api` can keep using 8787.
+Published URL is **5173** (UI, `/setup`, `/app`, and `/api` on the same origin). The API is also published on **8790** (leave 8787 for mcp-flow). Override UI with `ROSTER_HTTP_PORT`. Host `npm run api` uses 8790.
 
 ## Stand up (host Node, humans and Playwright agents)
 
@@ -63,7 +63,7 @@ npm run standup
 - First-run setup: http://127.0.0.1:5173/setup
 - Workspace: http://127.0.0.1:5173/app
 - Settings (providers / models): http://127.0.0.1:5173/app/settings
-- CORE API: http://127.0.0.1:8787/api/v1/health
+- CORE API: http://127.0.0.1:8790/api/v1/health
 
 Full container and host paths, selectors, seed data, and Playwright: [docs/STANDUP.md](docs/STANDUP.md).
 

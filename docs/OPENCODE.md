@@ -69,7 +69,7 @@ Provider contract:
 OPENCODE_BIN=          # optional absolute path
 OPENCODE_HOSTNAME=127.0.0.1
 OPENCODE_PORT=14180    # preferred serve port; falls back if busy
-ROSTER_API=http://127.0.0.1:8787
+ROSTER_API=http://127.0.0.1:8790
 ROSTER_API_HOST=127.0.0.1   # Compose sets 0.0.0.0
 ROSTER_DATA_DIR=.roster-flow
 ROSTER_OPENCODE_DIR=.opencode

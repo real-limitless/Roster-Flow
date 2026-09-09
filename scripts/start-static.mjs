@@ -14,7 +14,7 @@ const env = {
   ...process.env,
   ROSTER_STATIC_DIR: process.env.ROSTER_STATIC_DIR || dist,
   ROSTER_API_HOST: process.env.ROSTER_API_HOST || "0.0.0.0",
-  ROSTER_PUBLIC_URL: process.env.ROSTER_PUBLIC_URL || `http://127.0.0.1:${process.env.ROSTER_API_PORT || 8787}`,
+  ROSTER_PUBLIC_URL: process.env.ROSTER_PUBLIC_URL || `http://127.0.0.1:${process.env.ROSTER_API_PORT || 8790}`,
 };
 
 const child = spawn(process.execPath, ["server/index.mjs"], { stdio: "inherit", env, cwd: root });

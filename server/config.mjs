@@ -3,7 +3,7 @@ export function apiHost() {
 }
 
 export function apiPort() {
-  return Number(process.env.ROSTER_API_PORT || 8787);
+  return Number(process.env.ROSTER_API_PORT || 8790);
 }
 
 export function publicUrl() {

@@ -13,7 +13,7 @@ export default defineConfig({
   webServer: [
     {
       command: "node server/index.mjs",
-      port: 8787,
+      port: 8790,
       reuseExistingServer: false,
       timeout: 60_000,
       env: {

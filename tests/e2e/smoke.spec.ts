@@ -37,7 +37,7 @@ test("block kit builder add-block and json", async ({ page, request }) => {
 });
 
 async function resetApi(request: { post: (url: string) => Promise<{ json: () => Promise<unknown> }> }) {
-  const res = await request.post("http://127.0.0.1:8787/api/v1/reset");
+  const res = await request.post("http://127.0.0.1:8790/api/v1/reset");
   const body = (await res.json()) as { seats?: Array<{ id: string; name: string }>; teams?: Array<{ id: string; seatIds?: string[] }> };
   const channel = body.seats?.find((s) => s.id === "channel");
   if (channel?.name !== "Channel") throw new Error(`reset did not restore Channel conductor (got ${channel?.name || "missing"})`);
@@ -220,7 +220,7 @@ test("settings writes a provider through the API", async ({ page, request }) => 
   await page.getByLabel("Models (comma-separated)").fill("demo-small");
   await page.getByTestId("provider-save").click();
   await expect(page.getByTestId("provider-card-demo-llm")).toBeVisible();
-  const res = await request.get("http://127.0.0.1:8787/api/v1/providers");
+  const res = await request.get("http://127.0.0.1:8790/api/v1/providers");
   expect(res.ok()).toBeTruthy();
   const body = await res.json();
   expect(body.some((p: { id: string }) => p.id === "demo-llm")).toBeTruthy();
