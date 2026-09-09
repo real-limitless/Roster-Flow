@@ -6,7 +6,7 @@ Live captures of the marketing site and the Room / Harness / Chart workspace. Us
 
 | File | Source |
 | --- | --- |
-| `docs/images/campaign-hero.png` | `/` hero — Room · Harness · Chart |
+| `docs/images/campaign-hero.png` | `/` hero. Room · Harness · Chart |
 | `docs/images/campaign-why.png` | `/` problem section |
 | `docs/images/campaign-orchestration.png` | `/orchestration` run story |
 | `docs/images/chat-room.png` | `/app` Room (`#ship`) |
@@ -31,11 +31,11 @@ Requires the marketing + workspace client on `BASE_URL` (default `http://127.0.0
 
 ## Story
 
-1. **Hero** — staff an org of OpenCode agents; talk in a room or open the harness
-2. **Why** — agents and tools do not share a floor
-3. **Orchestration** — Channel compiles a sentence into a run you still own
-4. **Room** — humans and bots in one channel; the thread is the audit log
-5. **Harness** — the same seat opens as a real OpenCode session
-6. **Chart** — reporting lines are the control plane
-7. **Setup** — install, owner, sign in, harness, welcome
-8. **Login** — local owner after first run
+1. **Hero**: staff an org of OpenCode agents; talk in a room or open the harness
+2. **Why**: agents and tools do not share a floor
+3. **Orchestration**. Channel compiles a sentence into a run you still own
+4. **Room**: humans and bots in one channel; the thread is the audit log
+5. **Harness**: the same seat opens as a real OpenCode session
+6. **Chart**: reporting lines are the control plane
+7. **Setup**: install, owner, sign in, harness, welcome
+8. **Login**: local owner after first run

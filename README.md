@@ -2,9 +2,9 @@
 
 **Staff an org of OpenCode agents. Talk in a room, open the harness, or run the company from the org chart.**
 
-Every bot is an OpenCode agent. Roster-flow does **not** reimplement the agent loop — it wraps `opencode serve` (Everflow pattern), maps org-chart seats onto those sessions, and gives humans a Slack-like room plus a living chart.
+Every bot is an OpenCode agent. Roster-flow does **not** reimplement the agent loop: it wraps `opencode serve` (Everflow pattern), maps org-chart seats onto those sessions, and gives humans a Slack-like room plus a living chart.
 
-![Hero: staff an org of agents — talk in a room or open the harness](docs/images/campaign-hero.png)
+![Hero: staff an org of agents: talk in a room or open the harness](docs/images/campaign-hero.png)
 
 [Campaign brief](docs/CAMPAIGN.md) · [Storyboard](docs/campaign/) · [Architecture](docs/ARCHITECTURE.md) · Apache-2.0
 
@@ -29,15 +29,15 @@ Slack proved work happens in conversation. OpenCode proved the unit of AI labor 
 
 ![Channel compiles a sentence into a run you still own](docs/images/campaign-orchestration.png)
 
-**You need this when:**
+Typical cases:
 
-- The channel should be the audit log — Product briefs, Eng ships, you confirm, DevOps deploys, QA signs
+- The channel should be the audit log. Product briefs, Eng ships, you confirm, DevOps deploys, QA signs
 - Every bot is an OpenCode agent you chose to run, not a skin on a chatbot
-- Room, harness, and chart are the same seats — ⌘. cycles the surface
+- Room, harness, and chart are the same seats. ⌘. cycles the surface
 
 ## Install (Docker or Podman)
 
-Official path — no host Node toolchain. Needs a container engine and this repo.
+Official path: no host Node toolchain. Needs a container engine and this repo.
 
 ```bash
 cp -n .env.example .env   # optional: add XAI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
@@ -47,7 +47,7 @@ docker compose up --build
 
 Then open http://127.0.0.1:5173/setup (install → owner → login → harness → welcome).
 
-State lives in the `roster-data` volume (survives `compose down`). Provider keys stay in `.env` / the environment — they are not baked into the image. Room, chart, and bus work if OpenCode is offline; Architect needs the System harness.
+State lives in the `roster-data` volume (survives `compose down`). Provider keys stay in `.env` / the environment: they are not baked into the image. Room, chart, and bus work if OpenCode is offline; Architect needs the System harness.
 
 Published URL is **5173** (UI, `/setup`, `/app`, and `/api` on the same origin). Override with `ROSTER_HTTP_PORT`. Host `npm run api` can keep using 8787.
 
@@ -73,7 +73,7 @@ npm run test:e2e
 
 ## Docs on this branch (`DEVELOPMENT`)
 
-This is the **product branch** — the runnable app, API, and tests. Concept and methodology live on [`CORE`](https://github.com/real-limitless/roster-flow/tree/CORE).
+This is the **product branch**: the runnable app, API, and tests. Concept and methodology live on [`CORE`](https://github.com/real-limitless/roster-flow/tree/CORE).
 
 - [Product / architecture](docs/ARCHITECTURE.md)
 - [Campaign README](docs/CAMPAIGN.md)
