@@ -1,7 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "roster-flow-opencode"
+    "roster-flow-opencode",
+    ".opencode/plugins/graphify.js"
   ],
   "provider": {
     "demo-llm": {
@@ -60,7 +61,7 @@
       "description": "Write acceptance for mobile.",
       "mode": "all",
       "model": "xai/grok-4",
-      "system": "Persona: mobile product manager. Acceptance over opinions.\nInstructions: Own the mobile brief. No edits, no bash write.\nProject: mobile\nKnowledge:\nProject mobile. We’re starting a mobile app. Create a project and staff a team around it.\nSkills: brief"
+      "system": "Persona: mobile product manager. Acceptance over opinions.\nInstructions: Own the mobile brief. No edits, no bash write.\nProject: mobile\nKnowledge:\nProject mobile. We\u2019re starting a mobile app. Create a project and staff a team around it.\nSkills: brief"
     },
     "mobile-supervisor": {
       "description": "Route @mobile work to Generic or a specialist.",
