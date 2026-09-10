@@ -1,0 +1,4 @@
+{
+  "name": "Roster-Flow",
+  "start": "bash .cursor/strip-cursor-attribution.sh"
+}
