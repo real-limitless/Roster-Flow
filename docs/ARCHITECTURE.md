@@ -81,3 +81,5 @@ CORE API (ROSTER_API_HOST, default 127.0.0.1:8787; Compose binds 0.0.0.0)
 - Multi-tenant cloud sandboxes (that is Everflow’s product).
 - Real SSO. Local first-run is an owner account (name, email, password) plus a bearer session. `ROSTER_SKIP_ONBOARDING=1` keeps the open-API demo path and still accepts `Authorization: Bearer roster-demo`.
 - OpenChamber / OpenCode web iframe. Harness embeds `opencode attach` in xterm (PTY), not a second web app.
+
+Paperclip / Grok Bot gaps mapped to GitHub issues: [COMPETITIVE.md](COMPETITIVE.md).

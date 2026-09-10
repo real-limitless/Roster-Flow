@@ -76,6 +76,7 @@ npm run test:e2e
 This is the **product branch**: the runnable app, API, and tests. Concept and methodology live on [`CORE`](https://github.com/real-limitless/roster-flow/tree/CORE).
 
 - [Product / architecture](docs/ARCHITECTURE.md)
+- [Competitive gap (Paperclip, Grok Bot)](docs/COMPETITIVE.md)
 - [Campaign README](docs/CAMPAIGN.md)
 - [CORE API](docs/API.md)
 - [OpenCode wrapper + plugin](docs/OPENCODE.md)

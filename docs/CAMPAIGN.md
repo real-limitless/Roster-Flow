@@ -38,7 +38,7 @@ Channel compiles a run. Product writes acceptance. Eng.Build and Eng.Review work
 | Reporting lines are permission lines | HR wallpaper org chart |
 | Confirm on deploy | Skip the human gate |
 
-**Wedge vs peers:** OpenCode is the best single-agent harness. Slack is the best room. Paperclip-style charts staff agents. Grok Bot is always-on teammates with a computer. Roster-flow’s claim is only this: **the room, the harness, and the chart are the same seats.**
+**Wedge vs peers:** OpenCode is the best single-agent harness. Slack is the best room. Paperclip-style charts staff agents. Grok Bot is always-on teammates with a computer. Roster-flow’s claim is only this: **the room, the harness, and the chart are the same seats.** Feature-by-feature gaps and GitHub issue matching: [docs/COMPETITIVE.md](COMPETITIVE.md).
 
 ## Proof points on this branch
 
