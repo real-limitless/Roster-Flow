@@ -2,7 +2,7 @@
 
 Internal product brief for `DEVELOPMENT`. This is not a clone list. Roster-flow’s wedge stays **Room · Harness · Chart as the same seats**. Steal the primitives that make Paperclip and Grok Bot feel like a company you can leave running; do not become a 167-agent agency poster, a Linear clone, or a hosted computer-use app.
 
-**Sources (2026-09-10):** [paperclip.ing](https://paperclip.ing/), [paperclipai/paperclip](https://github.com/paperclipai/paperclip) README + docs, [docs.paperclip.ing](https://docs.paperclip.ing/start/core-concepts), [Grok Bot overview](https://docs.x.ai/grok-bot/overview), [skills & routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), [FAQ](https://docs.x.ai/grok-bot/faq), [Teams / Enterprise](https://cursor.com/docs/grok-bot/teams). Roster-flow surface: `docs/ARCHITECTURE.md`, `docs/API.md`, CORE API on this branch, GitHub issues **#2–#24** and **#35**.
+**Sources (2026-09-10):** [paperclip.ing](https://paperclip.ing/), [paperclipai/paperclip](https://github.com/paperclipai/paperclip) README + docs, [docs.paperclip.ing](https://docs.paperclip.ing/start/core-concepts), [Grok Bot overview](https://docs.x.ai/grok-bot/overview), [skills & routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), [FAQ](https://docs.x.ai/grok-bot/faq), [Teams / Enterprise](https://cursor.com/docs/grok-bot/teams). Roster-flow surface: `docs/ARCHITECTURE.md`, `docs/API.md`, CORE API on this branch, GitHub issues **#2–#24**, **#35**, and Competitive P1 **#41–#44**.
 
 Campaign already names the peers (`docs/CAMPAIGN.md`): OpenCode is the harness, Slack is the room, Paperclip-style charts staff agents, Grok Bot is always-on teammates with a computer. This document says **what they ship that we do not**, maps each gap to an existing issue when one exists, and lists unmatched gaps worth filing.
 
@@ -76,18 +76,18 @@ Legend: **Have** = shipped on DEVELOPMENT. **Partial** = noun exists, verb does 
 |---|---|---|---|
 | Org chart, titles, reporting lines | Have | **Have** (Chart, hire/fire/reparent) | — |
 | Hire / fire from the chart | Have | **Have** | — |
-| Architect / CEO proposes org or strategy | CEO strategy + hire requests | **Partial**: Architect OrgPlan; no board queue, no CEO heartbeat | unmatched (A) |
-| Board approval of hires and strategy | First-class Approvals queue; reject / request revision | Architect Apply is immediate; no pending-approval object | unmatched (A) |
-| Pause / resume / terminate an agent | Status: paused, terminated; board can stop heartbeats | Fire only. Marketing “kill switch” is copy. Architect “pause” = fire-from-plan, not a live pause | unmatched (A) |
+| Architect / CEO proposes org or strategy | CEO strategy + hire requests | **Partial**: Architect OrgPlan; no board queue, no CEO heartbeat | [#41](https://github.com/real-limitless/Roster-Flow/issues/41) |
+| Board approval of hires and strategy | First-class Approvals queue; reject / request revision | Architect Apply is immediate; no pending-approval object | [#41](https://github.com/real-limitless/Roster-Flow/issues/41) |
+| Pause / resume / terminate an agent | Status: paused, terminated; board can stop heartbeats | Fire only. Marketing “kill switch” is copy. Architect “pause” = fire-from-plan, not a live pause | [#41](https://github.com/real-limitless/Roster-Flow/issues/41) |
 | Per-agent monthly budget + 80% warn + 100% auto-pause | Have (company + agent caps, cents) | **Gap**. Hire copy still says “tools → budget” | [#4](https://github.com/real-limitless/Roster-Flow/issues/4) |
 | Cost by agent / project / goal / issue / model | Have | **Gap** | [#10](https://github.com/real-limitless/Roster-Flow/issues/10) |
-| Goal tree (why) above projects (where) above issues (what) | Nested goals; projects link to goals; issues inherit | Project `brief` + `constitution` only. No goal object, no ancestry in prompts | unmatched (B) |
+| Goal tree (why) above projects (where) above issues (what) | Nested goals; projects link to goals; issues inherit | Project `brief` + `constitution` only. No goal object, no ancestry in prompts | [#42](https://github.com/real-limitless/Roster-Flow/issues/42) |
 | Ticket / issue as the unit of work | Lifecycle, comments, labels, attachments, work products, inbox | Runs + bus messages. No first-class task | [#8](https://github.com/real-limitless/Roster-Flow/issues/8) |
 | Atomic checkout / execution lock | `POST …/issues/:id/checkout` | **Gap**. Two `@eng` specialists can redo the same webhook | [#8](https://github.com/real-limitless/Roster-Flow/issues/8) |
 | Blockers / `depend_on` | First-class | Advertised on `/orchestration`, not in API | [#8](https://github.com/real-limitless/Roster-Flow/issues/8), honesty [#14](https://github.com/real-limitless/Roster-Flow/issues/14) |
 | Heartbeats (schedule, assignment, @mention, manual, approval resolution) | DB-backed queue, coalescing, recovery of orphaned runs | Wake on mention / `wake: true` only | [#9](https://github.com/real-limitless/Roster-Flow/issues/9) |
-| Heartbeat context pack (identity, inbox, goal ancestry, budget) | `GET /api/issues/:id/heartbeat-context`, `GET /api/agents/me` | Prompt is persona + job + this mail. No compact inbox, no goal chain | [#9](https://github.com/real-limitless/Roster-Flow/issues/9) + unmatched (B) |
-| Agent inbox | `inbox-lite`, assignments | Room + bus log. No per-seat inbox UI | unmatched (C) |
+| Heartbeat context pack (identity, inbox, goal ancestry, budget) | `GET /api/issues/:id/heartbeat-context`, `GET /api/agents/me` | Prompt is persona + job + this mail. No compact inbox, no goal chain | [#9](https://github.com/real-limitless/Roster-Flow/issues/9), [#42](https://github.com/real-limitless/Roster-Flow/issues/42), [#43](https://github.com/real-limitless/Roster-Flow/issues/43) |
+| Agent inbox | `inbox-lite`, assignments | Room + bus log. No per-seat inbox UI | [#43](https://github.com/real-limitless/Roster-Flow/issues/43) |
 | Immutable / append-only activity + actor attribution | Mutating actions, cost events, approvals as durable activity | In-memory `trace` ring + bus array in `state.json` (mutable) | unmatched (D) |
 | Tool-call tracing on the ticket | Full trace on the issue | Harness TUI / OpenCode session; Room does not show tool trace on the run card | unmatched (D), related [#11](https://github.com/real-limitless/Roster-Flow/issues/11) |
 
@@ -106,10 +106,10 @@ Legend: **Have** = shipped on DEVELOPMENT. **Partial** = noun exists, verb does 
 | Runtime `SKILL.md` so agents discover the control plane | Paperclip ships agent-facing skill + API catalog | Plugin tools exist; no equivalent “how to be an employee here” skill for non-OpenCode agents | [#3](https://github.com/real-limitless/Roster-Flow/issues/3) |
 | Plugins that extend the *control plane* (UI, workers, sandbox providers) | Out-of-process plugins | Flow family is the intended plugin plane — attach is still a card | [#24](https://github.com/real-limitless/Roster-Flow/issues/24) |
 | MCP tool gateway (governed tools) | Have | mcp-flow is the sibling; Roster does not consume it live | [#24](https://github.com/real-limitless/Roster-Flow/issues/24) |
-| Routines: cron, webhook, API trigger → tracked issue → wake agent | Have | **Gap** (heartbeat [#9](https://github.com/real-limitless/Roster-Flow/issues/9) is the wake primitive; routines are the productized schedule) | unmatched (H) |
+| Routines: cron, webhook, API trigger → tracked issue → wake agent | Have | **Gap** (heartbeat [#9](https://github.com/real-limitless/Roster-Flow/issues/9) is the wake primitive; routines are the productized schedule) | [#44](https://github.com/real-limitless/Roster-Flow/issues/44) |
 | Watchdogs / enforced outcomes / self-healing orphaned runs | Have | **Gap** | unmatched (I) |
 | Artifacts & work products on the issue | Have | File chips + attachments metadata (no blob store / work-product object) | unmatched (J) |
-| Deep planning: revisioned plans, plan approvals | Have | Architect plans exist; no revision history, no board approve-before-apply | unmatched (A) |
+| Deep planning: revisioned plans, plan approvals | Have | Architect plans exist; no revision history, no board approve-before-apply | [#41](https://github.com/real-limitless/Roster-Flow/issues/41) |
 | Company export/import (agents, skills, projects, routines, secret scrub) | `companies.sh` / portability | Advertised `multi-team.yaml`; no API | [#20](https://github.com/real-limitless/Roster-Flow/issues/20) |
 | Multi-company isolation on one deployment | Unlimited companies, company-scoped entities | Single starter org in one `state.json` | unmatched (K) |
 | Durable DB | Embedded Postgres | JSON file | unmatched (L) — only if heartbeats/budgets/tickets need crash-safe queues |
@@ -145,10 +145,10 @@ Roster-flow already implemented the collaboration verbs Grok Bot made famous (`d
 | Connectors / MCP plugins marketplace | Settings → Plugins; team connector policy | Family cards; mcp-flow not live-attached | [#24](https://github.com/real-limitless/Roster-Flow/issues/24), [#6](https://github.com/real-limitless/Roster-Flow/issues/6) |
 | Delegate coding to a separate Cloud Agent computer | Have; admin can disable | Harness is local OpenCode. No spawn-to-cloud | unmatched (O) |
 | Works with laptop closed / 24/7 | Cloud computer + routines | Process dies with Compose/host | [#9](https://github.com/real-limitless/Roster-Flow/issues/9) (heartbeat) is the self-host analogue |
-| Skills (how) vs routines (when) | First-class; `/` skill, `@` routine | Skill chips are catalog names, not saved procedures. No routine object | unmatched (H) + [#24](https://github.com/real-limitless/Roster-Flow/issues/24) |
+| Skills (how) vs routines (when) | First-class; `/` skill, `@` routine | Skill chips are catalog names, not saved procedures. No routine object | [#44](https://github.com/real-limitless/Roster-Flow/issues/44), [#24](https://github.com/real-limitless/Roster-Flow/issues/24) |
 | Teach-by-demonstration (record up to 10 min → draft skill) | Rolling out | **Gap** | unmatched (P) — later; do not block company mechanics |
-| Event-triggered routines (Slack message, GitHub notification) | Cursor account integrations | **Gap** | [#5](https://github.com/real-limitless/Roster-Flow/issues/5), [#11](https://github.com/real-limitless/Roster-Flow/issues/11), unmatched (H) |
-| Auto Review (independent model on risky actions) | Have; Enterprise can enforce + team rules | Deny lists on seats; confirm-on-deploy is a social rule, not an evaluated policy engine | unmatched (A) |
+| Event-triggered routines (Slack message, GitHub notification) | Cursor account integrations | **Gap** | [#5](https://github.com/real-limitless/Roster-Flow/issues/5), [#11](https://github.com/real-limitless/Roster-Flow/issues/11), [#44](https://github.com/real-limitless/Roster-Flow/issues/44) |
+| Auto Review (independent model on risky actions) | Have; Enterprise can enforce + team rules | Deny lists on seats; confirm-on-deploy is a social rule, not an evaluated policy engine | [#41](https://github.com/real-limitless/Roster-Flow/issues/41) (queue, not Auto Review model) |
 | Computer takeover for 2FA / CAPTCHA / passwords | Have; masked secret request | **Gap** (N/A until computer-use) | unmatched (O) |
 | Desktop app (macOS/Windows/Linux) + iOS + Android | Have | Browser only | unmatched (M) |
 | Same bots on phone for approve / nudge | Have | **Gap** | unmatched (M) |
@@ -165,7 +165,7 @@ Grok Bot FAQ: **no separate Grok Bot spend cap**. Paperclip and (if we ship it) 
 
 ## 6. GitHub issue matching (complete)
 
-Every open issue on `real-limitless/Roster-Flow` as of 2026-09-10, mapped to a competitor primitive. **Do not file duplicates** of the Competitive / Idea cluster.
+Every open issue on `real-limitless/Roster-Flow` as of 2026-09-10 (plus P1 filings **#41–#44**), mapped to a competitor primitive. **Do not file duplicates** of the Competitive / Idea cluster.
 
 ### 6.1 Competitive issues (already the Paperclip / Grok Bot steal-list)
 
@@ -180,6 +180,10 @@ Every open issue on `real-limitless/Roster-Flow` as of 2026-09-10, mapped to a c
 | [#9](https://github.com/real-limitless/Roster-Flow/issues/9) | Heartbeat wakes | Heartbeat protocol | Always-on cloud + routines | Org dies when the tab closes. Secondary audience will not babysit `/app`. |
 | [#10](https://github.com/real-limitless/Roster-Flow/issues/10) | Seat/run spend dashboard | Cost panel | Usage page, no per-bot cap | `/pricing` already bills “hours for bots” with no meter. |
 | [#11](https://github.com/real-limitless/Roster-Flow/issues/11) | GitHub PR/issue cards in `#ship` | Not their core UI | GitHub event routines | Ship-train feels real when the thread shows the PR and confirm-on-merge. |
+| [#41](https://github.com/real-limitless/Roster-Flow/issues/41) | Board governance: pause/resume, hire+strategy approval, kill switch | Approvals queue | Auto Review (hosted analogue) | Heartbeats without a board run unattended. Architect Apply is immediate today. |
+| [#42](https://github.com/real-limitless/Roster-Flow/issues/42) | Goal ancestry on every wake | Goal → project → issue | Bot description + thread | Specialists wake without why. Inject constitution/goals into `promptBody`; no Goals product UI. |
+| [#43](https://github.com/real-limitless/Roster-Flow/issues/43) | Per-seat inbox | `inbox-lite` | Per-Bot conversation + group | Heartbeat/#8 need unread mail, not a full `#ship` replay. |
+| [#44](https://github.com/real-limitless/Roster-Flow/issues/44) | Routines (cron / webhook → task → wake) | Routines + catch-up | Skills vs routines | Heartbeat is check-mail; Scribe/Scout need a scheduled job. After #9+#8. |
 
 ### 6.2 Idea issues (adoption / Paperclip onboard parity)
 
@@ -209,18 +213,9 @@ Every open issue on `real-limitless/Roster-Flow` as of 2026-09-10, mapped to a c
 
 ---
 
-## 7. Unmatched gaps (beneficial, no issue yet)
+## 7. Remaining unmatched gaps (not filed)
 
-File these as new issues only if we intend to build them. Letters match the tables above. Suggested titles are copy-paste.
-
-### P1 — company you can leave running (Paperclip table stakes)
-
-| ID | Suggested issue | Why | Notes |
-|---|---|---|---|
-| **A** | Competitive: Board governance — pause/resume, hire+strategy approval queue, kill switch | Paperclip’s “you’re in charge” is a queue, not a slogan. Grok Auto Review is the hosted version. Architect Apply currently mutates immediately. Marketing already claims kill switch. | Keep Architect as the proposer. Add `approvals[]` (hire, strategy/plan, budget override, deploy already wants human). Pause ≠ fire (inbox still readable; no wake). |
-| **B** | Competitive: Goal ancestry on every wake (mission → project → task) | Paperclip’s conversion story is “manage goals, not PRs.” We have project brief/constitution but prompts do not carry why. | Do **not** build a Goals product UI first. Persist `goals[]` on the org/project and inject 10 lines into `promptBody`. Full goal tree UI can wait. |
-| **C** | Competitive: Per-seat inbox (unread bus + assigned tasks) | Paperclip `inbox-lite` is what a heartbeat reads. Chart/Room have no “what does Eng.Build owe?” | Natural join of [#8](https://github.com/real-limitless/Roster-Flow/issues/8)+[#9](https://github.com/real-limitless/Roster-Flow/issues/9). Could be a pane, not a new app. |
-| **H** | Competitive: Routines (cron / webhook → issue → wake) | Heartbeat [#9](https://github.com/real-limitless/Roster-Flow/issues/9) is “wake and check mail.” Grok/Paperclip routines are “this job, this schedule, this approval boundary.” QA/Scribe/Scout need this or they are demo seats. | Implement **after** [#9](https://github.com/real-limitless/Roster-Flow/issues/9)+[#8](https://github.com/real-limitless/Roster-Flow/issues/8). A routine is a row that creates a task and sets `wake`. |
+P1 company-loop gaps **A / B / C / H** were filed as [#41](https://github.com/real-limitless/Roster-Flow/issues/41)–[#44](https://github.com/real-limitless/Roster-Flow/issues/44). Letters below still match the tables. File these only if we intend to build them.
 
 ### P2 — trust, audit, secrets
 
@@ -271,8 +266,8 @@ Honesty and a working harness are not competitive features; they are why anyone 
    #10 spend (so budgets have a numerator)
    #9  heartbeats (wake without a human in #ship)
    #8  tasks + claim + blockers (heartbeat has something to check out)
-   A   pause / approval queue (or heartbeats will run unattended with no board)
-   B   goal/constitution injected on wake (cheap, unblocks “why”)
+   #41 pause / approval queue (or heartbeats will run unattended with no board)
+   #42 goal/constitution injected on wake (cheap, unblocks “why”)
 
 3. Mixed org (Paperclip’s hire model, our Room)
    #3  MCP room (inbound)
@@ -284,8 +279,8 @@ Honesty and a working harness are not competitive features; they are why anyone 
    #11 GitHub PR cards
    #5  Slack bridge
    #19 in-app ship-train tutorial
-   C   per-seat inbox
-   H   routines (cron) on top of #9+#8
+   #43 per-seat inbox
+   #44 routines (cron) on top of #9+#8
 
 5. Humans and portability
    #18 second human
@@ -312,13 +307,13 @@ Honesty and a working harness are not competitive features; they are why anyone 
 |---|---|---|---|---|
 | Slack-like room as audit log | Tickets, not Slack | Chat, not Slack | **Lead** | Keep; add [#5](https://github.com/real-limitless/Roster-Flow/issues/5) so it is not a second room |
 | Drop into the real coding harness | Adapter to OpenCode/Claude; no first-class TUI in-app | Cloud computer + optional Cloud Agent | **Lead** (PTY attach) | Fix Compose [#35](https://github.com/real-limitless/Roster-Flow/issues/35) |
-| Org chart as control plane | **Lead** | Weak (flat Bots) | Partial (no pause, no budget, no board queue) | [#4](https://github.com/real-limitless/Roster-Flow/issues/4), A |
+| Org chart as control plane | **Lead** | Weak (flat Bots) | Partial (no pause, no budget, no board queue) | [#4](https://github.com/real-limitless/Roster-Flow/issues/4), [#41](https://github.com/real-limitless/Roster-Flow/issues/41) |
 | Any runtime on one chart | **Lead** | Closed | OpenCode-only | [#7](https://github.com/real-limitless/Roster-Flow/issues/7), [#3](https://github.com/real-limitless/Roster-Flow/issues/3) |
-| Tickets / claim / goals | **Lead** | Informal | Runs only | [#8](https://github.com/real-limitless/Roster-Flow/issues/8), B |
-| Always-on / schedules | Heartbeats + routines | **Lead** (cloud VM) | Event-only | [#9](https://github.com/real-limitless/Roster-Flow/issues/9), H |
+| Tickets / claim / goals | **Lead** | Informal | Runs only | [#8](https://github.com/real-limitless/Roster-Flow/issues/8), [#42](https://github.com/real-limitless/Roster-Flow/issues/42) |
+| Always-on / schedules | Heartbeats + routines | **Lead** (cloud VM) | Event-only | [#9](https://github.com/real-limitless/Roster-Flow/issues/9), [#44](https://github.com/real-limitless/Roster-Flow/issues/44) |
 | Cost hard-stop | **Lead** | Missing | Missing | [#4](https://github.com/real-limitless/Roster-Flow/issues/4), [#10](https://github.com/real-limitless/Roster-Flow/issues/10) |
 | Computer-use in real GUIs | Sandboxes optional | **Lead** | No | Out of wedge |
-| Teach / skills / routines | Skills + routines | **Lead** (demo record) | Chips | [#24](https://github.com/real-limitless/Roster-Flow/issues/24), H, P |
+| Teach / skills / routines | Skills + routines | **Lead** (demo record) | Chips | [#24](https://github.com/real-limitless/Roster-Flow/issues/24), [#44](https://github.com/real-limitless/Roster-Flow/issues/44), P |
 | Mobile + 24/7 away from desk | Partial | **Lead** | No | M after [#9](https://github.com/real-limitless/Roster-Flow/issues/9) |
 | Self-host, open source, no account | **Lead** | No | Partial (Compose, CORE default-branch trap) | [#16](https://github.com/real-limitless/Roster-Flow/issues/16), [#17](https://github.com/real-limitless/Roster-Flow/issues/17) |
 | Enterprise IdP / egress | Partial | **Lead** | Copy only | [#13](https://github.com/real-limitless/Roster-Flow/issues/13) |
@@ -327,8 +322,9 @@ Honesty and a working harness are not competitive features; they are why anyone 
 
 ## 10. How to use this in GitHub
 
-- Competitive work: comment on **#3–#11** with a pointer here instead of opening a twin.
-- New P1 issues to file: **A, B, C, H** (section 7).
+- Competitive work: comment on **#3–#11** and **#41–#44** with a pointer here instead of opening a twin.
+- P1 company-loop issues are filed: **#41** (board), [#42](https://github.com/real-limitless/Roster-Flow/issues/42) (goals), [#43](https://github.com/real-limitless/Roster-Flow/issues/43) (inbox), [#44](https://github.com/real-limitless/Roster-Flow/issues/44) (routines).
+- Remaining unmatched letters (D, E, F, G, I, J, N, K–Q) stay in section 7 until we intend to build them.
 - Close or retitle marketing lies via **#14** when the verb ships or the copy dies.
 - Re-audit this file when Paperclip’s ⚪ Memory/Knowledge or Grok Bot spend caps change; do not assume this snapshot stays true.
 
