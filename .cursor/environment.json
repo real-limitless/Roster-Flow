@@ -1,0 +1,5 @@
+{
+  "name": "roster-flow DEVELOPMENT",
+  "install": "for d in . roster-flow /agent/repos/roster-flow \"$HOME/roster-flow\"; do [ -f \"$d/.cursor/install.sh\" ] && exec bash \"$d/.cursor/install.sh\"; done; echo 'cursor: .cursor/install.sh not found in any known root' >&2; exit 1",
+  "start": "for d in . roster-flow /agent/repos/roster-flow \"$HOME/roster-flow\"; do [ -f \"$d/.cursor/strip-cursor-attribution.sh\" ] && exec bash \"$d/.cursor/strip-cursor-attribution.sh\"; done; echo 'cursor: .cursor/strip-cursor-attribution.sh not found in any known root' >&2; exit 1"
+}
