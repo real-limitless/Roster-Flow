@@ -142,6 +142,59 @@ export function buildTools(tool, fetchApi = api) {
         return { title: `inbox ${id}`, output: JSON.stringify(out) };
       },
     }),
+    roster_task_create: tool({
+      description: "Create a board task on a project/run. Optional depend_on (task id) is a blocker.",
+      args: {
+        title: z.string(),
+        projectId: z.string().optional(),
+        runId: z.string().optional(),
+        depend_on: z.string().optional().describe("Task id that must be done before claim"),
+        path: z.string().optional(),
+      },
+      async execute(args) {
+        const out = await fetchApi("/api/v1/tasks", {
+          method: "POST",
+          body: JSON.stringify({
+            title: args.title,
+            projectId: args.projectId,
+            runId: args.runId,
+            depend_on: args.depend_on,
+            path: args.path,
+          }),
+        });
+        return { title: `task ${out.id}`, output: JSON.stringify(out) };
+      },
+    }),
+    roster_task_claim: tool({
+      description: "Atomically claim a pending task. Fails if another seat already holds it or a blocker is open.",
+      args: {
+        taskId: z.string(),
+        seatId: z.string().optional(),
+      },
+      async execute(args, ctx) {
+        const seatId = args.seatId || guessSeat(ctx.agent);
+        const out = await fetchApi(`/api/v1/tasks/${args.taskId}/claim`, {
+          method: "POST",
+          body: JSON.stringify({ seatId }),
+        });
+        return { title: `claimed ${args.taskId}`, output: JSON.stringify(out) };
+      },
+    }),
+    roster_task_complete: tool({
+      description: "Mark a claimed task done. Unblocks tasks that depend_on it.",
+      args: {
+        taskId: z.string(),
+        seatId: z.string().optional(),
+      },
+      async execute(args, ctx) {
+        const seatId = args.seatId || guessSeat(ctx.agent);
+        const out = await fetchApi(`/api/v1/tasks/${args.taskId}/complete`, {
+          method: "POST",
+          body: JSON.stringify({ seatId }),
+        });
+        return { title: `done ${args.taskId}`, output: JSON.stringify(out) };
+      },
+    }),
   };
 }
 
@@ -214,6 +267,7 @@ export async function RosterFlowPlugin(_input) {
           "Talk through roster_send_message / roster_handoff / roster_report. Do not impersonate peers.",
           "You may attach Roster Block Kit via roster_send_message / roster_report `blocks` (JSON array of header|section|divider|context|image|actions|markdown).",
           "Mail to team:<id> reaches that team's Supervisor. @channel notifies room members and wakes the Channel conductor.",
+          "Claim work with roster_task_claim. A task with an open depend_on blocker cannot be claimed.",
           "ask_human walks reports_to. Channel owns the org run graph. Architect proposes OrgPlan JSON; humans Apply.",
           `Teams: ${(teams || []).map((t) => t.name).join(", ")}`,
           `Rooms:\n${rooms}`,

@@ -126,6 +126,19 @@ Wake prompts prepend linked goal title, project brief, constitution, and `meta.r
 
 Plugin tool: `roster_inbox`.
 
+## Tasks (claim locks)
+
+Durable units Channel can compile into. `dependOn` is the shipped `depend_on` field. Two claims: first mutate wins (409 after).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/tasks` | Optional `?projectId=` `?runId=` |
+| POST | `/api/v1/tasks` | `{ title, projectId?, runId?, ownerSeatId?, dependOn? \| depend_on?, path? }` |
+| POST | `/api/v1/tasks/:id/claim` | `{ seatId }` — **409** if claimed or a blocker is open |
+| POST | `/api/v1/tasks/:id/complete` | Mark done; unblocks dependents |
+
+Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`. `GET /api/v1/state` includes `tasks`.
+
 ## Rooms and threads
 
 | Method | Path | Purpose |

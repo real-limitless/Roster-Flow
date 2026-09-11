@@ -59,6 +59,7 @@ export const api = {
       routines?: import("../data").Routine[];
       inboxUnread?: Record<string, number>;
       inboxCursors?: Record<string, string>;
+      tasks?: import("../data").Task[];
     }>("/api/v1/state"),
   goals: () => req<import("../data").Goal[]>("/api/v1/goals"),
   createGoal: (body: unknown) =>
@@ -83,6 +84,24 @@ export const api = {
     req<{ runId: string; paused: boolean }>(`/api/v1/runs/${encodeURIComponent(runId)}/kill`, {
       method: "POST",
       body: "{}",
+    }),
+  tasks: (query: { projectId?: string; runId?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.projectId) params.set("projectId", query.projectId);
+    if (query.runId) params.set("runId", query.runId);
+    const q = params.toString();
+    return req<import("../data").Task[]>(`/api/v1/tasks${q ? `?${q}` : ""}`);
+  },
+  createTask: (body: unknown) => req<import("../data").Task>("/api/v1/tasks", { method: "POST", body: JSON.stringify(body) }),
+  claimTask: (id: string, seatId: string) =>
+    req<import("../data").Task>(`/api/v1/tasks/${encodeURIComponent(id)}/claim`, {
+      method: "POST",
+      body: JSON.stringify({ seatId }),
+    }),
+  completeTask: (id: string, seatId?: string) =>
+    req<import("../data").Task>(`/api/v1/tasks/${encodeURIComponent(id)}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ seatId }),
     }),
   approvals: (status?: string) =>
     req<import("../data").Approval[]>(`/api/v1/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`),

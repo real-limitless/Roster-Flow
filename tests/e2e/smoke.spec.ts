@@ -419,6 +419,9 @@ test("related pages still render chart/room", async ({ page }) => {
   await expect(page.getByTestId("org-chart")).toBeVisible();
   await page.goto("/product");
   await expect(page.getByRole("heading", { name: /the room, the org, the harness/i })).toBeVisible();
+  await page.goto("/orchestration");
+  await expect(page.getByText("roster_task_claim")).toBeVisible();
+  await expect(page.getByText("depend_on")).toBeVisible();
 });
 
 test("pause pip and blocked attach", async ({ page, request }) => {
@@ -472,4 +475,27 @@ test("settings routine test-run posts bus mail", async ({ page, request }) => {
     const bus = (await res.json()) as Array<{ from?: string; to?: string; text?: string }>;
     return bus.some((e) => e.from === "routine" && e.to === "product" && /ship train/i.test(e.text || ""));
   }).toBeTruthy();
+});
+
+test("task claim lock and depend_on", async ({ page, request }) => {
+  await resetApi(request);
+  const blocked = await request.post("http://127.0.0.1:8790/api/v1/tasks/task-eng-implement/claim", {
+    data: { seatId: "build" },
+  });
+  expect(blocked.status()).toBe(409);
+  await request.post("http://127.0.0.1:8790/api/v1/tasks/task-product-brief/complete", { data: { seatId: "product" } });
+  const first = await request.post("http://127.0.0.1:8790/api/v1/tasks/task-eng-implement/claim", {
+    data: { seatId: "build" },
+  });
+  const second = await request.post("http://127.0.0.1:8790/api/v1/tasks/task-eng-implement/claim", {
+    data: { seatId: "review" },
+  });
+  expect(first.ok()).toBeTruthy();
+  expect(second.status()).toBe(409);
+  await page.goto("/app");
+  await expect(page.getByTestId("task-board")).toBeVisible();
+  await expect(page.getByTestId("task-row-task-eng-implement")).toHaveAttribute("data-status", "claimed");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-build").first()).toHaveAttribute("data-claimed", "1");
 });

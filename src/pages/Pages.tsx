@@ -84,7 +84,7 @@ export function Bots() {
 export function Orchestration() {
   return (
     <>
-      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, share_memory, depend_on, ask_human, report. Channel owns the graph." />
+      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, ask_human, report, roster_task_claim, depend_on. Channel owns the graph." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         <blockquote className="card" style={{ fontSize: 20, letterSpacing: "-0.02em" }}>
           Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.

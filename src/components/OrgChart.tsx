@@ -52,6 +52,7 @@ export function OrgChart({
   onSelectProject,
   onAttach,
   unreadBySeat = {},
+  claimedSeatIds = [],
 }: {
   roster: Seat[];
   teams?: Team[];
@@ -68,6 +69,7 @@ export function OrgChart({
   onSelectProject?: (p: Project) => void;
   onAttach?: (s: Seat) => void;
   unreadBySeat?: Record<string, number>;
+  claimedSeatIds?: string[];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const fittingRef = useRef(false);
@@ -292,6 +294,7 @@ export function OrgChart({
           liveId={liveId}
           fire={Boolean(meta.fire)}
           unread={unreadBySeat[seat.id] || 0}
+          claimed={claimedSeatIds.includes(seat.id)}
           onSelect={onSelect}
           onAttach={onAttach}
         />
@@ -430,6 +433,7 @@ function SeatBtn({
   liveId,
   fire,
   unread = 0,
+  claimed = false,
   onSelect,
   onAttach,
 }: {
@@ -438,17 +442,19 @@ function SeatBtn({
   liveId?: string;
   fire?: boolean;
   unread?: number;
+  claimed?: boolean;
   onSelect: (s: Seat) => void;
   onAttach?: (s: Seat) => void;
 }) {
-  const pip = seat.status === "paused" ? "paused" : liveId === seat.id ? "run" : "on";
+  const pip = seat.status === "paused" ? "paused" : claimed ? "claimed" : liveId === seat.id ? "run" : "on";
   return (
     <button
       type="button"
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
       data-paused={seat.status === "paused" ? "1" : "0"}
-      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""}`}
+      data-claimed={claimed ? "1" : "0"}
+      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""} ${claimed ? "claimed" : ""}`}
       onClick={() => onSelect(seat)}
       onDoubleClick={() => onAttach?.(seat)}
     >
@@ -469,6 +475,7 @@ function SeatBtn({
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}
         {seat.status === "paused" ? " · paused" : ""}
+        {claimed ? " · claim" : ""}
       </div>
     </button>
   );
