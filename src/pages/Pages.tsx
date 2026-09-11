@@ -21,7 +21,7 @@ export function Product() {
         <div className="grid-3">
           <div className="card">
             <h3>Room</h3>
-            <p>Slack muscle memory. Threads, huddles, run cards. @eng fans out through Channel, not a broadcast storm.</p>
+            <p>Slack muscle memory. Threads, run cards. @eng fans out through Channel, not a broadcast storm.</p>
           </div>
           <div className="card">
             <h3>Org chart</h3>
@@ -84,7 +84,7 @@ export function Bots() {
 export function Orchestration() {
   return (
     <>
-      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, share_memory, depend_on, ask_human, report. Channel owns the graph." />
+      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, ask_human, report. Channel owns the graph. Named memory blocks and task blockers are not in the API yet." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         <blockquote className="card" style={{ fontSize: 20, letterSpacing: "-0.02em" }}>
           Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.
@@ -137,15 +137,15 @@ export function OrgPage() {
         <div className="grid-3" style={{ marginTop: 24 }}>
           <div className="card">
             <h3>Hire</h3>
-            <p>Template → name → team → tools → budget → OpenCode session boots.</p>
+            <p>Template → name → team → tools → OpenCode session boots. Monthly budgets are not metered yet.</p>
           </div>
           <div className="card">
             <h3>Escalation</h3>
             <p>ask_human walks reports_to. It never dumps into #general.</p>
           </div>
           <div className="card">
-            <h3>Export</h3>
-            <p>multi-team.yaml, git-versioned, OpenCode-shaped.</p>
+            <h3>Seats as files</h3>
+            <p>Hire writes OpenCode agent markdown per seat. Org YAML export is not shipped yet.</p>
           </div>
         </div>
         <p style={{ marginTop: 16 }}>
