@@ -147,6 +147,8 @@ export const api = {
       skills?: import("../data").MsgSkill[];
       files?: import("../data").MsgFile[];
       blocks?: import("roster-flow-blocks").Block[];
+      prUrl?: string;
+      branch?: string;
     } = {},
   ) =>
     req<{ id?: string; messages?: import("../data").Msg[]; text?: string }>(
@@ -161,11 +163,19 @@ export const api = {
           skills: extra.skills,
           files: extra.files,
           blocks: extra.blocks,
+          prUrl: extra.prUrl,
+          branch: extra.branch,
         }),
       },
     ),
   blockAction: (body: { messageId: string; actionId: string; value?: string; userId?: string }) =>
     req("/api/v1/block-actions", { method: "POST", body: JSON.stringify(body) }),
+  githubStatus: () =>
+    req<{ connected: boolean; env: string | null; api: string }>("/api/v1/github"),
+  githubCard: (messageId: string) =>
+    req<{ github: import("../data").GithubCard; message: import("../data").Msg }>(
+      `/api/v1/messages/${messageId}/github`,
+    ),
   hire: (seat: unknown) => req("/api/v1/seats", { method: "POST", body: JSON.stringify(seat) }),
   fire: (id: string) => req<{ id: string; reparentedTo?: string }>(`/api/v1/seats/${id}`, { method: "DELETE" }),
   patchSeat: (id: string, body: unknown) =>
@@ -291,6 +301,7 @@ export const api = {
     req<{
       mcpFlow: { url: string; ok: boolean; status?: number; error?: string; admin: boolean };
       skillFlow: { url: string; bin: string; ok: boolean; status?: number; error?: string };
+      github?: { connected: boolean; env: string | null; api: string };
     }>("/api/v1/family/status"),
   familySkillAudit: (source: string) =>
     req<{ ok: boolean; json?: unknown; stderr?: string; error?: string }>("/api/v1/family/skills/audit", {

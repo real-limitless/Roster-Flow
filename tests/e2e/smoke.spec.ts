@@ -473,3 +473,127 @@ test("settings routine test-run posts bus mail", async ({ page, request }) => {
     return bus.some((e) => e.from === "routine" && e.to === "product" && /ship train/i.test(e.text || ""));
   }).toBeTruthy();
 });
+
+test("github PR report card in #ship is human-gated and goes stale", async ({ page, request }) => {
+  const mock = await startGithubMock(8798);
+  try {
+    await resetApi(request);
+    const report = await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+      data: {
+        from: "build",
+        to: "channel:ship",
+        kind: "report",
+        channel: "ship",
+        wake: false,
+        text: "PR ready https://github.com/real-limitless/Roster-Flow/pull/42",
+        prUrl: "https://github.com/real-limitless/Roster-Flow/pull/42",
+        branch: "eng/webhook-idempotency",
+      },
+    });
+    expect(report.ok()).toBeTruthy();
+    const posted = (await report.json()) as { id?: string };
+    const messagesRes = await request.get("http://127.0.0.1:8790/api/v1/channels/ship/messages");
+    const messages = (await messagesRes.json()) as Array<{
+      id: string;
+      github?: { title?: string; stale?: boolean; url?: string };
+    }>;
+    const cardMsg = messages.find((m) => m.github?.title);
+    expect(cardMsg?.github?.title).toContain("Idempotent");
+    expect(cardMsg?.github?.stale).toBeFalsy();
+    expect(JSON.stringify(cardMsg)).not.toMatch(/e2e-github-token|ghs_|ghp_/i);
+
+    const jules = await request.post("http://127.0.0.1:8790/api/v1/block-actions", {
+      data: { messageId: cardMsg?.id, actionId: "github.merge", userId: "jules" },
+    });
+    expect(jules.status()).toBe(403);
+
+    await page.goto("/app");
+    const card = page.locator('[data-testid^="github-card-"]').first();
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("Idempotent Stripe webhooks");
+    await expect(card.getByTestId("github-checks-" + cardMsg!.id)).toContainText("checks");
+    await page.screenshot({ path: "/tmp/walkthrough/room-github-pr-card.png", fullPage: true });
+
+    await card.getByTestId("github-merge").click();
+    await expect(card).toHaveAttribute("data-state", "merged", { timeout: 10_000 });
+
+    const busRes = await request.get("http://127.0.0.1:8790/api/v1/bus");
+    const bus = (await busRes.json()) as Array<{ kind?: string; from?: string }>;
+    expect(bus.some((e) => e.kind === "github_merge" && e.from === "you")).toBeTruthy();
+
+    await mock.close();
+    await card.getByTestId("github-refresh").click();
+    await expect(card).toHaveAttribute("data-stale", "1", { timeout: 10_000 });
+    await expect(page.getByTestId(`github-link-${cardMsg!.id}`)).toHaveAttribute(
+      "href",
+      "https://github.com/real-limitless/Roster-Flow/pull/42",
+    );
+    await page.screenshot({ path: "/tmp/walkthrough/room-github-stale.png", fullPage: true });
+
+    await page.goto("/app/settings");
+    await page.getByTestId("settings-nav-family").click();
+    await expect(page.getByTestId("family-card-github")).toBeVisible();
+    await expect(page.getByTestId("family-github-status")).toContainText("token stays in env");
+    await page.screenshot({ path: "/tmp/walkthrough/family-github.png", fullPage: true });
+
+    await page.goto("/app");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.getByTestId("composer").fill("room still works after stale github");
+    await page.getByTestId("send-message").click();
+    await expect(page.getByText("room still works after stale github").first()).toBeVisible();
+    expect(posted.id).toBeTruthy();
+  } finally {
+    await mock.close().catch(() => undefined);
+  }
+});
+
+async function startGithubMock(port: number) {
+  const { createServer } = await import("node:http");
+  let merged = false;
+  const server = createServer((req, res) => {
+    const url = req.url || "";
+    const send = (code: number, body: unknown) => {
+      res.writeHead(code, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+    if (req.method === "PUT" && /\/pulls\/42\/merge/.test(url)) {
+      merged = true;
+      send(200, { merged: true, sha: "abc123" });
+      return;
+    }
+    if (/\/pulls\/42$/.test(url)) {
+      send(200, {
+        html_url: "https://github.com/real-limitless/Roster-Flow/pull/42",
+        title: "Idempotent Stripe webhooks",
+        state: merged ? "closed" : "open",
+        merged,
+        draft: false,
+        mergeable: true,
+        head: { ref: "eng/webhook-idempotency", sha: "abc123" },
+        base: { ref: "main" },
+      });
+      return;
+    }
+    if (url.includes("/check-runs")) {
+      send(200, {
+        total_count: 2,
+        check_runs: [
+          { name: "ci", status: "completed", conclusion: "success" },
+          { name: "lint", status: "completed", conclusion: "success" },
+        ],
+      });
+      return;
+    }
+    send(404, { message: "not found" });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+  return {
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}

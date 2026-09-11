@@ -35,6 +35,7 @@ const FAMILY = [
 type FamilyStatus = {
   mcpFlow?: { url: string; ok: boolean; error?: string; admin?: boolean };
   skillFlow?: { url: string; bin: string; ok: boolean; error?: string };
+  github?: { connected: boolean; env: string | null; api: string };
 };
 
 export function FamilyPanel() {
@@ -76,7 +77,7 @@ export function FamilyPanel() {
         <h1>Family</h1>
         <p className="micro">
           Roster owns the org and OpenCode write-through. Skills install through skill-flow. MCP backends
-          register on mcp-flow. Set MCP_FLOW_URL, SKILL_FLOW_URL, and MCP_FLOW_ADMIN_TOKEN on the API.
+          register on mcp-flow. GitHub PR cards use GITHUB_TOKEN or GH_TOKEN on the API — never state.json.
         </p>
       </div>
       <div className="settings-grid">
@@ -105,6 +106,22 @@ export function FamilyPanel() {
             </div>
           </div>
         ))}
+        <div className="card" data-testid="family-card-github">
+          <h3>
+            GitHub <span className="chip">env sidecar</span>
+          </h3>
+          <p className="micro">Settings → Integrations (PR cards)</p>
+          <p>
+            Optional PAT or GitHub App installation token. Eng.Build reports a PR URL; #ship renders status, title,
+            and checks. Merge stays human-gated. Worktrees stay local.
+          </p>
+          <p className="micro" data-testid="family-github-status">
+            {status?.github?.connected
+              ? `${status.github.env || "token"} set · token stays in env`
+              : "not connected · set GITHUB_TOKEN or GH_TOKEN"}
+            {status?.github?.api ? ` · ${status.github.api}` : ""}
+          </p>
+        </div>
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>

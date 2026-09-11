@@ -47,11 +47,19 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
   assert.equal(sendBody.blocks[0].type, "header");
 
   await tools.roster_report.execute(
-    { text: "done", blocks: JSON.stringify([{ type: "section", text: { type: "mrkdwn", text: "ok" } }]) },
+    {
+      text: "done",
+      prUrl: "https://github.com/acme/app/pull/1",
+      branch: "eng/webhook",
+      blocks: JSON.stringify([{ type: "section", text: { type: "mrkdwn", text: "ok" } }]),
+    },
     { agent: "product" },
   );
   const report = calls.find((c) => c.path === "/api/v1/bus/send" && JSON.parse(c.init.body).kind === "report");
-  assert.equal(JSON.parse(report.init.body).blocks[0].type, "section");
+  const reportBody = JSON.parse(report.init.body);
+  assert.equal(reportBody.blocks[0].type, "section");
+  assert.equal(reportBody.prUrl, "https://github.com/acme/app/pull/1");
+  assert.equal(reportBody.branch, "eng/webhook");
 
   await tools.roster_handoff.execute({ to: "build", text: "your turn" }, { agent: "product" });
   const hand = calls.find((c) => c.path === "/api/v1/bus/send" && JSON.parse(c.init.body).kind === "handoff");

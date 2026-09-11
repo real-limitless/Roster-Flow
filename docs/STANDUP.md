@@ -169,6 +169,8 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 | `harness-term` `harness-xterm` | Live OpenCode TUI (xterm) |
 | `settings-providers` | Settings form |
 | `provider-id` `provider-save` | Add provider |
+| `family-card-github` `family-github-status` | Family GitHub sidecar (env token, not state.json) |
+| `github-card-{id}` `github-link-{id}` `github-checks-{id}` `github-refresh` `github-merge` | Room PR/issue card in `#ship` |
 | `access-form` | `/access` |
 | `setup-page` `setup-step-install` `setup-step-first-user` `setup-step-login` `setup-step-harness` `setup-step-welcome` | `/setup` wizard |
 | `setup-name` `setup-email` `setup-password` `setup-create-owner` | First user |

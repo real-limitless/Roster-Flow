@@ -20,6 +20,7 @@ import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
 import { clearRoutineActive, createRoutine, patchRoutine, publicRoutine, runRoutineNow, tickRoutines } from "./routines.mjs";
 import { auditSkill, familyStatus, installSkill, listMcpBackends, registerMcpBackend } from "./family.mjs";
+import { attachGithubCard, githubStatus, handleGithubBlockAction, isGithubAction, refreshGithubMessage } from "./github.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
 import { isDataWritable } from "./paths.mjs";
@@ -92,6 +93,20 @@ function messageText(body, extras) {
   if (text) return text;
   if (extras.blocks) return fallbackText(extras.blocks);
   return "";
+}
+
+function githubHint(body = {}) {
+  return {
+    text: body.text,
+    prUrl: body.prUrl,
+    issueUrl: body.issueUrl,
+    branch: body.branch,
+  };
+}
+
+async function postRoomMessage(channel, who, kind, text, extras, hint = {}) {
+  const msg = postMessage(channel, who, kind, text, extras);
+  return attachGithubCard(msg, { ...hint, text });
 }
 
 function isPublicPath(method, pathname) {
@@ -712,7 +727,7 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: "text, blocks, or attachment required" });
         return;
       }
-      const msg = postMessage(id, body.who || "You", body.kind || "human", text, extras);
+      const msg = await postRoomMessage(id, body.who || "You", body.kind || "human", text, extras, githubHint(body));
       const routed = text
         ? await routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
         : { mentions: [], wakes: [], notify: [] };
@@ -761,7 +776,7 @@ const server = createServer(async (req, res) => {
       let channel = "ship";
       if (String(to).startsWith("channel:")) channel = to.slice("channel:".length);
       const fromSeat = getState().seats.find((s) => s.id === from);
-      postMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from });
+      await postRoomMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from }, githubHint(body));
       const entry = postBus({ from, to, kind: "send_message", text, wake: body.wake !== false && !String(to).startsWith("channel:") });
       json(res, 201, entry);
       return;
@@ -783,11 +798,25 @@ const server = createServer(async (req, res) => {
         return;
       }
       const fromSeat = getState().seats.find((s) => s.id === body.from);
-      postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
+      await postRoomMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
-      });
+      }, githubHint(body));
       json(res, 201, postBus({ ...body, text }));
+      return;
+    }
+    if (pathname === "/api/v1/github" && method === "GET") {
+      json(res, 200, githubStatus());
+      return;
+    }
+    const githubMsg = pathname.match(/^\/api\/v1\/messages\/([^/]+)\/github$/);
+    if (githubMsg && method === "GET") {
+      try {
+        const message = await refreshGithubMessage(decodeURIComponent(githubMsg[1]));
+        json(res, 200, { github: message.github, message });
+      } catch (err) {
+        fail(res, err);
+      }
       return;
     }
     if (pathname === "/api/v1/block-actions" && method === "POST") {
@@ -795,7 +824,7 @@ const server = createServer(async (req, res) => {
       const messageId = String(body.messageId || "");
       const actionId = String(body.actionId || "");
       const value = String(body.value || "");
-      const userId = String(body.userId || "you");
+      const userId = String(body.userId || user?.seatId || "you");
       const msg = getState().messages.find((m) => m.id === messageId);
       if (!msg) {
         json(res, 404, { error: "message not found" });
@@ -804,6 +833,17 @@ const server = createServer(async (req, res) => {
       if (!actionId) {
         json(res, 400, { error: "actionId required" });
         return;
+      }
+      if (isGithubAction(actionId) || msg.github) {
+        if (isGithubAction(actionId)) {
+          try {
+            const out = await handleGithubBlockAction({ msg, actionId, userId, value });
+            json(res, 200, out);
+          } catch (err) {
+            fail(res, err);
+          }
+          return;
+        }
       }
       const to = msg.seatId || "channel";
       const text = `block_actions ${actionId}${value ? `=${value}` : ""}`;

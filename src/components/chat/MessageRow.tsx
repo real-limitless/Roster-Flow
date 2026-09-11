@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { fileTestId, seatForMessage, type Msg, type Seat } from "../../data";
 import { SeatAvatar } from "../SeatAvatar";
+import { GitHubPrCard } from "./GitHubPrCard";
 import { MessageBlocks, shouldHideFallback, type BlockAction } from "./MessageBlocks";
 
 export function MessageRow({
@@ -48,6 +49,7 @@ export function MessageRow({
           <span className="meta">{msg.time}</span>
         </div>
         {msg.text && !shouldHideFallback(msg) && <div className="body">{renderMentions(msg.text)}</div>}
+        <GitHubPrCard msg={msg} />
         <MessageBlocks msg={msg} onAction={onBlockAction ? (action) => onBlockAction(msg, action) : undefined} />
         <MessageChips msg={msg} />
         {extra}
