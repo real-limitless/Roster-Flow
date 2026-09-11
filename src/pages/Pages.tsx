@@ -137,7 +137,7 @@ export function OrgPage() {
         <div className="grid-3" style={{ marginTop: 24 }}>
           <div className="card">
             <h3>Hire</h3>
-            <p>Template → name → team → tools → budget → OpenCode session boots.</p>
+            <p data-testid="org-hire-copy">Template → name → team → tools → tokenBudget → OpenCode session boots.</p>
           </div>
           <div className="card">
             <h3>Escalation</h3>

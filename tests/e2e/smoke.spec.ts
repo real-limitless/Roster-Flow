@@ -455,6 +455,52 @@ test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
   await expect(page.getByTestId("inbox-count-build")).toHaveCount(0);
 });
 
+test("org hire copy names tokenBudget", async ({ page }) => {
+  await page.goto("/org");
+  await expect(page.getByTestId("org-hire-copy")).toContainText("tokenBudget");
+});
+
+test("seat tokenBudget pause is distinct from idle", async ({ page, request }) => {
+  await resetApi(request);
+  const hired = await request.post("http://127.0.0.1:8790/api/v1/seats", {
+    data: { name: "Budget.Bot", team: "eng", tokenBudget: 1000, job: "Metered specialist." },
+  });
+  expect(hired.ok()).toBeTruthy();
+  const seat = (await hired.json()) as { id: string; tokenBudget?: number; spent?: number };
+  expect(seat.id).toBe("budget-bot");
+  expect(seat.tokenBudget).toBe(1000);
+  const patched = await request.patch("http://127.0.0.1:8790/api/v1/seats/budget-bot", { data: { spent: 1000 } });
+  const after = (await patched.json()) as { status?: string; pauseReason?: string; spent?: number };
+  expect(after.status).toBe("paused");
+  expect(after.pauseReason).toBe("budget");
+  expect(after.spent).toBe(1000);
+  const attach = await request.post("http://127.0.0.1:8790/api/v1/seats/budget-bot/attach", { data: {} });
+  const attachBody = (await attach.json()) as { paused?: boolean; reason?: string };
+  expect(attachBody.paused).toBeTruthy();
+  expect(attachBody.reason).toBe("budget");
+  const bus = await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "budget-bot", text: "should not wake", wake: true },
+  });
+  expect(bus.ok()).toBeTruthy();
+  const listed = await request.get("http://127.0.0.1:8790/api/v1/seats");
+  const seats = (await listed.json()) as Array<{ id: string; status?: string; pauseReason?: string }>;
+  expect(seats.find((s) => s.id === "budget-bot")?.pauseReason).toBe("budget");
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await page.getByTestId("seat-budget-bot").first().click({ force: true });
+  await expect(page.getByTestId("seat-inspector")).toContainText("Budget.Bot");
+  await expect(page.getByTestId("seat-status")).toHaveText("paused");
+  await expect(page.getByTestId("seat-budget-remaining")).toContainText("0 / 1000");
+  await expect(page.getByTestId("budget-paused-note")).toBeVisible();
+  await expect(page.getByTestId("seat-budget-bot").first()).toHaveAttribute("data-budget-paused", "1");
+  await expect(page.getByTestId("pip-budget-bot").first()).toHaveClass(/budget/);
+  await page.getByTestId("mode-room").click();
+  await expect(page.getByTestId("budget-banner")).toBeVisible();
+  await expect(page.getByTestId("budget-banner-budget-bot")).toContainText("tokenBudget exhausted");
+});
+
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app/settings");
