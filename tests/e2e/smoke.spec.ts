@@ -419,6 +419,8 @@ test("related pages still render chart/room", async ({ page }) => {
   await expect(page.getByTestId("org-chart")).toBeVisible();
   await page.goto("/product");
   await expect(page.getByRole("heading", { name: /the room, the org, the harness/i })).toBeVisible();
+  await expect(page.getByTestId("clone-note")).toContainText("git checkout DEVELOPMENT");
+  await expect(page.getByTestId("clone-note")).not.toContainText("default is CORE");
 });
 
 test("pause pip and blocked attach", async ({ page, request }) => {

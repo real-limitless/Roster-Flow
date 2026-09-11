@@ -2,6 +2,10 @@
 
 Goal: an AI agent can install, seed, open the site, and bug-test Room / Harness / Chart / Settings end to end.
 
+Clone: this file is on the product tree. `git clone` of the GitHub URL should yield `npm run standup` once GitHub’s default branch is `DEVELOPMENT` (admin setting). If the clone is docs-only, `git checkout DEVELOPMENT`. Details: [INSTALLATION.md](../INSTALLATION.md), [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Container install (official)
+
 ## Container install (official)
 
 Needs Docker Compose v2 or Podman Compose, plus a clone of this repo. No host Node or OpenCode CLI.
