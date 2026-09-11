@@ -837,6 +837,7 @@ input:focus, textarea:focus, select:focus {
   gap: 12px;
   flex-wrap: wrap;
 }
+.foot a { color: var(--ink); }
 
 .app-shell {
   height: 100dvh;

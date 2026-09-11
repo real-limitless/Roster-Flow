@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { changelog, seats } from "../data";
 import { WorkspaceMock } from "../components/WorkspaceMock";
+import { DISCUSSIONS_URL } from "../lib/community";
 
 function PageHero({ kicker, title, sub }: { kicker: string; title: string; sub: string }) {
   return (
@@ -219,6 +220,10 @@ export function Changelog() {
     <>
       <PageHero kicker="Changelog" title="Ship log." sub="Short, dated, specific." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
+        <p className="micro" data-testid="office-hours-empty">
+          Office hours will be listed here when they exist. None scheduled. Ask in{" "}
+          <a href={DISCUSSIONS_URL}>Discussions</a> in the meantime.
+        </p>
         {changelog.map((c) => (
           <div className="card" key={c.date} style={{ marginBottom: 12 }}>
             <div className="kicker">{c.date}</div>
