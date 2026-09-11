@@ -216,6 +216,15 @@ test("org chart connectors survive narrow viewport", async ({ page }) => {
   await expect(page.getByTestId("seat-you")).toBeVisible();
 });
 
+test("family mcp-flow is not up when the ping is Roster HTML", async ({ page }) => {
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-family").click();
+  await expect(page.getByTestId("settings-family")).toBeVisible();
+  const status = page.getByTestId("family-mcp-status");
+  await expect(status).toBeVisible();
+  await expect(status).not.toContainText(" · up ·");
+});
+
 test("settings writes a provider through the API", async ({ page, request }) => {
   await page.goto("/app/settings");
   await expect(page.getByTestId("settings-providers")).toBeVisible();
