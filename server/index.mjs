@@ -15,6 +15,7 @@ import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
+import { createTask, claimTask, completeTask, listTasks } from "./tasks.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
@@ -301,6 +302,48 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/goals" && method === "GET") {
       json(res, 200, listGoals(getState()));
       return;
+    }
+    if (pathname === "/api/v1/tasks" && method === "GET") {
+      json(
+        res,
+        200,
+        listTasks(getState(), {
+          projectId: url.searchParams.get("projectId") || undefined,
+          runId: url.searchParams.get("runId") || undefined,
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/v1/tasks" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createTask(s, body);
+      });
+      json(res, 201, created);
+      return;
+    }
+    {
+      const claimMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/claim$/);
+      if (claimMatch && method === "POST") {
+        const body = await readBody(req).catch(() => ({}));
+        let claimed = null;
+        mutate((s) => {
+          claimed = claimTask(s, decodeURIComponent(claimMatch[1]), body.seatId);
+        });
+        json(res, 200, claimed);
+        return;
+      }
+      const completeMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/complete$/);
+      if (completeMatch && method === "POST") {
+        const body = await readBody(req).catch(() => ({}));
+        let done = null;
+        mutate((s) => {
+          done = completeTask(s, decodeURIComponent(completeMatch[1]), body.seatId);
+        });
+        json(res, 200, done);
+        return;
+      }
     }
     if (pathname === "/api/v1/goals" && method === "POST") {
       const body = await readBody(req);

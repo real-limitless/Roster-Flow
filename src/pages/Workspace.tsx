@@ -21,6 +21,7 @@ import {
   type SeatKind,
   type SeatType,
   type ModelStrategy,
+  type Task,
   type Team,
 } from "../data";
 import { OrgChart } from "../components/OrgChart";
@@ -32,6 +33,7 @@ import { ConversationHeader } from "../components/chat/ConversationHeader";
 import { FilesLinksPane } from "../components/chat/ConversationPanes";
 import { SearchModal } from "../components/chat/SearchModal";
 import { MessageRow } from "../components/chat/MessageRow";
+import { TaskBoard } from "../components/chat/TaskBoard";
 import { ArchitectDock, type ArchitectMsg } from "../components/chart/ArchitectDock";
 import { ChartSplitter, loadDock, saveDock, useNarrowChart, type DockLayout } from "../components/chart/ChartSplitter";
 import { previewFromPlan, type OrgPlan } from "../components/chart/planPreview";
@@ -70,6 +72,7 @@ export function Workspace() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [inboxUnread, setInboxUnread] = useState<Record<string, number>>({});
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [architectMsgs, setArchitectMsgs] = useState<ArchitectMsg[]>([]);
   const [architectBusy, setArchitectBusy] = useState(false);
@@ -127,6 +130,7 @@ export function Workspace() {
         if (Array.isArray(st.goals)) setGoals(st.goals);
         if (st.inboxUnread) setInboxUnread(st.inboxUnread);
         if (Array.isArray(st.approvals)) setApprovals(st.approvals);
+        if (Array.isArray(st.tasks)) setTasks(st.tasks as Task[]);
         const [t, m, p] = await Promise.all([
           api.teams().catch(() => []),
           api.models().catch(() => []),
@@ -271,6 +275,7 @@ export function Workspace() {
     projects?: Project[];
     goals?: Goal[];
     approvals?: Approval[];
+    tasks?: Task[];
     inboxUnread?: Record<string, number>;
   }) {
     if (Array.isArray(st.seats) && st.seats.length) setRoster(st.seats);
@@ -281,6 +286,7 @@ export function Workspace() {
     if (Array.isArray(st.goals)) setGoals(st.goals);
     if (st.inboxUnread) setInboxUnread(st.inboxUnread);
     if (Array.isArray(st.approvals)) setApprovals(st.approvals);
+    if (Array.isArray(st.tasks)) setTasks(st.tasks);
   }
 
   function openSearch() {
@@ -790,6 +796,25 @@ export function Workspace() {
                 <div className={`room-split ${debugOpen ? "has-debug" : ""}`}>
                   <div className="room-col">
                     <div className="main thread">
+                      <TaskBoard
+                        tasks={tasks}
+                        onClaim={(id) => {
+                          void api
+                            .claimTask(id, selectedId)
+                            .then((row) => setTasks((cur) => cur.map((t) => (t.id === row.id ? row : t))))
+                            .catch(() => undefined);
+                        }}
+                        onComplete={(id) => {
+                          void api
+                            .completeTask(id, selectedId)
+                            .then((row) =>
+                              setTasks((cur) =>
+                                cur.map((t) => (t.id === row.id ? row : t)),
+                              ),
+                            )
+                            .catch(() => undefined);
+                        }}
+                      />
                       {visible.length === 0 && <p className="micro">No messages in {title}. Say something.</p>}
                       {visible.map((m) => (
                         <MessageRow
@@ -865,6 +890,7 @@ export function Workspace() {
               onArchitectRevise={() => sendArchitect("Revise that plan. Keep it smaller.")}
               onToggleDebug={toggleDebug}
               unreadBySeat={inboxUnread}
+              claimedSeatIds={tasks.filter((t) => t.status === "claimed" && t.claimedBy).map((t) => t.claimedBy as string)}
               pendingApprovals={approvals.filter((a) => a.status === "pending")}
               onApprovePending={approvePending}
             />
@@ -1115,6 +1141,7 @@ function ChartPane({
   onArchitectRevise,
   onToggleDebug,
   unreadBySeat = {},
+  claimedSeatIds = [],
   pendingApprovals = [],
   onApprovePending,
 }: {
@@ -1142,6 +1169,7 @@ function ChartPane({
   onArchitectRevise: () => void;
   onToggleDebug?: () => void;
   unreadBySeat?: Record<string, number>;
+  claimedSeatIds?: string[];
   pendingApprovals?: Approval[];
   onApprovePending?: (id: string) => void;
 }) {
@@ -1204,6 +1232,7 @@ function ChartPane({
           onAttach={onAttach}
           resetLayoutKey={layoutResetKey}
           unreadBySeat={unreadBySeat}
+          claimedSeatIds={claimedSeatIds}
         />
       </div>
       {!dock.collapsed && <ChartSplitter dock={dock} onChange={setDock} narrow={narrow} />}

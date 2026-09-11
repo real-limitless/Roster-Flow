@@ -67,4 +67,7 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
 
   await tools.roster_inbox.execute({}, { agent: "build" });
   assert.ok(calls.some((c) => c.path === "/api/v1/seats/build/inbox"));
+
+  await tools.roster_task_claim.execute({ taskId: "task-eng-implement" }, { agent: "build" });
+  assert.ok(calls.some((c) => c.path === "/api/v1/tasks/task-eng-implement/claim"));
 });

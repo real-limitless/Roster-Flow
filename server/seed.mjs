@@ -317,6 +317,7 @@ export function migrateCompanyLoop(state) {
   if (!Array.isArray(state.pausedRunIds)) state.pausedRunIds = [];
   if (!Array.isArray(state.routines)) state.routines = [];
   if (!Array.isArray(state.routineRuns)) state.routineRuns = [];
+  if (!Array.isArray(state.tasks)) state.tasks = [];
   if (holdOrgSeed(state)) return state;
   if (!state.goals.some((g) => g.id === "ship-train")) {
     state.goals.push(structuredClone(goals[0]));
@@ -325,6 +326,30 @@ export function migrateCompanyLoop(state) {
   if (billing) {
     billing.goalIds = Array.isArray(billing.goalIds) ? billing.goalIds : [];
     if (!billing.goalIds.includes("ship-train")) billing.goalIds.unshift("ship-train");
+  }
+  if (!state.tasks.some((t) => t.id === "task-product-brief")) {
+    state.tasks.push({
+      id: "task-product-brief",
+      title: "Write billing webhook acceptance",
+      projectId: "billing",
+      runId: "ship-train",
+      ownerSeatId: "product",
+      status: "pending",
+      dependOn: [],
+      path: "billing/webhook.ts",
+    });
+  }
+  if (!state.tasks.some((t) => t.id === "task-eng-implement")) {
+    state.tasks.push({
+      id: "task-eng-implement",
+      title: "Implement webhook idempotency",
+      projectId: "billing",
+      runId: "ship-train",
+      ownerSeatId: "build",
+      status: "pending",
+      dependOn: ["task-product-brief"],
+      path: "billing/webhook.ts",
+    });
   }
   return state;
 }
@@ -410,6 +435,7 @@ function baseFields() {
     pausedRunIds: [],
     routines: [],
     routineRuns: [],
+    tasks: [],
   };
 }
 

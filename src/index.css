@@ -618,6 +618,8 @@ h2, h2.section-title {
 .seat .pip.on { background: var(--phosphor); box-shadow: 0 0 8px var(--phosphor); }
 .seat .pip.run { background: var(--accent-hot); animation: pulse 1.6s infinite; }
 .seat .pip.paused { background: var(--warn); box-shadow: none; animation: none; }
+.seat .pip.claimed { background: var(--accent-hot); box-shadow: 0 0 8px var(--accent-hot); }
+.seat.claimed { outline: 1px solid rgba(255, 90, 120, 0.35); }
 .seat.paused { opacity: 0.72; }
 .seat .unread-pip {
   display: inline-flex;
@@ -1135,6 +1137,9 @@ input:focus, textarea:focus, select:focus {
 .app-body.has-inspector { grid-template-columns: 220px 1fr 280px; }
 .app-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .thread { flex: 1; overflow: auto; }
+.task-board { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; }
+.task-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.task-board .task-row:first-of-type { border-top: 0; }
 .room-split {
   flex: 1;
   min-height: 0;

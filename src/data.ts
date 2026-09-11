@@ -4,6 +4,18 @@ export type SeatKind = "human" | "bot";
 export type SeatType = "human" | "supervisor" | "generic" | "specialist";
 export type SeatStatus = "idle" | "running" | "blocked" | "done" | "paused";
 
+export type Task = {
+  id: string;
+  title: string;
+  projectId?: string;
+  runId?: string;
+  ownerSeatId?: string;
+  claimedBy?: string;
+  status: "pending" | "claimed" | "done" | string;
+  dependOn?: string[];
+  path?: string;
+};
+
 export type Organization = {
   id: string;
   name: string;
