@@ -421,6 +421,17 @@ test("related pages still render chart/room", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /the room, the org, the harness/i })).toBeVisible();
 });
 
+test("footer discussions link and changelog has no fake office hours", async ({ page }) => {
+  await page.goto("/");
+  const link = page.getByTestId("community-discussions");
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute("href", "https://github.com/real-limitless/Roster-Flow/discussions");
+  await page.screenshot({ path: "/tmp/walkthrough/community-footer.png", fullPage: true });
+  await page.goto("/changelog");
+  await expect(page.getByTestId("office-hours-empty")).toContainText("None scheduled");
+  await page.screenshot({ path: "/tmp/walkthrough/changelog-community.png", fullPage: true });
+});
+
 test("pause pip and blocked attach", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app");

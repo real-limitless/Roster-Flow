@@ -170,6 +170,8 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 | `settings-providers` | Settings form |
 | `provider-id` `provider-save` | Add provider |
 | `access-form` | `/access` |
+| `community-discussions` | Marketing footer Discussions link |
+| `office-hours-empty` | `/changelog` until office hours exist |
 | `setup-page` `setup-step-install` `setup-step-first-user` `setup-step-login` `setup-step-harness` `setup-step-welcome` | `/setup` wizard |
 | `setup-name` `setup-email` `setup-password` `setup-create-owner` | First user |
 | `setup-login-email` `setup-login-password` `setup-login-submit` | First login |

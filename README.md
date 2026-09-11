@@ -80,6 +80,9 @@ This is the **product branch**: the runnable app, API, and tests. Concept and me
 - [CORE API](docs/API.md)
 - [OpenCode wrapper + plugin](docs/OPENCODE.md)
 - [Standup](docs/STANDUP.md)
+- [Community / Discussions](docs/COMMUNITY.md)
+
+The public room is [GitHub Discussions](https://github.com/real-limitless/Roster-Flow/discussions). Pin **How to standup on DEVELOPMENT** (copy in `docs/COMMUNITY.md`) after an admin enables Discussions. Office hours are not listed on `/changelog` until they exist.
 
 | Branch | Contents |
 |--------|----------|

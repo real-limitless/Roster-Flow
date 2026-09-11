@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth, workspaceHref } from "../lib/auth";
+import { DISCUSSIONS_URL } from "../lib/community";
 import { Logo } from "./Logo";
 
 const links = [
@@ -54,6 +55,9 @@ export function Layout() {
       <Outlet />
       <footer className="foot">
         <span>roster-flow</span>
+        <a href={DISCUSSIONS_URL} data-testid="community-discussions">
+          Discussions
+        </a>
         <span>Every bot is an OpenCode agent · same family as mcp-flow · skill-flow · ansible-flow</span>
       </footer>
     </div>
