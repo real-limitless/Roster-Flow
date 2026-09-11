@@ -183,7 +183,8 @@ test("org chart cards do not overlap and canvas pans without a seat", async ({ p
   await expect(page.getByTestId("org-chart")).toHaveAttribute("data-zoom", zoomed || "");
 });
 
-test("chart nodes collapse from the handle and reset expands them", async ({ page }) => {
+test("chart nodes collapse from the handle and reset expands them", async ({ page, request }) => {
+  await resetApi(request);
   await page.goto("/app");
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
   await page.getByTestId("mode-chart").click();
@@ -193,8 +194,11 @@ test("chart nodes collapse from the handle and reset expands them", async ({ pag
   await page.evaluate(() => localStorage.removeItem("roster-flow.chart-collapsed"));
   await page.getByTestId("reset-chart-layout").click();
   await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
-  await expect(page.getByTestId("tree-collapse-maya")).toBeVisible();
-  await page.getByTestId("tree-collapse-maya").click({ force: true });
+  const mayaHandle = page.getByTestId("tree-collapse-maya");
+  await expect(mayaHandle).toBeVisible();
+  await expect(mayaHandle).toHaveAttribute("aria-expanded", "true");
+  await mayaHandle.click({ force: true });
+  await expect(mayaHandle).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByTestId("org-project-billing")).toHaveCount(0);
   await page.getByTestId("reset-chart-layout").click();
   await expect(page.getByTestId("org-project-billing")).toBeVisible();
@@ -239,7 +243,7 @@ test("team inspector shows seat count and hire specialist", async ({ page, reque
   await expect(page.getByTestId("team-seat-count")).toBeVisible();
   const count = Number(await page.getByTestId("team-seat-count").innerText());
   expect(count).toBeGreaterThanOrEqual(4);
-  await expect(page.getByTestId("team-models")).toContainText("anthropic/claude-sonnet");
+  await expect(page.getByTestId("team-models")).toContainText("xai/grok-4");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("conversation-modal")).toHaveCount(0);
 
@@ -425,7 +429,7 @@ test("pause pip and blocked attach", async ({ page, request }) => {
   await expect(page.getByTestId("seat-inspector")).toContainText("Eng.Build");
   await page.getByTestId("pause-seat").click();
   await expect(page.getByTestId("seat-status")).toHaveText("paused");
-  await expect(page.getByTestId("pip-build")).toHaveClass(/paused/);
+  await expect(page.getByTestId("pip-build").first()).toHaveClass(/paused/);
   await expect(page.getByTestId("seat-build").first()).toHaveAttribute("data-paused", "1");
   await page.getByTestId("attach-harness").click();
   await expect(page.getByTestId("mode-chart")).toHaveClass(/on/);
@@ -442,7 +446,7 @@ test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
   await page.goto("/app");
   await page.getByTestId("mode-chart").click();
   await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
-  await expect(page.getByTestId("inbox-count-build")).toBeVisible();
+  await expect(page.getByTestId("inbox-count-build").first()).toBeVisible();
   await page.getByTestId("seat-build").first().click({ force: true });
   await expect(page.getByTestId("seat-inbox")).toContainText("inbox ping for playwright");
   await page.getByTestId("inbox-mark-read").click();

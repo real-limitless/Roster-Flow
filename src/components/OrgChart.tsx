@@ -404,21 +404,6 @@ function CollapseHandle({
   collapsed: boolean;
   onToggle: (next?: boolean) => void;
 }) {
-  const start = useRef<{ y: number } | null>(null);
-  function down(e: PointerEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    start.current = { y: e.clientY };
-  }
-  function up(e: PointerEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    if (!start.current) return;
-    const dy = e.clientY - start.current.y;
-    start.current = null;
-    if (Math.abs(dy) < 12) onToggle();
-    else onToggle(dy < 0);
-  }
   return (
     <button
       type="button"
@@ -426,10 +411,12 @@ function CollapseHandle({
       data-testid={`tree-collapse-${id}`}
       aria-label={collapsed ? "Expand" : "Collapse"}
       aria-expanded={!collapsed}
-      onPointerDown={down}
-      onPointerUp={up}
-      onPointerCancel={() => {
-        start.current = null;
+      onPointerDown={(e) => {
+        e.stopPropagation();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
       }}
     >
       <span className="tree-collapse-grip" />
