@@ -8,6 +8,7 @@
     "dev": "vite --host 0.0.0.0 --port 5173",
     "api": "node server/index.mjs",
     "standup": "node scripts/standup.mjs",
+    "owner:reset": "node scripts/owner-reset.mjs",
     "start": "node server/index.mjs",
     "start:static": "node scripts/start-static.mjs",
     "build": "tsc -b && vite build",

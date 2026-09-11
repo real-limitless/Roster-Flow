@@ -276,6 +276,11 @@ export const api = {
     }),
   me: () => req<AuthUser>("/api/v1/auth/me"),
   logout: () => req<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST", body: "{}" }),
+  changePassword: (current: string, next: string) =>
+    req<{ ok: boolean; revoked?: number; kept?: number; policy?: string; user?: AuthUser }>("/api/v1/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current, next }),
+    }),
   harnessSessions: () =>
     req<{
       sessions: Array<{

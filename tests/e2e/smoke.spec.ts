@@ -455,6 +455,15 @@ test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
   await expect(page.getByTestId("inbox-count-build")).toHaveCount(0);
 });
 
+test("settings account pane documents owner:reset", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-account").click();
+  await expect(page.getByTestId("settings-account")).toBeVisible();
+  await expect(page.getByTestId("account-recover")).toContainText("npm run owner:reset");
+  await page.screenshot({ path: "/tmp/walkthrough/settings-account-demo.png", fullPage: true });
+});
+
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app/settings");

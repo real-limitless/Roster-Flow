@@ -84,6 +84,10 @@ export function Login() {
         </h1>
         <p className="lede">Local owner account. This is not SSO.</p>
         <LoginForm emailDefault={status?.email || ""} />
+        <p className="micro" data-testid="login-recover">
+          Forgot the password? Stop CORE, then <code>npm run owner:reset</code>. That rewrites the hash and keeps seats
+          and runs.
+        </p>
         <p className="micro">
           Need to start over? <Link to="/setup">Open setup</Link>
         </p>

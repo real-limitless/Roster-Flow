@@ -116,6 +116,17 @@ curl -s http://127.0.0.1:5173/app
 
 Local owner after `/setup`. Playwright sets `ROSTER_SKIP_ONBOARDING=1`; then `Authorization: Bearer roster-demo` is still accepted. Do not invent other tokens.
 
+Change password: Settings → Account (`POST /api/v1/auth/password`). Other sessions are revoked; the browser that submitted keeps its token.
+
+Forgot the password and `/login` is unreachable: **stop CORE**, then:
+
+```bash
+npm run owner:reset
+# non-interactive: npm run owner:reset -- --password 'new-password-here'
+```
+
+That rewrites the scrypt hash and drops sessions. Seats and runs stay. Do not delete `.roster-flow/state.json` to recover.
+
 ## Seed / demo data
 
 On first API boot **with skip** (or after the welcome step picks **starter company**), `server/seed.mjs` writes `.roster-flow/state.json` from the same starter company as `src/data.ts`. Welcome can also pick an **empty org** (You + Channel + Architect, `#general` only). Existing data dirs without an `onboarding` field migrate as already complete. The starter roster:
@@ -169,6 +180,8 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 | `harness-term` `harness-xterm` | Live OpenCode TUI (xterm) |
 | `settings-providers` | Settings form |
 | `provider-id` `provider-save` | Add provider |
+| `settings-nav-account` `settings-account` `account-form` `account-current` `account-next` `account-confirm` `account-submit` `account-recover` | Settings → Account |
+| `login-recover` | `/login` owner:reset hint |
 | `access-form` | `/access` |
 | `setup-page` `setup-step-install` `setup-step-first-user` `setup-step-login` `setup-step-harness` `setup-step-welcome` | `/setup` wizard |
 | `setup-name` `setup-email` `setup-password` `setup-create-owner` | First user |

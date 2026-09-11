@@ -62,10 +62,12 @@ npm run standup
 - Marketing: http://127.0.0.1:5173/
 - First-run setup: http://127.0.0.1:5173/setup
 - Workspace: http://127.0.0.1:5173/app
-- Settings (providers / models): http://127.0.0.1:5173/app/settings
+- Settings (providers / Account password): http://127.0.0.1:5173/app/settings
 - CORE API: http://127.0.0.1:8790/api/v1/health
 
 Full container and host paths, selectors, seed data, and Playwright: [docs/STANDUP.md](docs/STANDUP.md).
+
+Forgotten owner password: stop CORE, then `npm run owner:reset` (does not delete the company). Settings → Account rotates the hash while signed in.
 
 ```bash
 npm run test:e2e
