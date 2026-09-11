@@ -22,8 +22,13 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 | POST | `/api/v1/auth/login` | `{ email, password }` → `{ token, user }` |
 | GET | `/api/v1/auth/me` | Current owner |
 | POST | `/api/v1/auth/logout` | Drop this token |
+| POST | `/api/v1/auth/password` | `{ current, next }` — owner is signed in. Other sessions are revoked; this token stays valid. |
 
 `GET /api/v1/state` never includes `users` or `authSessions`. Passwords are scrypt hashes.
+
+Password recovery when the UI is unreachable: stop CORE, then `npm run owner:reset` (prompts, or `--password` / `OWNER_RESET_PASSWORD`). That rewrites the owner hash in `.roster-flow/state.json` and revokes every session. It does not delete seats or runs. Do not `rm` `state.json` to get back in.
+
+The demo token (`Bearer roster-demo` with `ROSTER_SKIP_ONBOARDING=1`) cannot rotate the hash — sign in with the owner password first.
 
 ## Health and harness
 

@@ -91,9 +91,30 @@ test.describe("first-run onboarding", () => {
     await expect(page.getByTestId("workspace-shell")).toBeVisible();
     await expect(page.getByTestId("channel-general")).toBeVisible();
 
+    await page.goto("/app/settings");
+    await page.getByTestId("settings-nav-account").click();
+    await expect(page.getByTestId("settings-account")).toBeVisible();
+    await page.getByTestId("account-current").fill("password1");
+    await page.getByTestId("account-next").fill("password2");
+    await page.getByTestId("account-confirm").fill("password2");
+    await page.getByTestId("account-submit").click();
+    await expect(page.getByText(/revokes every other session|Password updated/i).first()).toBeVisible();
+    await page.screenshot({ path: "/tmp/walkthrough/settings-account.png", fullPage: true });
+
     await page.evaluate(() => localStorage.removeItem("roster-flow-token"));
-    await page.goto("/app");
-    await expect(page).toHaveURL(/\/login/);
+    await page.goto("/login");
     await expect(page.getByTestId("login-page")).toBeVisible();
+    await expect(page.getByTestId("login-recover")).toContainText("npm run owner:reset");
+    await page.screenshot({ path: "/tmp/walkthrough/login-recover.png", fullPage: true });
+    const stale = await fetch(`http://127.0.0.1:${PORT}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "chen@example.com", password: "password1" }),
+    });
+    expect(stale.status).toBe(401);
+    await page.getByTestId("setup-login-email").fill("chen@example.com");
+    await page.getByTestId("setup-login-password").fill("password2");
+    await page.getByTestId("setup-login-submit").click();
+    await expect(page).toHaveURL(/\/app/);
   });
 });

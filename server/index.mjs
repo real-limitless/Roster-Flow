@@ -3,7 +3,7 @@ import { getState, mutate, save, resetState, uid } from "./store.mjs";
 import { normalizeSeat, normalizeModelId } from "./seed.mjs";
 import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
-import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
+import { addFirstUser, changePassword, DEMO_TOKEN, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
@@ -211,6 +211,26 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/auth/logout" && method === "POST") {
       mutate((s) => revokeSession(s, token));
       json(res, 200, { ok: true });
+      return;
+    }
+    if (pathname === "/api/v1/auth/password" && method === "POST") {
+      if (!user) {
+        json(res, 401, { error: "authentication required" });
+        return;
+      }
+      if (skipOnboarding() && token === DEMO_TOKEN) {
+        json(res, 401, { error: "sign in with the owner password to rotate it" });
+        return;
+      }
+      const body = await readBody(req);
+      const out = await changePassword(getState(), {
+        userId: user.id,
+        currentPassword: body.current || body.currentPassword,
+        newPassword: body.next || body.newPassword,
+        keepToken: token,
+      });
+      save();
+      json(res, 200, { ok: true, ...out });
       return;
     }
 

@@ -109,3 +109,46 @@ export async function loginUser(state, { email, password } = {}) {
   const session = createAuthSession(state, user.id);
   return { token: session.token, user: publicUser(user) };
 }
+
+export const PASSWORD_CHANGE_POLICY =
+  "Changing the password revokes every other session. This browser keeps its current token. Terminal recovery (npm run owner:reset) revokes all sessions and does not delete seats or runs.";
+
+export function ownerUser(state) {
+  return (state.users || []).find((u) => (u.role || "owner") === "owner") || (state.users || [])[0] || null;
+}
+
+async function rotateHash(user, password) {
+  const next = String(password || "");
+  if (next.length < 8) throw fail(400, "password must be at least 8 characters");
+  const { salt, hash } = await hashPassword(next);
+  user.passwordSalt = salt;
+  user.passwordHash = hash;
+  user.passwordChangedAt = new Date().toISOString();
+}
+
+export async function changePassword(state, { userId, currentPassword, newPassword, keepToken } = {}) {
+  const user = (state.users || []).find((u) => u.id === userId);
+  if (!user || !user.passwordHash) throw fail(404, "no local owner password");
+  if (!(await verifyPassword(currentPassword, user.passwordSalt, user.passwordHash))) {
+    throw fail(401, "current password is wrong");
+  }
+  await rotateHash(user, newPassword);
+  const keep = String(keepToken || "");
+  const before = (state.authSessions || []).length;
+  state.authSessions = (state.authSessions || []).filter((s) => s.token === keep);
+  return {
+    user: publicUser(user),
+    revoked: before - state.authSessions.length,
+    kept: state.authSessions.length,
+    policy: PASSWORD_CHANGE_POLICY,
+  };
+}
+
+export async function resetOwnerPassword(state, { password } = {}) {
+  const user = ownerUser(state);
+  if (!user) throw fail(404, "no local owner — complete /setup first");
+  await rotateHash(user, password);
+  const revoked = (state.authSessions || []).length;
+  state.authSessions = [];
+  return { user: publicUser(user), revoked, kept: 0, policy: PASSWORD_CHANGE_POLICY };
+}

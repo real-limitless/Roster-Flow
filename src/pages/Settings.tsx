@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Logo } from "../components/Logo";
 import { seats as seedSeats, type Seat } from "../data";
 import { api } from "../lib/api";
+import { AccountPanel } from "./settings/AccountPanel";
 import { AgentsPanel } from "./settings/AgentsPanel";
 import { FamilyPanel } from "./settings/FamilyPanel";
 import { HarnessPanel } from "./settings/HarnessPanel";
@@ -89,6 +90,19 @@ export function Settings() {
               {label}
             </button>
           ))}
+          <div className="rail-label">You</div>
+          <button
+            type="button"
+            data-testid="settings-nav-account"
+            className={`ch ${pane === "account" ? "on" : ""}`}
+            onClick={() => {
+              setPane("account");
+              setRailOpen(false);
+              setOk("");
+            }}
+          >
+            Account
+          </button>
         </aside>
         <main className="settings-main">
           {err && (
@@ -115,6 +129,7 @@ export function Settings() {
           {pane === "agents" && <AgentsPanel seats={seats} />}
           {pane === "routines" && <RoutinesPanel seats={seats} onError={setErr} />}
           {pane === "family" && <FamilyPanel />}
+          {pane === "account" && <AccountPanel onError={setErr} onOk={setOk} />}
         </main>
       </div>
     </div>
