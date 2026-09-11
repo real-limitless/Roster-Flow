@@ -21,8 +21,6 @@ git checkout DEVELOPMENT
 
 Repo admins: set **default branch = `DEVELOPMENT`** (Settings → General). This file cannot do that click. `CORE` stays docs/methodology.
 
-## Install (Docker or Podman)
-
 ## Visual tour
 
 | | |
