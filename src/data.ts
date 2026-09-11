@@ -222,6 +222,16 @@ export type MsgFile = {
   name: string;
 };
 
+export type KnowledgeConnector = {
+  id: string;
+  projectId: string;
+  kind: "git" | "github" | "docs" | string;
+  path?: string;
+  remote?: string;
+  root?: string;
+  enabled?: boolean;
+};
+
 export type Skill = {
   id: string;
   name: string;

@@ -13,6 +13,7 @@ import { createChannel, patchChannel } from "./channels.mjs";
 import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
+import { attachConnector, listConnectors, publicConnector, removeConnector, searchKnowledge } from "./knowledge.mjs";
 import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
@@ -296,6 +297,48 @@ const server = createServer(async (req, res) => {
         return;
       }
       json(res, 200, updated);
+      return;
+    }
+    const projectConn = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/connectors(?:\/([^/]+))?$/);
+    if (projectConn && !projectConn[2] && method === "GET") {
+      json(res, 200, listConnectors(getState(), decodeURIComponent(projectConn[1])).map(publicConnector));
+      return;
+    }
+    if (projectConn && !projectConn[2] && method === "POST") {
+      const body = await readBody(req);
+      try {
+        let created = null;
+        mutate((s) => {
+          created = attachConnector(s, decodeURIComponent(projectConn[1]), body);
+        });
+        json(res, 201, created);
+      } catch (err) {
+        fail(res, err);
+      }
+      return;
+    }
+    if (projectConn && projectConn[2] && method === "DELETE") {
+      let removed = null;
+      mutate((s) => {
+        removed = removeConnector(s, decodeURIComponent(projectConn[1]), decodeURIComponent(projectConn[2]));
+      });
+      if (!removed) {
+        json(res, 404, { error: "connector not found" });
+        return;
+      }
+      json(res, 200, removed);
+      return;
+    }
+    const projectKnow = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/knowledge$/);
+    if (projectKnow && method === "GET") {
+      try {
+        const out = await searchKnowledge(getState(), decodeURIComponent(projectKnow[1]), url.searchParams.get("q") || "", {
+          seatId: url.searchParams.get("seatId") || user?.seatId || "you",
+        });
+        json(res, 200, out);
+      } catch (err) {
+        fail(res, err);
+      }
       return;
     }
     if (pathname === "/api/v1/goals" && method === "GET") {

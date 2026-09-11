@@ -13,7 +13,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
     "test:e2e": "playwright test",
-    "test:unit": "node --test packages/roster-flow-blocks/index.test.mjs packages/roster-flow-opencode/index.test.mjs server/bus.test.mjs server/teams.test.mjs server/agents.test.mjs server/mentions.test.mjs server/channels.test.mjs server/models.test.mjs server/providers.test.mjs server/projects.test.mjs server/architect.test.mjs server/chat.test.mjs server/auth.test.mjs server/setup.test.mjs server/config.test.mjs server/static.test.mjs server/paths.test.mjs server/family.test.mjs server/goals.test.mjs server/inbox.test.mjs server/approvals.test.mjs server/routines.test.mjs",
+    "test:unit": "node --test packages/roster-flow-blocks/index.test.mjs packages/roster-flow-opencode/index.test.mjs server/bus.test.mjs server/teams.test.mjs server/agents.test.mjs server/mentions.test.mjs server/channels.test.mjs server/models.test.mjs server/providers.test.mjs server/projects.test.mjs server/architect.test.mjs server/chat.test.mjs server/auth.test.mjs server/setup.test.mjs server/config.test.mjs server/static.test.mjs server/paths.test.mjs server/family.test.mjs server/goals.test.mjs server/inbox.test.mjs server/approvals.test.mjs server/routines.test.mjs server/knowledge.test.mjs",
     "prove:two-bot": "node scripts/prove-two-bot.mjs"
   },
   "dependencies": {

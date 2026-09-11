@@ -169,6 +169,8 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 | `harness-term` `harness-xterm` | Live OpenCode TUI (xterm) |
 | `settings-providers` | Settings form |
 | `provider-id` `provider-save` | Add provider |
+| `project-inspector` `project-constitution-field` | Project About modal |
+| `knowledge-attach` `knowledge-search` `knowledge-hit` `knowledge-disconnect-{id}` | Project knowledge connectors |
 | `access-form` | `/access` |
 | `setup-page` `setup-step-install` `setup-step-first-user` `setup-step-login` `setup-step-harness` `setup-step-welcome` | `/setup` wizard |
 | `setup-name` `setup-email` `setup-password` `setup-create-owner` | First user |

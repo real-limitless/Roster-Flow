@@ -13,6 +13,7 @@ import {
   teams as seedTeams,
   type CatalogModel,
   type Channel,
+  type KnowledgeConnector,
   type Msg,
   type Project,
   type Goal,
@@ -1910,6 +1911,27 @@ function ProjectInspector({
 }) {
   const projectTeams = teams.filter((t) => t.projectId === project.id || (project.teamIds || []).includes(t.id));
   const pm = roster.find((s) => s.id === project.pmSeatId);
+  const [connectors, setConnectors] = useState<KnowledgeConnector[]>([]);
+  const [kind, setKind] = useState("docs");
+  const [path, setPath] = useState("docs");
+  const [remote, setRemote] = useState("");
+  const [query, setQuery] = useState("constitution");
+  const [hits, setHits] = useState<Array<{ path: string; snippet: string }>>([]);
+  const [source, setSource] = useState("");
+  const [note, setNote] = useState("");
+
+  async function loadConnectors() {
+    try {
+      setConnectors(await api.projectConnectors(project.id));
+    } catch (err) {
+      setNote(err instanceof Error ? err.message : "connectors failed");
+    }
+  }
+
+  useEffect(() => {
+    void loadConnectors();
+  }, [project.id]);
+
   return (
     <aside className={`inspector ${open ? "open" : ""} ${className}`.trim()} data-testid="project-inspector">
       <div className="inspector-head">
@@ -1955,6 +1977,105 @@ function ProjectInspector({
           onBlur={(e) => onPatchProject({ constitution: e.target.value })}
         />
       </label>
+      <h4 style={{ marginTop: 16 }}>Knowledge</h4>
+      <p className="micro">
+        Project-scoped. Not used for training. Prefer mcp-flow when it is up; otherwise CORE reads a local git or
+        markdown tree.
+      </p>
+      <div className="kv">
+        <span>Source</span>
+        <b data-testid="knowledge-source">{source || "—"}</b>
+      </div>
+      <label className="kv-label">
+        Kind
+        <select data-testid="knowledge-kind" value={kind} onChange={(e) => setKind(e.target.value)}>
+          <option value="docs">Markdown tree</option>
+          <option value="git">Local git path</option>
+          <option value="github">GitHub remote</option>
+        </select>
+      </label>
+      {kind === "github" ? (
+        <label className="kv-label">
+          Remote
+          <input data-testid="knowledge-remote" value={remote} onChange={(e) => setRemote(e.target.value)} placeholder="https://github.com/org/repo" />
+        </label>
+      ) : (
+        <label className="kv-label">
+          Path
+          <input data-testid="knowledge-path" value={path} onChange={(e) => setPath(e.target.value)} placeholder="docs" />
+        </label>
+      )}
+      <button
+        className="pill-btn"
+        data-testid="knowledge-attach"
+        type="button"
+        style={{ width: "100%", marginTop: 8 }}
+        onClick={() => {
+          void api
+            .attachConnector(project.id, {
+              kind,
+              path: kind === "git" ? path : undefined,
+              root: kind === "docs" ? path : undefined,
+              remote: kind === "github" ? remote : undefined,
+            })
+            .then(() => {
+              setNote("");
+              return loadConnectors();
+            })
+            .catch((err) => setNote(err instanceof Error ? err.message : String(err)));
+        }}
+      >
+        Attach
+      </button>
+      {connectors.map((c) => (
+        <div key={c.id} className="micro" data-testid={`knowledge-conn-${c.id}`} style={{ marginTop: 8 }}>
+          {c.kind} · {c.remote || c.root || c.path}
+          <button
+            type="button"
+            className="pill-btn"
+            data-testid={`knowledge-disconnect-${c.id}`}
+            style={{ marginLeft: 8 }}
+            onClick={() => {
+              void api.detachConnector(project.id, c.id).then(() => loadConnectors());
+            }}
+          >
+            Disconnect
+          </button>
+        </div>
+      ))}
+      <label className="kv-label">
+        Search
+        <input data-testid="knowledge-query" value={query} onChange={(e) => setQuery(e.target.value)} />
+      </label>
+      <button
+        className="pill-btn"
+        data-testid="knowledge-search"
+        type="button"
+        style={{ width: "100%", marginTop: 8 }}
+        onClick={() => {
+          void api
+            .searchKnowledge(project.id, query, "build")
+            .then((out) => {
+              setHits(out.hits || []);
+              setSource(out.source);
+              setNote("");
+            })
+            .catch((err) => setNote(err instanceof Error ? err.message : String(err)));
+        }}
+      >
+        Search
+      </button>
+      {hits.map((h) => (
+        <div key={h.path} className="micro" data-testid="knowledge-hit" style={{ marginTop: 8 }}>
+          <b>{h.path}</b>
+          <div>{h.snippet}</div>
+        </div>
+      ))}
+      {note && (
+        <p className="micro" data-testid="knowledge-note">
+          {note}
+        </p>
+      )}
       {projectTeams.length > 0 && (
         <>
           <h4 style={{ marginTop: 16 }}>Teams</h4>

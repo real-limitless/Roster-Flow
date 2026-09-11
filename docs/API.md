@@ -55,6 +55,10 @@ Staffed teams (`eng`, `services`) always have a **Supervisor** and a **Generic**
 | POST | `/api/v1/projects` | Create a project (`name`, `brief`, `constitution`) |
 | GET | `/api/v1/projects/:id` | One project |
 | PATCH | `/api/v1/projects/:id` | Brief, constitution, PM seat, teams |
+| GET | `/api/v1/projects/:id/connectors` | Project-scoped knowledge sources |
+| POST | `/api/v1/projects/:id/connectors` | Attach git path, GitHub remote, or docs tree |
+| DELETE | `/api/v1/projects/:id/connectors/:id` | Disconnect (gone from subsequent wakes) |
+| GET | `/api/v1/projects/:id/knowledge` | `?q=&seatId=` snippet search |
 | POST | `/api/v1/seats` | Hire a seat (specialist when `team` is set; `projectId` + `asPm` for a project PM) |
 | PATCH | `/api/v1/seats/:id` | Reparent, model, persona, instructions, tools |
 | DELETE | `/api/v1/seats/:id` | Fire a seat (not `you` or system). Orphans reparent to the manager. |
@@ -122,7 +126,7 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | PATCH | `/api/v1/routines/:id` | Enable/pause, prompt, interval |
 | POST | `/api/v1/routines/:id/run` | Manual or webhook run — posts bus `{ from: "routine", wake: true }` |
 
-Wake prompts prepend linked goal title, project brief, constitution, and `meta.runId` when present. `wakeSeat` does not prompt when the seat is paused or the run is killed. Create/run a routine is rejected when `impliesDeploy` (or the prompt is clearly a deploy) and the seat `deny` includes `deploy`. Tick coalesces with another wake to the same seat in the same minute.
+Wake prompts prepend linked goal title, project brief, constitution, attached knowledge pointers (not used for training), and `meta.runId` when present. `wakeSeat` does not prompt when the seat is paused or the run is killed. Create/run a routine is rejected when `impliesDeploy` (or the prompt is clearly a deploy) and the seat `deny` includes `deploy`. Tick coalesces with another wake to the same seat in the same minute.
 
 Plugin tool: `roster_inbox`.
 

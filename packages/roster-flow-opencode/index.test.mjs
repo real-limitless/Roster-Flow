@@ -67,4 +67,7 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
 
   await tools.roster_inbox.execute({}, { agent: "build" });
   assert.ok(calls.some((c) => c.path === "/api/v1/seats/build/inbox"));
+
+  await tools.roster_knowledge.execute({ q: "webhook" }, { agent: "build" });
+  assert.ok(calls.some((c) => String(c.path).includes("/api/v1/projects/billing/knowledge") && String(c.path).includes("q=webhook")));
 });

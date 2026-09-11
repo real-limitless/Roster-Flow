@@ -473,3 +473,32 @@ test("settings routine test-run posts bus mail", async ({ page, request }) => {
     return bus.some((e) => e.from === "routine" && e.to === "product" && /ship train/i.test(e.text || ""));
   }).toBeTruthy();
 });
+
+test("project knowledge connector search is scoped and disconnects", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await page.getByTestId("project-billing").click();
+  await page.getByTestId("conversation-title").click();
+  await expect(page.getByTestId("project-inspector")).toBeVisible();
+  await page.getByTestId("knowledge-kind").selectOption("docs");
+  await page.getByTestId("knowledge-path").fill("docs");
+  await page.getByTestId("knowledge-attach").click();
+  await expect(page.locator('[data-testid^="knowledge-conn-"]').first()).toBeVisible();
+  await page.getByTestId("knowledge-query").fill("constitution");
+  await page.getByTestId("knowledge-search").click();
+  await expect(page.getByTestId("knowledge-hit").first()).toBeVisible();
+  await expect(page.getByTestId("knowledge-source")).toContainText("core");
+  await page.screenshot({ path: "/tmp/walkthrough/project-knowledge.png", fullPage: true });
+
+  const forbidden = await request.get(
+    "http://127.0.0.1:8790/api/v1/projects/billing/knowledge?q=constitution&seatId=scout",
+  );
+  expect(forbidden.status()).toBe(403);
+
+  await page.locator('[data-testid^="knowledge-disconnect-"]').first().click();
+  await expect(page.locator('[data-testid^="knowledge-conn-"]')).toHaveCount(0);
+
+  await page.goto("/security");
+  await expect(page.getByText(/not used for training/i).first()).toBeVisible();
+  await page.screenshot({ path: "/tmp/walkthrough/security-knowledge.png", fullPage: true });
+});
