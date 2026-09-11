@@ -27,6 +27,7 @@ Package: `packages/roster-flow-opencode`
 | `roster_send_message` | Peer or channel mail |
 | `roster_handoff` | Close my phase, open yours |
 | `roster_report` | Structured result to the originating thread |
+| `roster_knowledge` | Project-scoped file/snippet search |
 | `roster_ask_human` | Park on `reports_to` (never `#general`) |
 | `roster_propose_org` | Architect OrgPlan (does not apply) |
 

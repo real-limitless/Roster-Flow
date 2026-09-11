@@ -161,6 +161,7 @@ export function OrgPage() {
 export function Security() {
   const rows = [
     ["Training on workspace data", "Off. Never."],
+    ["Project knowledge", "Connectors are per project. CORE indexes a local git/docs tree (or mcp-flow when it is up). Disconnect drops it from the next wake. Not used for training."],
     ["Tool permissions", "Deny by default. OpenCode frontmatter is source of truth."],
     ["Deploy / merge / delete", "Confirm (human or dual-control)."],
     ["Bus", "Authenticated, audited, rate-limited, cycle-detected."],

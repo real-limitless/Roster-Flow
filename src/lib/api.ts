@@ -112,6 +112,21 @@ export const api = {
     req<import("../data").Project>("/api/v1/projects", { method: "POST", body: JSON.stringify(body) }),
   patchProject: (id: string, body: unknown) =>
     req<import("../data").Project>(`/api/v1/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  projectConnectors: (id: string) =>
+    req<import("../data").KnowledgeConnector[]>(`/api/v1/projects/${id}/connectors`),
+  attachConnector: (id: string, body: { kind: string; path?: string; remote?: string; root?: string }) =>
+    req<import("../data").KnowledgeConnector>(`/api/v1/projects/${id}/connectors`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  detachConnector: (projectId: string, connectorId: string) =>
+    req<import("../data").KnowledgeConnector>(`/api/v1/projects/${projectId}/connectors/${connectorId}`, {
+      method: "DELETE",
+    }),
+  searchKnowledge: (id: string, q: string, seatId?: string) =>
+    req<{ source: string; projectId: string; q: string; hits: Array<{ path: string; snippet: string }> }>(
+      `/api/v1/projects/${id}/knowledge?q=${encodeURIComponent(q)}${seatId ? `&seatId=${encodeURIComponent(seatId)}` : ""}`,
+    ),
   createTeam: (body: unknown) =>
     req<{ team: import("../data").Team; seats: import("../data").Seat[] }>("/api/v1/teams", {
       method: "POST",

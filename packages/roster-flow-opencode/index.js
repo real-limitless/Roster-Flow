@@ -129,6 +129,27 @@ export function buildTools(tool, fetchApi = api) {
         return { title: `ask ${manager}`, output: JSON.stringify(entry) };
       },
     }),
+    roster_knowledge: tool({
+      description: "Search project-scoped knowledge (constitution, attached git/docs). Only the current seat’s project.",
+      args: {
+        q: z.string().describe("Search query"),
+        projectId: z.string().optional().describe("Project id. Defaults to this seat’s project."),
+        from: z.string().optional(),
+      },
+      async execute(args, ctx) {
+        const from = args.from || guessSeat(ctx.agent);
+        let projectId = args.projectId;
+        if (!projectId) {
+          const seats = await fetchApi("/api/v1/seats");
+          const me = Array.isArray(seats) ? seats.find((s) => s.id === from) : null;
+          projectId = me?.projectId || "billing";
+        }
+        const out = await fetchApi(
+          `/api/v1/projects/${projectId}/knowledge?q=${encodeURIComponent(args.q)}&seatId=${encodeURIComponent(from)}`,
+        );
+        return { title: `knowledge ${projectId}`, output: JSON.stringify(out) };
+      },
+    }),
     roster_inbox: tool({
       description:
         "Read this seat’s inbox: bus mail to you, team:<id> if you are that team’s Supervisor, or channel:<id> rooms you are in. Unread is everything after your cursor.",
