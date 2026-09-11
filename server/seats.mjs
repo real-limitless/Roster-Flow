@@ -92,3 +92,53 @@ export function fireSeat(state, id) {
   }
   return { id, reparentedTo: fallback };
 }
+
+function fail(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  throw err;
+}
+
+export function pauseSeat(state, id) {
+  const seat = (state.seats || []).find((s) => s.id === id);
+  if (!seat) fail(404, "seat not found");
+  if (seat.id === "you" || seat.kind === "human") fail(400, "cannot pause this seat");
+  seat.status = "paused";
+  return seat;
+}
+
+export function resumeSeat(state, id) {
+  const seat = (state.seats || []).find((s) => s.id === id);
+  if (!seat) fail(404, "seat not found");
+  if (seat.id === "you" || seat.kind === "human") fail(400, "cannot resume this seat");
+  if (seat.status === "paused") seat.status = "idle";
+  return seat;
+}
+
+export function pauseTeam(state, id) {
+  const team = (state.teams || []).find((t) => t.id === id);
+  if (!team) fail(404, "team not found");
+  const seats = [];
+  for (const sid of team.seatIds || []) {
+    const seat = (state.seats || []).find((s) => s.id === sid);
+    if (seat?.kind === "bot") {
+      seat.status = "paused";
+      seats.push(seat);
+    }
+  }
+  return { team, seats };
+}
+
+export function killRun(state, runId) {
+  const id = String(runId || "").trim();
+  if (!id) fail(400, "runId required");
+  state.pausedRunIds = [...new Set([...(state.pausedRunIds || []), id])];
+  return { runId: id, paused: true };
+}
+
+export function wakeBlocked(state, seat, meta = {}) {
+  if (seat?.status === "paused") return { paused: true, reason: "seat" };
+  const runId = meta.runId;
+  if (runId && (state.pausedRunIds || []).includes(runId)) return { paused: true, reason: "run" };
+  return null;
+}

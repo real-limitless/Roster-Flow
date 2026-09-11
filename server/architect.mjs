@@ -1,4 +1,5 @@
 import { slugify } from "./seed.mjs";
+import { goalPackLines } from "./goals.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat } from "./seats.mjs";
 import { createStaffedTeam } from "./teams.mjs";
@@ -445,7 +446,9 @@ export function architectPrompt(message, history, state) {
     .slice(-8)
     .map((m) => `${m.role || "user"}: ${m.text || m.content || ""}`)
     .join("\n");
+  const pack = goalPackLines(state, { seat: (state.seats || []).find((s) => s.id === "architect") });
   return [
+    pack.length ? `Company context:\n${pack.join("\n")}` : "",
     "Propose ONE OrgPlan as a JSON object. No prose outside a short reply field.",
     "Ops: replace_org, create_project, create_team, hire, reparent, fire. Max 48 ops.",
     "Org → Project → Team → Seat. PMs are project-scoped (asPm: true, knowledge, skills).",

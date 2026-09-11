@@ -37,6 +37,7 @@ export function createProject(state, body = {}) {
     constitution: body.constitution ? String(body.constitution) : undefined,
     pmSeatId: body.pmSeatId || undefined,
     teamIds: Array.isArray(body.teamIds) ? [...body.teamIds] : [],
+    goalIds: Array.isArray(body.goalIds) ? [...body.goalIds] : [],
   };
   state.projects = [...(state.projects || []), project];
   for (const teamId of project.teamIds) attachTeamToProject(state, id, teamId);
@@ -54,5 +55,6 @@ export function patchProject(state, id, body = {}) {
     project.teamIds = [...body.teamIds];
     for (const teamId of project.teamIds) attachTeamToProject(state, id, teamId);
   }
+  if (Array.isArray(body.goalIds)) project.goalIds = [...body.goalIds];
   return project;
 }

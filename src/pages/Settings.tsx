@@ -7,12 +7,14 @@ import { AgentsPanel } from "./settings/AgentsPanel";
 import { FamilyPanel } from "./settings/FamilyPanel";
 import { HarnessPanel } from "./settings/HarnessPanel";
 import { ProvidersPanel } from "./settings/ProvidersPanel";
+import { RoutinesPanel } from "./settings/RoutinesPanel";
 import type { HarnessStatus, Provider, SettingsPane } from "./settings/types";
 
 const PANES: Array<[SettingsPane, string]> = [
   ["providers", "Providers"],
   ["harness", "Harness"],
   ["agents", "Agents"],
+  ["routines", "Routines"],
   ["family", "Family"],
 ];
 
@@ -111,6 +113,7 @@ export function Settings() {
             />
           )}
           {pane === "agents" && <AgentsPanel seats={seats} />}
+          {pane === "routines" && <RoutinesPanel seats={seats} onError={setErr} />}
           {pane === "family" && <FamilyPanel />}
         </main>
       </div>

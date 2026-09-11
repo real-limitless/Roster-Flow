@@ -129,6 +129,19 @@ export function buildTools(tool, fetchApi = api) {
         return { title: `ask ${manager}`, output: JSON.stringify(entry) };
       },
     }),
+    roster_inbox: tool({
+      description:
+        "Read this seat’s inbox: bus mail to you, team:<id> if you are that team’s Supervisor, or channel:<id> rooms you are in. Unread is everything after your cursor.",
+      args: {
+        seatId: z.string().optional().describe("Seat id. Defaults to the current agent."),
+      },
+      async execute(args, ctx) {
+        const id = args.seatId || guessSeat(ctx.agent);
+        const path = !id || id === "me" ? "/api/v1/seats/me/inbox" : `/api/v1/seats/${id}/inbox`;
+        const out = await fetchApi(path);
+        return { title: `inbox ${id}`, output: JSON.stringify(out) };
+      },
+    }),
   };
 }
 

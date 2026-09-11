@@ -284,6 +284,7 @@ test("project team roster update room and inspector rules", async ({ page, reque
   await page.getByTestId("conversation-title").click();
   await expect(page.getByTestId("conversation-modal")).toBeVisible();
   await expect(page.getByTestId("project-inspector")).toBeVisible();
+  await expect(page.getByTestId("project-goal")).toContainText(/billing train|ship-train/i);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("conversation-modal")).toHaveCount(0);
 
@@ -413,4 +414,57 @@ test("related pages still render chart/room", async ({ page }) => {
   await expect(page.getByTestId("org-chart")).toBeVisible();
   await page.goto("/product");
   await expect(page.getByRole("heading", { name: /the room, the org, the harness/i })).toBeVisible();
+});
+
+test("pause pip and blocked attach", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await page.getByTestId("seat-build").first().click({ force: true });
+  await expect(page.getByTestId("seat-inspector")).toContainText("Eng.Build");
+  await page.getByTestId("pause-seat").click();
+  await expect(page.getByTestId("seat-status")).toHaveText("paused");
+  await expect(page.getByTestId("pip-build")).toHaveClass(/paused/);
+  await expect(page.getByTestId("seat-build").first()).toHaveAttribute("data-paused", "1");
+  await page.getByTestId("attach-harness").click();
+  await expect(page.getByTestId("mode-chart")).toHaveClass(/on/);
+  await expect(page.getByTestId("mode-harness")).not.toHaveClass(/on/);
+  const attach = await request.post("http://127.0.0.1:8790/api/v1/seats/build/attach", { data: {} });
+  expect((await attach.json() as { paused?: boolean }).paused).toBeTruthy();
+});
+
+test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
+  await resetApi(request);
+  await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "product", to: "build", kind: "send_message", text: "inbox ping for playwright", wake: false },
+  });
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("inbox-count-build")).toBeVisible();
+  await page.getByTestId("seat-build").first().click({ force: true });
+  await expect(page.getByTestId("seat-inbox")).toContainText("inbox ping for playwright");
+  await page.getByTestId("inbox-mark-read").click();
+  await expect(page.getByTestId("seat-inbox")).toContainText("Caught up");
+  await expect(page.getByTestId("inbox-count-build")).toHaveCount(0);
+});
+
+test("settings routine test-run posts bus mail", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-routines").click();
+  await expect(page.getByTestId("settings-routines")).toBeVisible();
+  await page.getByTestId("routine-title").fill("Playwright ping");
+  await page.getByTestId("routine-seat").selectOption("product");
+  await page.getByTestId("routine-prompt").fill("Check the ship train.");
+  await page.getByTestId("routine-create-submit").click();
+  const card = page.locator('[data-testid^="routine-card-"]').first();
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Test run" }).click();
+  await expect.poll(async () => {
+    const res = await request.get("http://127.0.0.1:8790/api/v1/bus");
+    const bus = (await res.json()) as Array<{ from?: string; to?: string; text?: string }>;
+    return bus.some((e) => e.from === "routine" && e.to === "product" && /ship train/i.test(e.text || ""));
+  }).toBeTruthy();
 });

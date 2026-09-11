@@ -15,6 +15,8 @@ import {
   type Channel,
   type Msg,
   type Project,
+  type Goal,
+  type Approval,
   type Seat,
   type SeatKind,
   type SeatType,
@@ -65,6 +67,9 @@ export function Workspace() {
   const [mobilePane, setMobilePane] = useState<"none" | "nav" | "seat">("none");
   const [teamList, setTeamList] = useState<Team[]>(seedTeams);
   const [projectList, setProjectList] = useState<Project[]>(seedProjects);
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [inboxUnread, setInboxUnread] = useState<Record<string, number>>({});
+  const [approvals, setApprovals] = useState<Approval[]>([]);
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [architectMsgs, setArchitectMsgs] = useState<ArchitectMsg[]>([]);
   const [architectBusy, setArchitectBusy] = useState(false);
@@ -119,6 +124,9 @@ export function Workspace() {
         }
         if (Array.isArray(st.messages)) setMessages(st.messages as Msg[]);
         if (Array.isArray(st.projects)) setProjectList(st.projects);
+        if (Array.isArray(st.goals)) setGoals(st.goals);
+        if (st.inboxUnread) setInboxUnread(st.inboxUnread);
+        if (Array.isArray(st.approvals)) setApprovals(st.approvals);
         const [t, m, p] = await Promise.all([
           api.teams().catch(() => []),
           api.models().catch(() => []),
@@ -261,12 +269,18 @@ export function Workspace() {
     messages?: Msg[];
     teams?: Team[];
     projects?: Project[];
+    goals?: Goal[];
+    approvals?: Approval[];
+    inboxUnread?: Record<string, number>;
   }) {
     if (Array.isArray(st.seats) && st.seats.length) setRoster(st.seats);
     if (Array.isArray(st.channels) && st.channels.length) setRooms(st.channels);
     if (Array.isArray(st.messages) && st.messages.length) setMessages(st.messages);
     if (Array.isArray(st.teams) && st.teams.length) setTeamList(st.teams);
     if (Array.isArray(st.projects) && st.projects.length) setProjectList(st.projects);
+    if (Array.isArray(st.goals)) setGoals(st.goals);
+    if (st.inboxUnread) setInboxUnread(st.inboxUnread);
+    if (Array.isArray(st.approvals)) setApprovals(st.approvals);
   }
 
   function openSearch() {
@@ -378,9 +392,40 @@ export function Workspace() {
 
   function attachSeat(id = selectedId) {
     setSelectedId(id);
-    setMode("harness");
     setMobilePane("none");
-    void api.attach(id).catch(() => undefined);
+    void api
+      .attach(id)
+      .then((out) => {
+        if (out?.paused) {
+          setRoster((r) => r.map((s) => (s.id === id ? { ...s, status: "paused" } : s)));
+          return;
+        }
+        setMode("harness");
+      })
+      .catch(() => setMode("harness"));
+  }
+
+  function refreshBoard() {
+    void api
+      .state()
+      .then((st) => applyRemoteState(st))
+      .catch(() => undefined);
+  }
+
+  function pauseSelected(id: string) {
+    setRoster((r) => r.map((s) => (s.id === id ? { ...s, status: "paused" } : s)));
+    void api
+      .pauseSeat(id)
+      .then((seat) => setRoster((r) => r.map((s) => (s.id === id ? (seat as Seat) : s))))
+      .catch(() => undefined);
+  }
+
+  function resumeSelected(id: string) {
+    setRoster((r) => r.map((s) => (s.id === id && s.status === "paused" ? { ...s, status: "idle" } : s)));
+    void api
+      .resumeSeat(id)
+      .then((seat) => setRoster((r) => r.map((s) => (s.id === id ? (seat as Seat) : s))))
+      .catch(() => undefined);
   }
 
   function addRoom(raw: string) {
@@ -493,9 +538,20 @@ export function Workspace() {
         setArchitectMsgs((m) =>
           m.map((msg) => (msg.plan?.id === plan.id ? { ...msg, plan: { ...msg.plan, status: "applied" } } : msg)),
         );
+        refreshBoard();
       })
       .catch(() => undefined)
       .finally(() => setArchitectBusy(false));
+  }
+
+  function approvePending(id: string) {
+    void api
+      .approveApproval(id)
+      .then((res) => {
+        if (Array.isArray(res.seats)) setRoster(res.seats);
+        refreshBoard();
+      })
+      .catch(() => undefined);
   }
 
   function reparent(id: string, reportsTo: string) {
@@ -808,6 +864,9 @@ export function Workspace() {
               onArchitectApply={applyArchitect}
               onArchitectRevise={() => sendArchitect("Revise that plan. Keep it smaller.")}
               onToggleDebug={toggleDebug}
+              unreadBySeat={inboxUnread}
+              pendingApprovals={approvals.filter((a) => a.status === "pending")}
+              onApprovePending={approvePending}
             />
           )}
         </main>
@@ -826,6 +885,9 @@ export function Workspace() {
             onReparent={(reportsTo) => reparent(selected.id, reportsTo)}
             onPatch={(body) => patchLocalSeat(selected.id, body)}
             onFire={() => fireSeat(selected.id)}
+            onPause={() => pauseSelected(selected.id)}
+            onResume={() => resumeSelected(selected.id)}
+            onInboxChange={refreshBoard}
           />
         )}
       </div>
@@ -913,6 +975,9 @@ export function Workspace() {
                 onHireSpecialist={() => {
                   openCreate("seat", { teamId: selectedTeam.id, projectId: selectedTeam.projectId || "" });
                 }}
+                onPauseTeam={() => {
+                  void api.pauseTeam(selectedTeam.id).then(() => refreshBoard()).catch(() => undefined);
+                }}
               />
             )}
             {focus.kind === "project" && selectedProject && (
@@ -921,6 +986,7 @@ export function Workspace() {
                 project={selectedProject}
                 roster={roster}
                 teams={panelTeams}
+                goals={goals}
                 open
                 onClose={() => setModalOpen(false)}
                 onPatchProject={(body) => {
@@ -1048,6 +1114,9 @@ function ChartPane({
   onArchitectApply,
   onArchitectRevise,
   onToggleDebug,
+  unreadBySeat = {},
+  pendingApprovals = [],
+  onApprovePending,
 }: {
   roster: Seat[];
   projects: Project[];
@@ -1072,6 +1141,9 @@ function ChartPane({
   onArchitectApply: (plan: OrgPlan) => void;
   onArchitectRevise: () => void;
   onToggleDebug?: () => void;
+  unreadBySeat?: Record<string, number>;
+  pendingApprovals?: Approval[];
+  onApprovePending?: (id: string) => void;
 }) {
   const [layoutResetKey, setLayoutResetKey] = useState(0);
   const [dock, setDock] = useState<DockLayout>(loadDock);
@@ -1131,6 +1203,7 @@ function ChartPane({
           onSelectProject={onSelectProject}
           onAttach={onAttach}
           resetLayoutKey={layoutResetKey}
+          unreadBySeat={unreadBySeat}
         />
       </div>
       {!dock.collapsed && <ChartSplitter dock={dock} onChange={setDock} narrow={narrow} />}
@@ -1159,6 +1232,8 @@ function ChartPane({
             onApply={onArchitectApply}
             onRevise={onArchitectRevise}
             showDebug={architectDebug}
+            pendingApprovals={pendingApprovals}
+            onApprovePending={onApprovePending}
           />
         </div>
       )}
@@ -1579,6 +1654,9 @@ function Inspector({
   onReparent,
   onPatch,
   onFire,
+  onPause,
+  onResume,
+  onInboxChange,
   testId = "seat-inspector",
   className = "",
 }: {
@@ -1592,6 +1670,9 @@ function Inspector({
   onReparent: (reportsTo: string) => void;
   onPatch: (body: Partial<Seat>) => void;
   onFire?: () => void;
+  onPause?: () => void;
+  onResume?: () => void;
+  onInboxChange?: () => void;
   testId?: string;
   className?: string;
 }) {
@@ -1619,6 +1700,10 @@ function Inspector({
       <div className="kv">
         <span>Role</span>
         <b>{seat.role}</b>
+      </div>
+      <div className="kv">
+        <span>Status</span>
+        <b data-testid="seat-status">{seat.status}</b>
       </div>
       {seat.team && (
         <div className="kv">
@@ -1722,6 +1807,16 @@ function Inspector({
             Attach harness
           </button>
         )}
+        {seat.kind === "bot" && seat.status !== "paused" && onPause && (
+          <button className="pill-btn" data-testid="pause-seat" type="button" onClick={onPause}>
+            Pause
+          </button>
+        )}
+        {seat.kind === "bot" && seat.status === "paused" && onResume && (
+          <button className="pill-btn" data-testid="resume-seat" type="button" onClick={onResume}>
+            Resume
+          </button>
+        )}
         <button className="pill-btn" onClick={onOpenRoom}>
           Open in room
         </button>
@@ -1738,7 +1833,55 @@ function Inspector({
           </button>
         )}
       </div>
+      <SeatInbox seatId={seat.id} onChange={onInboxChange} />
     </aside>
+  );
+}
+
+function SeatInbox({ seatId, onChange }: { seatId: string; onChange?: () => void }) {
+  const [box, setBox] = useState<{
+    items: Array<{ id: string; from?: string; text?: string; unread?: boolean; kind?: string }>;
+    unread: number;
+  } | null>(null);
+  useEffect(() => {
+    void api
+      .inbox(seatId)
+      .then((out) => setBox(out))
+      .catch(() => setBox(null));
+  }, [seatId]);
+  const unread = (box?.items || []).filter((i) => i.unread);
+  return (
+    <div className="seat-inbox" data-testid="seat-inbox">
+      <h4 style={{ marginTop: 16 }}>Inbox</h4>
+      {!box && <p className="micro">No inbox yet.</p>}
+      {box && unread.length === 0 && <p className="micro">Caught up.</p>}
+      {unread.slice(-8).map((item) => (
+        <p key={item.id} className="micro" data-testid={`inbox-item-${item.id}`}>
+          {item.from || "bus"}: {String(item.text || "").slice(0, 80)}
+        </p>
+      ))}
+      {box && box.unread > 0 && (
+        <button
+          className="pill-btn"
+          data-testid="inbox-mark-read"
+          type="button"
+          style={{ width: "100%", marginTop: 8 }}
+          onClick={() => {
+            const last = box.items[box.items.length - 1]?.id;
+            void api
+              .markInboxRead(seatId, last)
+              .then(() => api.inbox(seatId))
+              .then((out) => {
+                setBox(out);
+                onChange?.();
+              })
+              .catch(() => undefined);
+          }}
+        >
+          Mark read ({box.unread})
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -1746,6 +1889,7 @@ function ProjectInspector({
   project,
   roster,
   teams,
+  goals = [],
   open,
   onClose,
   onPatchProject,
@@ -1756,6 +1900,7 @@ function ProjectInspector({
   project: Project;
   roster: Seat[];
   teams: Team[];
+  goals?: Goal[];
   open: boolean;
   onClose: () => void;
   onPatchProject: (body: Partial<Project>) => void;
@@ -1782,6 +1927,14 @@ function ProjectInspector({
         <div className="kv">
           <span>PM</span>
           <b>{pm.name}</b>
+        </div>
+      )}
+      {(project.goalIds || []).length > 0 && (
+        <div className="kv">
+          <span>Goal</span>
+          <b data-testid="project-goal">
+            {goals.find((g) => g.id === project.goalIds![0])?.title || project.goalIds![0]}
+          </b>
         </div>
       )}
       <label className="kv-label">
@@ -1831,6 +1984,7 @@ function TeamInspector({
   onSelectSeat,
   onPatchTeam,
   onHireSpecialist,
+  onPauseTeam,
   className = "",
 }: {
   team: Team;
@@ -1841,6 +1995,7 @@ function TeamInspector({
   onSelectSeat: (id: string) => void;
   onPatchTeam: (body: Partial<Team>) => void;
   onHireSpecialist: () => void;
+  onPauseTeam?: () => void;
   className?: string;
 }) {
   const members = (team.seatIds || []).map((id) => roster.find((s) => s.id === id)).filter(Boolean) as Seat[];
@@ -1955,9 +2110,16 @@ function TeamInspector({
         </>
       )}
       {team.staffed !== false && (
-        <button className="pill-btn primary" data-testid="hire-specialist" type="button" style={{ width: "100%", marginTop: 16 }} onClick={onHireSpecialist}>
-          Hire specialist
-        </button>
+        <>
+          <button className="pill-btn primary" data-testid="hire-specialist" type="button" style={{ width: "100%", marginTop: 16 }} onClick={onHireSpecialist}>
+            Hire specialist
+          </button>
+          {onPauseTeam && (
+            <button className="pill-btn" data-testid="pause-team" type="button" style={{ width: "100%", marginTop: 8 }} onClick={onPauseTeam}>
+              Pause team
+            </button>
+          )}
+        </>
       )}
     </aside>
   );

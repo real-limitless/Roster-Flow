@@ -432,6 +432,19 @@ h2, h2.section-title {
   min-height: 0;
   text-align: left;
 }
+.architect-approvals {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rail);
+  display: grid;
+  gap: 8px;
+}
+.approval-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
 .chart-splitter {
   flex: 0 0 8px;
   padding: 0;
@@ -603,6 +616,23 @@ h2, h2.section-title {
 .seat .pip { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 5px; background: var(--dim); }
 .seat .pip.on { background: var(--phosphor); box-shadow: 0 0 8px var(--phosphor); }
 .seat .pip.run { background: var(--accent-hot); animation: pulse 1.6s infinite; }
+.seat .pip.paused { background: var(--warn); box-shadow: none; animation: none; }
+.seat.paused { opacity: 0.72; }
+.seat .unread-pip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--ink-btn);
+  font-size: 9px;
+  font-family: var(--font-mono);
+  vertical-align: middle;
+}
 
 .chart-canvas { padding: 20px; display: flex; flex-direction: column; align-items: stretch; gap: 18px; position: relative; min-height: 0; }
 .org-chart { position: relative; width: 100%; min-height: 280px; padding: 8px 4px 24px; }
