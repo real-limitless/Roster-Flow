@@ -6,7 +6,7 @@ import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mer
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
-import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
+import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus, startOver } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
@@ -102,6 +102,7 @@ function isPublicPath(method, pathname) {
   if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
   if (method === "POST" && pathname === "/api/v1/setup/install") return true;
   if (method === "POST" && pathname === "/api/v1/auth/login") return true;
+  if (method === "POST" && pathname === "/api/v1/setup/start-over") return true;
   return false;
 }
 
@@ -257,6 +258,25 @@ const server = createServer(async (req, res) => {
         /* agent files are best-effort */
       }
       json(res, 200, { ...setupStatus(next, { user, binary: whichOpenCode(), providerKeys: hasProviderKey(), dataWritable: isDataWritable() }), state: publicState(next) });
+      return;
+    }
+    if (pathname === "/api/v1/setup/start-over" && method === "POST") {
+      const body = await readBody(req);
+      let next = null;
+      mutate((s) => {
+        next = startOver(s, body);
+        return next;
+      });
+      json(
+        res,
+        200,
+        setupStatus(next, {
+          user: null,
+          binary: whichOpenCode(),
+          providerKeys: hasProviderKey(),
+          dataWritable: isDataWritable(),
+        }),
+      );
       return;
     }
     if (pathname === "/api/v1/auth/login" && method === "POST") {
