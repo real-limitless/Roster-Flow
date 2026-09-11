@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createServer } from "node:http";
+import { mkdirSync } from "node:fs";
 
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
@@ -472,4 +474,66 @@ test("settings routine test-run posts bus mail", async ({ page, request }) => {
     const bus = (await res.json()) as Array<{ from?: string; to?: string; text?: string }>;
     return bus.some((e) => e.from === "routine" && e.to === "product" && /ship train/i.test(e.text || ""));
   }).toBeTruthy();
+});
+
+test("webhook adapter wake and report land in #ship", async ({ page, request }) => {
+  mkdirSync("/tmp/walkthrough", { recursive: true });
+  await resetApi(request);
+
+  const wakes: unknown[] = [];
+  const mock = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => {
+      try {
+        wakes.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
+      } catch {
+        wakes.push({});
+      }
+      res.writeHead(202, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  await new Promise<void>((resolve) => mock.listen(0, "127.0.0.1", () => resolve()));
+  const addr = mock.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  const wakeUrl = `http://127.0.0.1:${port}/wake`;
+
+  try {
+    await page.goto("/app");
+    await page.getByTestId("hire-seat").click();
+    await expect(page.getByTestId("hire-form")).toBeVisible();
+    await page.getByTestId("hire-name").fill("Hook Bot");
+    await page.getByTestId("hire-adapter").selectOption("webhook");
+    await page.getByTestId("hire-adapter-url").fill(wakeUrl);
+    await page.getByTestId("hire-submit").click();
+    await expect(page.getByTestId("seat-adapter")).toContainText("webhook");
+    await expect(page.getByTestId("adapter-note")).toBeVisible();
+    await expect(page.getByTestId("attach-harness")).toHaveCount(0);
+
+    await page.getByTestId("mode-chart").click();
+    await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+    await expect(page.getByTestId("seat-hook-bot")).toHaveAttribute("data-adapter", "webhook");
+    await expect(page.getByTestId("seat-hook-bot")).toContainText("webhook");
+    await page.screenshot({ path: "/tmp/walkthrough/chart-webhook-adapter.png" });
+
+    const sent = await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+      data: { from: "you", to: "hook-bot", kind: "send_message", text: "please report the ship", wake: true },
+    });
+    expect(sent.ok()).toBeTruthy();
+    await expect.poll(() => wakes.length).toBeGreaterThan(0);
+
+    const reported = await request.post("http://127.0.0.1:8790/api/v1/seats/hook-bot/adapter/report", {
+      data: { text: "webhook report: shipped" },
+    });
+    expect(reported.ok()).toBeTruthy();
+
+    await page.goto("/app");
+    const report = page.getByText("webhook report: shipped").first();
+    await expect(report).toBeVisible();
+    await report.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: "/tmp/walkthrough/room-webhook-report.png" });
+  } finally {
+    await new Promise<void>((resolve) => mock.close(() => resolve()));
+  }
 });

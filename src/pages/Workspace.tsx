@@ -22,6 +22,8 @@ import {
   type SeatType,
   type ModelStrategy,
   type Team,
+  isOpenCodeSeat,
+  seatAdapter,
 } from "../data";
 import { OrgChart } from "../components/OrgChart";
 import { SeatAvatar } from "../components/SeatAvatar";
@@ -1283,6 +1285,8 @@ function HireForm({
   const [instructions, setInstructions] = useState("");
   const [model, setModel] = useState(models[0] ? modelValue(models[0]) : "");
   const [fallback, setFallback] = useState("");
+  const [adapter, setAdapter] = useState<"opencode" | "webhook" | "claude-code" | "codex">("opencode");
+  const [adapterUrl, setAdapterUrl] = useState("");
   const humans = roster.filter((s) => s.kind === "human");
   const managers = roster.filter((s) => !s.system);
   const picked = staffed.find((t) => t.id === team);
@@ -1309,15 +1313,20 @@ function HireForm({
       fallbackModel: kind === "bot" ? fallback || undefined : undefined,
       persona: kind === "bot" ? persona.trim() || undefined : undefined,
       instructions: kind === "bot" ? instructions.trim() || undefined : undefined,
-      job: job.trim() || (kind === "human" ? "Human seat on the org chart." : "Specialist OpenCode agent."),
+      job: job.trim() || (kind === "human" ? "Human seat on the org chart." : adapter === "opencode" ? "Specialist OpenCode agent." : "BYO adapter seat. Transport only."),
       status: "idle",
+      adapter: kind === "bot" ? adapter : undefined,
+      adapterUrl: kind === "bot" && adapter !== "opencode" && adapterUrl.trim() ? adapterUrl.trim() : undefined,
     });
   }
 
   return (
     <form className="hire-form" data-testid="hire-form" onSubmit={submit}>
       <strong id="create-dialog-title">Hire a seat</strong>
-      <p className="micro">Supervisor and Generic are created with a team. Hire a specialist when you need a specific persona and prompt.</p>
+      <p className="micro">
+        Supervisor and Generic are created with a team. Adapter is transport: OpenCode is the default loop;
+        webhook / Claude Code / Codex chairs are not a second runtime.
+      </p>
       <div className="hire-grid">
         <label>
           Kind
@@ -1358,7 +1367,7 @@ function HireForm({
         </label>
         <label>
           Name
-          <input value={name} onChange={(e) => setName(e.target.value)} required placeholder={kind === "human" ? "Alex" : "Eng.Mobile"} autoFocus />
+          <input data-testid="hire-name" value={name} onChange={(e) => setName(e.target.value)} required placeholder={kind === "human" ? "Alex" : "Eng.Mobile"} autoFocus />
         </label>
         <label>
           Role
@@ -1378,6 +1387,34 @@ function HireForm({
           </select>
         </label>
         {kind === "bot" && (
+          <>
+            <label>
+              Adapter
+              <select
+                data-testid="hire-adapter"
+                value={adapter}
+                onChange={(e) => setAdapter(e.target.value as typeof adapter)}
+              >
+                <option value="opencode">OpenCode (default)</option>
+                <option value="webhook">Webhook</option>
+                <option value="claude-code">Claude Code (notify)</option>
+                <option value="codex">Codex (notify)</option>
+              </select>
+            </label>
+            {adapter !== "opencode" && (
+              <label>
+                Adapter URL
+                <input
+                  data-testid="hire-adapter-url"
+                  value={adapterUrl}
+                  onChange={(e) => setAdapterUrl(e.target.value)}
+                  placeholder="https://…/wake"
+                />
+              </label>
+            )}
+          </>
+        )}
+        {kind === "bot" && adapter === "opencode" && (
           <>
             <label>
               Default model
@@ -1697,6 +1734,12 @@ function Inspector({
           {seat.system ? " · system" : ""}
         </b>
       </div>
+      {seat.kind === "bot" && (
+        <div className="kv">
+          <span>Adapter</span>
+          <b data-testid="seat-adapter">{seatAdapter(seat)}</b>
+        </div>
+      )}
       <div className="kv">
         <span>Role</span>
         <b>{seat.role}</b>
@@ -1729,7 +1772,25 @@ function Inspector({
           {seat.kind === "bot" && <option value="services">Services lane</option>}
         </select>
       </label>
-      {seat.kind === "bot" ? (
+      {seat.kind === "bot" && !isOpenCodeSeat(seat) && (
+        <p className="micro" data-testid="adapter-note">
+          Transport only — not a second agent runtime. Wakes POST to adapterUrl; report/handoff callbacks hit the
+          CORE bus. OpenCode attach stays on OpenCode seats.
+        </p>
+      )}
+      {seat.kind === "bot" && !isOpenCodeSeat(seat) && (
+        <label className="kv-label">
+          Adapter URL
+          <input
+            data-testid="seat-adapter-url"
+            defaultValue={seat.adapterUrl || ""}
+            key={`${seat.id}-adapter-url`}
+            onBlur={(e) => onPatch({ adapterUrl: e.target.value })}
+            placeholder="https://…/wake"
+          />
+        </label>
+      )}
+      {seat.kind === "bot" && isOpenCodeSeat(seat) ? (
         <>
           <label className="kv-label">
             Default model
@@ -1761,7 +1822,7 @@ function Inspector({
         </div>
       )}
       <p style={{ color: "var(--muted)", fontSize: 13 }}>{seat.job}</p>
-      {seat.kind === "bot" && (
+      {seat.kind === "bot" && isOpenCodeSeat(seat) && (
         <>
           <label className="kv-label">
             Persona
@@ -1802,7 +1863,7 @@ function Inspector({
         ))}
       </div>
       <div style={{ display: "grid", gap: 8, marginTop: 18 }}>
-        {seat.kind === "bot" && (
+        {seat.kind === "bot" && isOpenCodeSeat(seat) && (
           <button className="pill-btn primary" data-testid="attach-harness" onClick={onAttach}>
             Attach harness
           </button>

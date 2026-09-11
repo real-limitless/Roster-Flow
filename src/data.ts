@@ -79,8 +79,23 @@ export type Seat = {
   status: SeatStatus;
   /** Hidden on the org chart unless “Show system seats” is on. Channel is the conductor. */
   system?: boolean;
+  /** Transport for BYO harnesses. Unset/opencode is today’s OpenCode attach path. */
+  adapter?: "opencode" | "webhook" | "claude-code" | "codex";
+  adapterUrl?: string;
+  hasAdapterSecret?: boolean;
+  lastAdapterWake?: { at?: string; adapter?: string; ok?: boolean; error?: string };
   preview?: "hire" | "fire";
 };
+
+export function seatAdapter(seat?: Pick<Seat, "adapter"> | null) {
+  const raw = String(seat?.adapter || "opencode").toLowerCase();
+  if (raw === "webhook" || raw === "claude-code" || raw === "codex") return raw;
+  return "opencode";
+}
+
+export function isOpenCodeSeat(seat?: Pick<Seat, "adapter"> | null) {
+  return seatAdapter(seat) === "opencode";
+}
 
 export type ModelStrategy = "default" | "random" | "round_robin" | "fuse";
 
