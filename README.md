@@ -6,7 +6,22 @@ Every bot is an OpenCode agent. Roster-flow does **not** reimplement the agent l
 
 ![Hero: staff an org of agents: talk in a room or open the harness](docs/images/campaign-hero.png)
 
-[Campaign brief](docs/CAMPAIGN.md) · [Storyboard](docs/campaign/) · [Architecture](docs/ARCHITECTURE.md) · Apache-2.0
+[Campaign brief](docs/CAMPAIGN.md) · [Storyboard](docs/campaign/) · [Architecture](docs/ARCHITECTURE.md) · [Installation](INSTALLATION.md) · Apache-2.0
+
+## Clone
+
+This tree **is** the product branch. If `package.json` is here, you do not need `-b DEVELOPMENT`.
+
+```bash
+git clone https://github.com/real-limitless/roster-flow.git
+cd roster-flow
+# Only if the tree is docs-only (GitHub default may still be CORE until an admin switches it):
+git checkout DEVELOPMENT
+```
+
+Repo admins: set **default branch = `DEVELOPMENT`** (Settings → General). This file cannot do that click. `CORE` stays docs/methodology.
+
+## Install (Docker or Podman)
 
 ## Visual tour
 

@@ -18,6 +18,11 @@ export function Product() {
     <>
       <PageHero kicker="Product" title="The room, the org, the harness." sub="Channels for people. Computers for bots. A chart that actually runs the company." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
+        <p className="micro" data-testid="clone-note">
+          Clone the GitHub URL, then <code>docker compose up</code> — this tree is the app. If you only see markdown,{" "}
+          <code>git checkout DEVELOPMENT</code>. GitHub’s default branch should be DEVELOPMENT (repo admin). See{" "}
+          <a href="https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/INSTALLATION.md">INSTALLATION.md</a>.
+        </p>
         <div className="grid-3">
           <div className="card">
             <h3>Room</h3>
