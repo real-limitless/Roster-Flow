@@ -27,7 +27,7 @@ export function Home() {
           <div className="tag-row">
             <span className="tag hot">No credit card</span>
             <span className="tag vault">OpenCode is the harness</span>
-            <span className="tag">SSO ready</span>
+            <span className="tag">Local owner account</span>
           </div>
         </div>
         <WorkspaceMock compact initialMode="harness" />
