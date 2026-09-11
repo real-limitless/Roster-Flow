@@ -49,6 +49,7 @@ import {
   type RoomTab,
 } from "../lib/conversation";
 import type { SearchHit } from "../lib/search";
+import { budgetPaused, budgetRemaining, budgetWarn } from "../lib/budget";
 
 type CreateKind = "channel" | "project" | "team" | "seat";
 
@@ -562,7 +563,12 @@ export function Workspace() {
     setRoster((r) => r.map((s) => (s.id === id ? { ...s, ...body } : s)));
     void api
       .patchSeat(id, body)
-      .then(() => api.teams())
+      .then((seat) => {
+        if (seat && typeof seat === "object" && "id" in (seat as Seat)) {
+          setRoster((r) => r.map((s) => (s.id === id ? (seat as Seat) : s)));
+        }
+        return api.teams();
+      })
       .then((t) => {
         if (Array.isArray(t)) setTeamList(t);
       })
@@ -790,6 +796,7 @@ export function Workspace() {
                 <div className={`room-split ${debugOpen ? "has-debug" : ""}`}>
                   <div className="room-col">
                     <div className="main thread">
+                      <BudgetBanners seats={[selected, ...members]} />
                       {visible.length === 0 && <p className="micro">No messages in {title}. Say something.</p>}
                       {visible.map((m) => (
                         <MessageRow
@@ -1283,6 +1290,7 @@ function HireForm({
   const [instructions, setInstructions] = useState("");
   const [model, setModel] = useState(models[0] ? modelValue(models[0]) : "");
   const [fallback, setFallback] = useState("");
+  const [tokenBudget, setTokenBudget] = useState("");
   const humans = roster.filter((s) => s.kind === "human");
   const managers = roster.filter((s) => !s.system);
   const picked = staffed.find((t) => t.id === team);
@@ -1309,6 +1317,7 @@ function HireForm({
       fallbackModel: kind === "bot" ? fallback || undefined : undefined,
       persona: kind === "bot" ? persona.trim() || undefined : undefined,
       instructions: kind === "bot" ? instructions.trim() || undefined : undefined,
+      tokenBudget: kind === "bot" && tokenBudget.trim() !== "" ? Number(tokenBudget) : undefined,
       job: job.trim() || (kind === "human" ? "Human seat on the org chart." : "Specialist OpenCode agent."),
       status: "idle",
     });
@@ -1400,6 +1409,17 @@ function HireForm({
                   </option>
                 ))}
               </select>
+            </label>
+            <label>
+              Monthly tokenBudget
+              <input
+                data-testid="hire-token-budget"
+                type="number"
+                min={0}
+                value={tokenBudget}
+                onChange={(e) => setTokenBudget(e.target.value)}
+                placeholder="Unlimited"
+              />
             </label>
           </>
         )}
@@ -1643,6 +1663,30 @@ function CreateProjectForm({
   );
 }
 
+function BudgetBanners({ seats }: { seats: Seat[] }) {
+  const seen = new Set<string>();
+  const unique = seats.filter((s) => {
+    if (!s?.id || seen.has(s.id)) return false;
+    seen.add(s.id);
+    return true;
+  });
+  const paused = unique.filter((s) => budgetPaused(s));
+  const warned = unique.filter((s) => budgetWarn(s));
+  if (!paused.length && !warned.length) return null;
+  return (
+    <div className="budget-banner" data-testid="budget-banner">
+      {paused.map((s) => (
+        <p key={s.id} data-testid={`budget-banner-${s.id}`}>
+          {s.name} is paused — monthly tokenBudget exhausted.
+        </p>
+      ))}
+      {warned.map((s) => (
+        <p key={`warn-${s.id}`}>{s.name} is at 80% of tokenBudget.</p>
+      ))}
+    </div>
+  );
+}
+
 function Inspector({
   seat,
   roster,
@@ -1705,6 +1749,41 @@ function Inspector({
         <span>Status</span>
         <b data-testid="seat-status">{seat.status}</b>
       </div>
+      {seat.kind === "bot" && (
+        <>
+          <label className="kv-label">
+            Monthly tokenBudget
+            <input
+              data-testid="seat-token-budget"
+              type="number"
+              min={0}
+              defaultValue={seat.tokenBudget ?? ""}
+              key={`${seat.id}-tokenBudget-${seat.tokenBudget ?? "none"}`}
+              placeholder="Unlimited"
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                onPatch({ tokenBudget: v === "" ? null : Number(v) });
+              }}
+            />
+          </label>
+          <div className="kv">
+            <span>Remaining</span>
+            <b data-testid="seat-budget-remaining">
+              {seat.tokenBudget == null ? "unmetered" : `${budgetRemaining(seat)} / ${seat.tokenBudget} tokens`}
+            </b>
+          </div>
+          {budgetPaused(seat) && (
+            <p className="micro" data-testid="budget-paused-note">
+              Paused — monthly tokenBudget exhausted. Raise the cap to wake this seat.
+            </p>
+          )}
+          {budgetWarn(seat) && (
+            <p className="micro" data-testid="budget-warn">
+              At or over 80% of tokenBudget.
+            </p>
+          )}
+        </>
+      )}
       {seat.team && (
         <div className="kv">
           <span>Team</span>

@@ -59,6 +59,7 @@ export const api = {
       routines?: import("../data").Routine[];
       inboxUnread?: Record<string, number>;
       inboxCursors?: Record<string, string>;
+      usage?: import("../data").UsageRow[];
     }>("/api/v1/state"),
   goals: () => req<import("../data").Goal[]>("/api/v1/goals"),
   createGoal: (body: unknown) =>
@@ -170,6 +171,14 @@ export const api = {
   fire: (id: string) => req<{ id: string; reparentedTo?: string }>(`/api/v1/seats/${id}`, { method: "DELETE" }),
   patchSeat: (id: string, body: unknown) =>
     req(`/api/v1/seats/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  usage: (query: { projectId?: string; teamId?: string; seatId?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (query.projectId) qs.set("projectId", query.projectId);
+    if (query.teamId) qs.set("teamId", query.teamId);
+    if (query.seatId) qs.set("seatId", query.seatId);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return req<import("../data").UsageRow[]>(`/api/v1/usage${suffix}`);
+  },
   architectChat: (message: string, history: Array<{ role: string; text: string }> = []) =>
     req<{
       reply: string;

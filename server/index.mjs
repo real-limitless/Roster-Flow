@@ -1,21 +1,21 @@
 import { createServer } from "node:http";
 import { getState, mutate, save, resetState, uid } from "./store.mjs";
-import { normalizeSeat, normalizeModelId } from "./seed.mjs";
 import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
-import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
+import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
 import { createChannel, patchChannel } from "./channels.mjs";
 import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
-import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
+import { fireSeat, hireSeat, killRun, patchSeat, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
+import { listUsage } from "./budget.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
 import { clearRoutineActive, createRoutine, patchRoutine, publicRoutine, runRoutineNow, tickRoutines } from "./routines.mjs";
@@ -311,6 +311,18 @@ const server = createServer(async (req, res) => {
       json(res, 201, created);
       return;
     }
+    if (pathname === "/api/v1/usage" && method === "GET") {
+      json(
+        res,
+        200,
+        listUsage(getState(), {
+          projectId: url.searchParams.get("projectId") || undefined,
+          teamId: url.searchParams.get("teamId") || undefined,
+          seatId: url.searchParams.get("seatId") || undefined,
+        }),
+      );
+      return;
+    }
     if (pathname === "/api/v1/approvals" && method === "GET") {
       json(res, 200, listApprovals(getState(), { status: url.searchParams.get("status") || undefined }));
       return;
@@ -602,15 +614,7 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       let updated = null;
       mutate((s) => {
-        s.seats = s.seats.map((seat) => {
-          if (seat.id !== id) return seat;
-          const next = { ...seat, ...body, id };
-          if (body.model) next.model = normalizeModelId(body.model);
-          if (body.fallbackModel !== undefined) next.fallbackModel = normalizeModelId(body.fallbackModel) || undefined;
-          updated = normalizeSeat(next);
-          return updated;
-        });
-        if (updated?.team) attachSeatToTeam(s, updated.team, updated.id);
+        updated = patchSeat(s, id, body);
       });
       if (!updated) {
         json(res, 404, { error: "seat not found" });
@@ -633,12 +637,16 @@ const server = createServer(async (req, res) => {
     if (attach && method === "POST") {
       const id = decodeURIComponent(attach[1]);
       const body = await readBody(req).catch(() => ({}));
-      const seat = getState().seats.find((s) => s.id === id);
-      const blocked = wakeBlocked(getState(), seat, { runId: body.runId });
+      let blocked = null;
+      mutate((s) => {
+        const found = s.seats.find((s0) => s0.id === id);
+        blocked = wakeBlocked(s, found, { runId: body.runId });
+      });
       if (blocked) {
         json(res, 200, { seat: id, paused: true, reason: blocked.reason, sessionId: null, attach: null });
         return;
       }
+      const seat = getState().seats.find((s) => s.id === id);
       const kind = harnessKindForSeat(seat);
       try {
         await ensure({ kind });
