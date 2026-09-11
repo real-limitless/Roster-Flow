@@ -1313,7 +1313,7 @@ function HireForm({
       fallbackModel: kind === "bot" ? fallback || undefined : undefined,
       persona: kind === "bot" ? persona.trim() || undefined : undefined,
       instructions: kind === "bot" ? instructions.trim() || undefined : undefined,
-      job: job.trim() || (kind === "human" ? "Human seat on the org chart." : "Specialist OpenCode agent."),
+      job: job.trim() || (kind === "human" ? "Human seat on the org chart." : adapter === "opencode" ? "Specialist OpenCode agent." : "BYO adapter seat. Transport only."),
       status: "idle",
       adapter: kind === "bot" ? adapter : undefined,
       adapterUrl: kind === "bot" && adapter !== "opencode" && adapterUrl.trim() ? adapterUrl.trim() : undefined,
@@ -1822,7 +1822,7 @@ function Inspector({
         </div>
       )}
       <p style={{ color: "var(--muted)", fontSize: 13 }}>{seat.job}</p>
-      {seat.kind === "bot" && (
+      {seat.kind === "bot" && isOpenCodeSeat(seat) && (
         <>
           <label className="kv-label">
             Persona

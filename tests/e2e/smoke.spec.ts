@@ -528,8 +528,10 @@ test("webhook adapter wake and report land in #ship", async ({ page, request }) 
     });
     expect(reported.ok()).toBeTruthy();
 
-    await page.getByTestId("mode-room").click();
-    await expect(page.getByText("webhook report: shipped").first()).toBeVisible();
+    await page.goto("/app");
+    const report = page.getByText("webhook report: shipped").first();
+    await expect(report).toBeVisible();
+    await report.scrollIntoViewIfNeeded();
     await page.screenshot({ path: "/tmp/walkthrough/room-webhook-report.png" });
   } finally {
     await new Promise<void>((resolve) => mock.close(() => resolve()));
