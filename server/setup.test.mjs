@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { addFirstUser } from "./auth.mjs";
-import { applyOrgTemplate, completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
+import { applyOrgTemplate, completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus, startOver } from "./setup.mjs";
 import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
 
 test("migrate-as-complete when onboarding is missing", () => {
@@ -71,4 +71,15 @@ test("completeSetup is 409 after it already finished", async () => {
   await addFirstUser(state, { name: "Chen", email: "chen@example.com", password: "password1" });
   const done = completeSetup(state, { template: "empty", ownerName: "Chen" });
   assert.throws(() => completeSetup(done, { template: "starter", ownerName: "Chen" }), (err) => err.status === 409);
+});
+
+test("startOver wipes the company when the owner email matches", async () => {
+  const state = pendingState();
+  await addFirstUser(state, { name: "Chen", email: "chen@example.com", password: "password1" });
+  const done = completeSetup(state, { template: "starter", ownerName: "Chen" });
+  assert.throws(() => startOver(done, { email: "wrong@example.com", confirm: true }), (err) => err.status === 403);
+  const wiped = startOver(done, { email: "chen@example.com", confirm: true });
+  assert.equal(wiped.onboarding.complete, false);
+  assert.equal((wiped.users || []).length, 0);
+  assert.equal(wiped.seats.length, 0);
 });

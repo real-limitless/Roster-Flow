@@ -95,5 +95,12 @@ test.describe("first-run onboarding", () => {
     await page.goto("/app");
     await expect(page).toHaveURL(/\/login/);
     await expect(page.getByTestId("login-page")).toBeVisible();
+
+    await page.getByTestId("login-start-over").click();
+    await page.getByTestId("start-over-email").fill("chen@example.com");
+    await page.getByTestId("start-over-confirm").click();
+    await expect(page).toHaveURL(/\/setup/);
+    await expect(page.getByTestId("setup-page")).toBeVisible();
+    await expect(page.getByTestId("setup-step-install")).toBeVisible();
   });
 });

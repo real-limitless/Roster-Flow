@@ -269,6 +269,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ template }),
     }),
+  setupStartOver: (body: { email: string; confirm: boolean }) =>
+    req<SetupStatus>("/api/v1/setup/start-over", { method: "POST", body: JSON.stringify(body) }),
   login: (email: string, password: string) =>
     req<{ token: string; user: AuthUser }>("/api/v1/auth/login", {
       method: "POST",
