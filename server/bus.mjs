@@ -15,6 +15,7 @@ import { CONDUCTOR_ID } from "./mentions.mjs";
 import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
+import { estimateTokens, meterWake } from "./budget.mjs";
 
 export const deps = {
   createSession,
@@ -135,6 +136,23 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
   return { sessionId, seat: to, model: refs[0], harness: kind };
 }
 
+function meterPromptedWake(to, text, meta, result, started) {
+  mutate((s) => {
+    meterWake(s, {
+      seatId: to,
+      runId: meta.runId,
+      model: result?.model,
+      inputTokens: estimateTokens(text) + 480,
+      outputTokens: 200,
+      ms: Date.now() - started,
+      source: meta.kind || "wake",
+    });
+  });
+  const live = (getState().seats || []).find((s) => s.id === to);
+  if (live?.pauseReason === "budget") return { ...result, paused: true, reason: "budget" };
+  return result;
+}
+
 export async function wakeSeat(to, text, meta = {}) {
   if (String(to).startsWith("channel:")) return null;
   if (String(to).startsWith("team:")) {
@@ -145,7 +163,11 @@ export async function wakeSeat(to, text, meta = {}) {
   const seat = seatById(to);
   if (!seat) return { error: "seat not found", seat: to };
   if (seat.kind !== "bot") return { human: true, seat: to };
-  const blocked = wakeBlocked(getState(), seat, meta);
+  let blocked = null;
+  mutate((s) => {
+    const live = (s.seats || []).find((x) => x.id === to);
+    blocked = wakeBlocked(s, live, meta);
+  });
   if (blocked) {
     emit({
       level: "warn",
@@ -171,10 +193,12 @@ export async function wakeSeat(to, text, meta = {}) {
     return { offline: true, seat: to, harness: kind };
   }
   try {
+    const started = Date.now();
     let sessionId = await ensureSeatSession(to);
     if (!sessionId) return { error: "no session", seat: to, harness: kind };
     try {
-      return await promptWithFallback(sessionId, seat, to, text, meta);
+      const result = await promptWithFallback(sessionId, seat, to, text, meta);
+      return meterPromptedWake(to, text, meta, result, started);
     } catch (err) {
       if (err.status === 404) {
         mutate((s) => {
@@ -183,7 +207,8 @@ export async function wakeSeat(to, text, meta = {}) {
         });
         sessionId = await ensureSeatSession(to);
         if (!sessionId) return { error: "no session after recreate", seat: to, harness: kind };
-        return await promptWithFallback(sessionId, seat, to, text, meta);
+        const result = await promptWithFallback(sessionId, seat, to, text, meta);
+        return meterPromptedWake(to, text, meta, result, started);
       }
       throw err;
     }

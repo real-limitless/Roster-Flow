@@ -455,6 +455,120 @@ test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
   await expect(page.getByTestId("inbox-count-build")).toHaveCount(0);
 });
 
+test("org hire copy names tokenBudget", async ({ page }) => {
+  await page.goto("/org");
+  await expect(page.getByTestId("org-hire-copy")).toContainText("tokenBudget");
+});
+
+test("seat tokenBudget pause is distinct from idle", async ({ page, request }) => {
+  await resetApi(request);
+  const hired = await request.post("http://127.0.0.1:8790/api/v1/seats", {
+    data: { name: "Budget.Bot", team: "eng", tokenBudget: 1000, job: "Metered specialist." },
+  });
+  expect(hired.ok()).toBeTruthy();
+  const seat = (await hired.json()) as { id: string; tokenBudget?: number; spent?: number };
+  expect(seat.id).toBe("budget-bot");
+  expect(seat.tokenBudget).toBe(1000);
+  const patched = await request.patch("http://127.0.0.1:8790/api/v1/seats/budget-bot", { data: { spent: 1000 } });
+  const after = (await patched.json()) as { status?: string; pauseReason?: string; spent?: number };
+  expect(after.status).toBe("paused");
+  expect(after.pauseReason).toBe("budget");
+  expect(after.spent).toBe(1000);
+  const attach = await request.post("http://127.0.0.1:8790/api/v1/seats/budget-bot/attach", { data: {} });
+  const attachBody = (await attach.json()) as { paused?: boolean; reason?: string };
+  expect(attachBody.paused).toBeTruthy();
+  expect(attachBody.reason).toBe("budget");
+  const bus = await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "budget-bot", text: "should not wake", wake: true },
+  });
+  expect(bus.ok()).toBeTruthy();
+  const listed = await request.get("http://127.0.0.1:8790/api/v1/seats");
+  const seats = (await listed.json()) as Array<{ id: string; status?: string; pauseReason?: string }>;
+  expect(seats.find((s) => s.id === "budget-bot")?.pauseReason).toBe("budget");
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await page.getByTestId("seat-budget-bot").first().click({ force: true });
+  await expect(page.getByTestId("seat-inspector")).toContainText("Budget.Bot");
+  await expect(page.getByTestId("seat-status")).toHaveText("paused");
+  await expect(page.getByTestId("seat-budget-remaining")).toContainText("0 / 1000");
+  await expect(page.getByTestId("budget-paused-note")).toBeVisible();
+  await expect(page.getByTestId("seat-budget-bot").first()).toHaveAttribute("data-budget-paused", "1");
+  await expect(page.getByTestId("pip-budget-bot").first()).toHaveClass(/budget/);
+  await page.getByTestId("mode-room").click();
+  await expect(page.getByTestId("budget-banner")).toBeVisible();
+  await expect(page.getByTestId("budget-banner-budget-bot")).toContainText("tokenBudget exhausted");
+});
+
+test("settings usage filters and pricing is honest about the meter", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app/settings?pane=usage");
+  await expect(page.getByTestId("settings-usage")).toBeVisible();
+  await expect(page.getByTestId("usage-empty")).toContainText(/unmetered|harness-offline|No meter events/i);
+  await request.post("http://127.0.0.1:8790/api/v1/usage", {
+    data: { seatId: "channel", inputTokens: 120, outputTokens: 40, source: "wake" },
+  });
+  await request.post("http://127.0.0.1:8790/api/v1/usage", {
+    data: { seatId: "build", inputTokens: 300, outputTokens: 80, runId: "ship-train" },
+  });
+  await page.goto("/app/settings?pane=usage");
+  await expect(page.getByTestId("usage-seat-channel")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("settings-usage")).not.toContainText("sk-");
+  await expect(page.getByTestId("usage-key-leak")).toHaveCount(0);
+  await page.getByTestId("usage-filter-project").selectOption("billing");
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-channel")).toHaveCount(0);
+  await page.getByTestId("usage-filter-project").selectOption("");
+  await page.getByTestId("usage-filter-team").selectOption("eng");
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-channel")).toHaveCount(0);
+  const csv = await request.get("http://127.0.0.1:8790/api/v1/usage?format=csv");
+  const text = await csv.text();
+  expect(text).toMatch(/seatId/);
+  expect(text).not.toMatch(/apiKey|sk-/);
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("usage-chip")).toContainText(/tok/);
+
+  await page.goto("/pricing");
+  await expect(page.getByRole("heading", { name: /tokens on the meter/i })).toBeVisible();
+  await expect(page.getByText(/not a billed bot-hour product/i)).toBeVisible();
+  await expect(page.getByText("Shared bot-hours")).toHaveCount(0);
+});
+
+test("heartbeat wakes unread inbox and inspector disables it", async ({ page, request }) => {
+  await resetApi(request);
+  await request.patch("http://127.0.0.1:8790/api/v1/seats/product", { data: { heartbeatMinutes: 15 } });
+  await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "product", text: "heartbeat please", wake: false },
+  });
+  const tick = await request.post("http://127.0.0.1:8790/api/v1/heartbeats/tick", { data: {} });
+  const body = (await tick.json()) as { due?: Array<{ seatId?: string; coalesced?: boolean }> };
+  expect(body.due?.some((d) => d.seatId === "product")).toBeTruthy();
+  await request.patch("http://127.0.0.1:8790/api/v1/seats/devops", { data: { heartbeatMinutes: 5 } });
+  await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "devops", text: "deploy ping", wake: false },
+  });
+  const deployTick = await request.post("http://127.0.0.1:8790/api/v1/heartbeats/tick", { data: {} });
+  const deployBody = (await deployTick.json()) as { due?: Array<{ seatId?: string }> };
+  expect(deployBody.due?.some((d) => d.seatId === "devops")).toBeFalsy();
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-product").first()).toHaveAttribute("data-heartbeat", "1");
+  await page.getByTestId("roster-product").click();
+  await expect(page.getByTestId("seat-inspector")).toContainText("Product");
+  await expect(page.getByTestId("disable-heartbeat")).toBeVisible();
+  await page.getByTestId("disable-heartbeat").click();
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-product").first()).toHaveAttribute("data-heartbeat", "0");
+});
+
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app/settings");

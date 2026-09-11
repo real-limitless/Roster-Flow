@@ -57,6 +57,23 @@ export type Routine = {
   hasWebhookSecret?: boolean;
 };
 
+export type UsageRow = {
+  id: string;
+  seatId: string;
+  runId?: string | null;
+  teamId?: string | null;
+  projectId?: string | null;
+  model?: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  tokens: number;
+  usdEstimate?: number;
+  hours?: number;
+  ms?: number;
+  source?: string;
+  time: string;
+};
+
 export type Seat = {
   id: string;
   name: string;
@@ -77,6 +94,13 @@ export type Seat = {
   skills?: string[];
   job: string;
   status: SeatStatus;
+  tokenBudget?: number | null;
+  budgetCents?: number;
+  spent?: number;
+  budgetPeriod?: string;
+  pauseReason?: "owner" | "budget" | string;
+  heartbeatMinutes?: number;
+  heartbeatLastAt?: string;
   /** Hidden on the org chart unless “Show system seats” is on. Channel is the conductor. */
   system?: boolean;
   preview?: "hire" | "fire";

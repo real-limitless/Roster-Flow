@@ -55,8 +55,8 @@ Staffed teams (`eng`, `services`) always have a **Supervisor** and a **Generic**
 | POST | `/api/v1/projects` | Create a project (`name`, `brief`, `constitution`) |
 | GET | `/api/v1/projects/:id` | One project |
 | PATCH | `/api/v1/projects/:id` | Brief, constitution, PM seat, teams |
-| POST | `/api/v1/seats` | Hire a seat (specialist when `team` is set; `projectId` + `asPm` for a project PM) |
-| PATCH | `/api/v1/seats/:id` | Reparent, model, persona, instructions, tools |
+| POST | `/api/v1/seats` | Hire a seat (specialist when `team` is set; `projectId` + `asPm` for a project PM). Bots accept `tokenBudget`, `budgetCents`, `spent`. |
+| PATCH | `/api/v1/seats/:id` | Reparent, model, persona, instructions, tools, `tokenBudget`, `budgetCents`, `spent` |
 | DELETE | `/api/v1/seats/:id` | Fire a seat (not `you` or system). Orphans reparent to the manager. |
 
 `POST /api/v1/teams`:
@@ -109,8 +109,11 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | GET | `/api/v1/seats/:id/inbox` | Bus mail for this seat (direct, `team:` if Supervisor, `channel:` / `#room` membership, `ask_human`) |
 | GET | `/api/v1/seats/me/inbox` | Inbox for You |
 | POST | `/api/v1/seats/:id/inbox/read` | `{ beforeId }` — mark unread after that bus id as read |
-| POST | `/api/v1/seats/:id/pause` | Pause a bot (not You). System seats can pause; fire is still DELETE |
-| POST | `/api/v1/seats/:id/resume` | Resume a paused bot |
+| POST | `/api/v1/seats/:id/pause` | Pause a bot (not You). System seats can pause; fire is still DELETE. Sets `pauseReason: owner`. |
+| POST | `/api/v1/seats/:id/resume` | Resume a paused bot. **400** `raise tokenBudget first` when `spent >= tokenBudget`. |
+| GET | `/api/v1/usage` | Meter rows (`tokens`, `usdEstimate`, `hours`) — filter `?projectId=` `?teamId=` `?seatId=` `&format=csv` |
+| POST | `/api/v1/usage` | Record a meter row (`seatId`, `inputTokens`, `outputTokens`) |
+| POST | `/api/v1/heartbeats/tick` | Wake seats with unread inbox / claimed tasks and `heartbeatMinutes` |
 | POST | `/api/v1/teams/:id/pause` | Pause every bot seat on the team |
 | POST | `/api/v1/runs/:runId/kill` | Add to `pausedRunIds` — `wakeSeat` returns `{ paused: true }` |
 | GET | `/api/v1/approvals` | Optional `?status=pending` |
@@ -122,9 +125,21 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | PATCH | `/api/v1/routines/:id` | Enable/pause, prompt, interval |
 | POST | `/api/v1/routines/:id/run` | Manual or webhook run — posts bus `{ from: "routine", wake: true }` |
 
-Wake prompts prepend linked goal title, project brief, constitution, and `meta.runId` when present. `wakeSeat` does not prompt when the seat is paused or the run is killed. Create/run a routine is rejected when `impliesDeploy` (or the prompt is clearly a deploy) and the seat `deny` includes `deploy`. Tick coalesces with another wake to the same seat in the same minute.
+Wake prompts prepend linked goal title, project brief, constitution, and `meta.runId` when present. `wakeSeat` does not prompt when the seat is paused, over `tokenBudget`, or the run is killed. Create/run a routine is rejected when `impliesDeploy` (or the prompt is clearly a deploy) and the seat `deny` includes `deploy`. Tick coalesces with another wake to the same seat in the same minute.
 
 Plugin tool: `roster_inbox`.
+
+## Seat budgets
+
+Monthly token caps on bot seats. Unset `tokenBudget` is unmetered (wakes still record `usage[]` / `spent`). At 100% CORE calls the existing pause (`status: paused`, `pauseReason: budget`). Chart/Room show a budget pip, not a generic idle pip. Warn in the inspector at 80%. Period is UTC `YYYY-MM`; a new month zeros `spent` and lifts a budget pause.
+
+Hire/PATCH fields: `tokenBudget`, optional `budgetCents`, `spent`. Raising `tokenBudget` above `spent` clears a budget pause. `GET /api/v1/usage` never includes API keys. `GET /api/v1/usage?format=csv` downloads the same rows. Filter with `?projectId=` `?teamId=` `?seatId=`. `POST /api/v1/usage` records a meter row (`seatId`, `inputTokens`, `outputTokens`, optional `runId` / `ms`) — used by tests and the audit export story.
+
+Company and System `wakeSeat` prompts increment `spent` (prompt-size estimate plus 200 output tokens when OpenCode does not return usage). `@mention` / `POST /api/v1/bus/send` with `wake: true` and `POST /api/v1/seats/:id/attach` all go through `wakeBlocked`.
+
+## Seat heartbeats
+
+Per-seat `heartbeatMinutes` (off when unset or `0`). Distinct from routines: a heartbeat checks unread inbox and claimed tasks, then wakes with a prompt that forbids deploy/merge. Skips paused and over-budget seats. Seats whose tools include `deploy` stay event-driven. Coalesces with another bus wake to the same seat in the same minute. `POST /api/v1/heartbeats/tick` runs one pass (CORE also ticks with routines). Inspector **Disable heartbeat** sets `heartbeatMinutes: 0`.
 
 ## Rooms and threads
 

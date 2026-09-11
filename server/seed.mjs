@@ -114,6 +114,18 @@ export function normalizeSeat(seat) {
     knowledge: seat.knowledge || undefined,
     skills: Array.isArray(seat.skills) ? seat.skills.map(String).filter(Boolean) : undefined,
     projectId: seat.projectId || undefined,
+    tokenBudget: kind === "bot" && seat.tokenBudget != null && seat.tokenBudget !== "" && Number.isFinite(Number(seat.tokenBudget))
+      ? Math.max(0, Math.floor(Number(seat.tokenBudget)))
+      : undefined,
+    budgetCents: kind === "bot" && seat.budgetCents != null && seat.budgetCents !== "" && Number.isFinite(Number(seat.budgetCents))
+      ? Math.max(0, Math.floor(Number(seat.budgetCents)))
+      : undefined,
+    spent: kind === "bot" ? Math.max(0, Math.floor(Number(seat.spent) || 0)) : undefined,
+    budgetPeriod: kind === "bot" ? seat.budgetPeriod || undefined : undefined,
+    pauseReason: seat.status === "paused" ? seat.pauseReason : undefined,
+    heartbeatMinutes:
+      kind === "bot" && Number(seat.heartbeatMinutes) > 0 ? Math.max(1, Math.floor(Number(seat.heartbeatMinutes))) : undefined,
+    heartbeatLastAt: kind === "bot" ? seat.heartbeatLastAt || undefined : undefined,
   };
 }
 
@@ -317,6 +329,10 @@ export function migrateCompanyLoop(state) {
   if (!Array.isArray(state.pausedRunIds)) state.pausedRunIds = [];
   if (!Array.isArray(state.routines)) state.routines = [];
   if (!Array.isArray(state.routineRuns)) state.routineRuns = [];
+  if (!Array.isArray(state.usage)) state.usage = [];
+  for (const seat of state.seats || []) {
+    if (seat.kind === "bot" && seat.spent == null) seat.spent = 0;
+  }
   if (holdOrgSeed(state)) return state;
   if (!state.goals.some((g) => g.id === "ship-train")) {
     state.goals.push(structuredClone(goals[0]));
@@ -410,6 +426,7 @@ function baseFields() {
     pausedRunIds: [],
     routines: [],
     routineRuns: [],
+    usage: [],
   };
 }
 
