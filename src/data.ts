@@ -1,7 +1,7 @@
 import { examplePayload, type Block } from "roster-flow-blocks";
 
 export type SeatKind = "human" | "bot";
-export type SeatType = "human" | "supervisor" | "generic" | "specialist";
+export type SeatType = "human" | "supervisor" | "generic" | "specialist" | "harness";
 export type SeatStatus = "idle" | "running" | "blocked" | "done" | "paused";
 
 export type Organization = {
@@ -79,6 +79,9 @@ export type Seat = {
   status: SeatStatus;
   /** Hidden on the org chart unless “Show system seats” is on. Channel is the conductor. */
   system?: boolean;
+  /** External harness on CORE /mcp — not an OpenCode loop. */
+  mcpGuest?: boolean;
+  origin?: string;
   preview?: "hire" | "fire";
 };
 
@@ -141,6 +144,7 @@ export const seats: Seat[] = [
   { id: "priya", name: "Priya", role: "QA lead", kind: "human", seatType: "human", reportsTo: "you", job: "Owns the QA gate. Signs staging.", tools: ["approve"], deny: ["deploy"], status: "idle" },
   { id: "channel", name: "Channel", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Own @channel. Route via the bus. Do not edit or deploy.", job: "Compile sentences into runs. Own @channel. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
   { id: "architect", name: "Architect", role: "Org design", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Org architect. Dry, specific. Propose plans. Never ship code.", instructions: "Propose an OrgPlan JSON only: replace_org, create_project, create_team, hire, reparent, fire. Cap 48 ops. Do not apply. Do not edit or deploy.", job: "Staff projects and suggest layoffs. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
+  { id: "mcp-guest", name: "MCP Guest", role: "Guest", kind: "bot", seatType: "harness", reportsTo: "you", mcpGuest: true, origin: "mcp", job: "External agent via CORE /mcp. Not an OpenCode loop.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
   { id: "product", name: "Product", role: "Brief", kind: "bot", seatType: "specialist", reportsTo: "maya", projectId: "billing", model: "xai/grok-4", persona: "Product brief writer. Acceptance over opinions.", instructions: "Turn channel talk into a brief and acceptance list. No edits, no bash write.", knowledge: "Project billing: webhook idempotency. Acceptance over opinions. Confirm on deploy.", skills: ["brief"], job: "Write acceptance. No edits.", tools: ["read", "grep", "webfetch"], deny: ["edit", "bash"], status: "idle" },
   { id: "eng-supervisor", name: "Eng Supervisor", role: "Supervisor", kind: "bot", seatType: "supervisor", reportsTo: "jules", team: "eng", projectId: "billing", model: "xai/grok-4", persona: "Calm dispatcher. You assign work; you do not write code.", instructions: "When mail arrives for @eng, hand Generic undifferentiated work or a specialist whose job matches. Use roster_handoff. Never edit or deploy.", job: "Route @eng work to Generic or a specialist.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
   { id: "eng-generic", name: "Eng Generic", role: "Generic", kind: "bot", seatType: "generic", reportsTo: "eng-supervisor", team: "eng", projectId: "billing", model: "xai/grok-4", persona: "Versatile eng teammate.", instructions: "Do whatever the Supervisor assigned. Stay in the worktree. Do not deploy.", job: "Default @eng worker for undifferentiated tasks.", tools: ["read", "edit", "bash"], deny: ["deploy"], status: "idle" },
@@ -199,7 +203,7 @@ export const teams: Team[] = [
 ];
 
 export const channels: Channel[] = [
-  { id: "ship", name: "#ship", topic: "Ship train", teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya"] },
+  { id: "ship", name: "#ship", topic: "Ship train", teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya", "mcp-guest"] },
   { id: "incidents", name: "#incidents", topic: "Incidents", teamIds: ["eng", "services"], seatIds: ["channel", "you", "jules", "scout"] },
   { id: "eng-agents", name: "#eng-agents", topic: "Eng agents", teamIds: ["eng"], seatIds: ["channel"] },
   { id: "general", name: "#general", topic: "Everyone", teamIds: [], seatIds: ["channel", "you", "maya", "jules", "priya"] },

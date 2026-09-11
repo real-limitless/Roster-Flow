@@ -13,6 +13,10 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      "/mcp": {
+        target: process.env.ROSTER_API_PROXY || "http://127.0.0.1:8790",
+        changeOrigin: true,
+      },
     },
   },
   preview: {

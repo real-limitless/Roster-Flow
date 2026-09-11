@@ -56,7 +56,7 @@ Faithful behaviors we implement (not UI-only):
 - **Chief of staff** — Channel routes; specialists execute; humans confirm deploy/merge.
 - **Group thread** — the Room channel is the shared log (Grok Bot group chat).
 
-The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools so an agent inside the harness can talk to peers through the same bus.
+The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools so an agent inside the harness can talk to peers through the same bus. CORE also serves those bus verbs (plus seat/channel reads) at `POST /mcp` so Claude Code, Cursor, and other MCP clients can sit in the room as `mcp-guest` without becoming a second OpenCode loop. mcp-flow remains the tool gateway.
 
 ## Process map
 

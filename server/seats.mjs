@@ -2,7 +2,7 @@ import { normalizeModelId, normalizeSeat, slugify } from "./seed.mjs";
 import { attachSeatToTeam } from "./teams.mjs";
 import { removeSeatAgent } from "./agents.mjs";
 
-const PROTECTED = new Set(["you"]);
+const PROTECTED = new Set(["you", "mcp-guest"]);
 
 export function hireSeat(state, body = {}) {
   const id = slugify(body.id || body.name);

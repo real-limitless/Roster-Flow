@@ -448,9 +448,12 @@ function SeatBtn({
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
       data-paused={seat.status === "paused" ? "1" : "0"}
+      data-mcp-guest={seat.mcpGuest ? "1" : "0"}
       className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""}`}
       onClick={() => onSelect(seat)}
-      onDoubleClick={() => onAttach?.(seat)}
+      onDoubleClick={() => {
+        if (!seat.mcpGuest) onAttach?.(seat);
+      }}
     >
       <SeatAvatar seed={seat.id} kind={seat.kind} size={22} />
       <span className="seat-name-row">
@@ -465,6 +468,7 @@ function SeatBtn({
       <div style={{ color: "var(--muted)", fontSize: 10 }}>
         {seat.role}
         {seat.kind === "human" ? " · human" : ""}
+        {seat.mcpGuest ? " · mcp" : ""}
         {seat.system ? " · system" : ""}
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}

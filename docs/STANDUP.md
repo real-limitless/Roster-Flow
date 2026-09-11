@@ -17,6 +17,7 @@ docker compose up --build
 |---|---|---|
 | Product (static UI + CORE) | http://127.0.0.1:5173 | Marketing, `/setup`, `/app`; `/api` on the same origin |
 | CORE API (host / family port) | http://127.0.0.1:8790/api/v1/health | Same API published beside mcp-flow's 8787 |
+| Room MCP | http://127.0.0.1:8790/mcp | Streamable HTTP room gateway (not mcp-flow) |
 | CORE API (same process) | http://127.0.0.1:5173/api/v1/health | Teams, bots, bus, setup/auth, harness wrapper |
 | Company OpenCode | inside the container (`127.0.0.1:14180`) | Product-bot sessions |
 | System OpenCode | inside the container (`127.0.0.1:14181`) | Architect / Channel |

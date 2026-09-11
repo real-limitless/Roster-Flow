@@ -243,6 +243,19 @@ Settings UI at `/app/settings` writes these.
 
 Literal keys go to `.roster-flow/auth.json` (gitignored) and `{env:VAR}` is preferred in `opencode.json`, same idea as OpenChamber writing OpenCode config + auth.
 
+## Room MCP
+
+Streamable HTTP room gateway. mcp-flow is tools; this is seats, channels, and the bus. See [MCP.md](MCP.md).
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/mcp` | JSON-RPC (`initialize`, `tools/list`, `tools/call`, `ping`). `Mcp-Session-Id` on initialize |
+| POST | `/api/v1/mcp` | Same handler |
+| GET | `/mcp` | Discovery JSON, or SSE `endpoint` if `Accept: text/event-stream` |
+| DELETE | `/mcp` | Close session |
+
+`tools/call` names: `roster_whoami`, `roster_join`, `roster_list_seats`, `roster_list_channels`, `roster_read_messages`, `roster_send_message`, `roster_handoff`, `roster_report`, `roster_ask_human`, `roster_inbox`. Guest seat `mcp-guest` is not an OpenCode loop. Optional `ROSTER_MCP_TOKEN`. stdio: `node scripts/roster-flow-mcp.mjs`.
+
 ## Errors
 
 `4xx/5xx` JSON: `{ "error": "string", "detail": "…" }`. `409` if ensure is called and the CLI is missing.

@@ -24,6 +24,7 @@ import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
 import { isDataWritable } from "./paths.mjs";
 import { tryServeStatic } from "./static.mjs";
+import { allowMcp, isMcpPath, serveMcp } from "./mcp.mjs";
 
 const PORT = apiPort();
 const HOST = apiHost();
@@ -33,8 +34,9 @@ function json(res, code, body) {
   res.writeHead(code, {
     "content-type": "application/json; charset=utf-8",
     "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type, authorization",
+    "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
     "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "access-control-expose-headers": "mcp-session-id, mcp-protocol-version",
   });
   res.end(data);
 }
@@ -115,7 +117,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "access-control-allow-origin": "*",
-        "access-control-allow-headers": "content-type, authorization",
+        "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
         "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       });
       res.end();
@@ -124,6 +126,16 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
     const { pathname } = url;
     const method = req.method || "GET";
+    if (isMcpPath(pathname)) {
+      const token = parseBearer(req);
+      const mcpUser = userFromToken(getState(), token);
+      if (!allowMcp(req, mcpUser)) {
+        json(res, 401, { error: "authentication required" });
+        return;
+      }
+      await serveMcp(req, res);
+      return;
+    }
     if (tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
     const user = userFromToken(getState(), token);
@@ -634,6 +646,10 @@ const server = createServer(async (req, res) => {
       const id = decodeURIComponent(attach[1]);
       const body = await readBody(req).catch(() => ({}));
       const seat = getState().seats.find((s) => s.id === id);
+      if (seat?.mcpGuest) {
+        json(res, 400, { error: "guest harness seats do not attach OpenCode", guest: true, seat: id });
+        return;
+      }
       const blocked = wakeBlocked(getState(), seat, { runId: body.runId });
       if (blocked) {
         json(res, 200, { seat: id, paused: true, reason: blocked.reason, sessionId: null, attach: null });
