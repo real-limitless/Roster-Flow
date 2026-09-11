@@ -99,6 +99,8 @@ export type Seat = {
   spent?: number;
   budgetPeriod?: string;
   pauseReason?: "owner" | "budget" | string;
+  heartbeatMinutes?: number;
+  heartbeatLastAt?: string;
   /** Hidden on the org chart unless “Show system seats” is on. Channel is the conductor. */
   system?: boolean;
   preview?: "hire" | "fire";

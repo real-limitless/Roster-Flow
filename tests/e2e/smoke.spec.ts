@@ -539,6 +539,36 @@ test("settings usage filters and pricing is honest about the meter", async ({ pa
   await expect(page.getByText("Shared bot-hours")).toHaveCount(0);
 });
 
+test("heartbeat wakes unread inbox and inspector disables it", async ({ page, request }) => {
+  await resetApi(request);
+  await request.patch("http://127.0.0.1:8790/api/v1/seats/product", { data: { heartbeatMinutes: 15 } });
+  await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "product", text: "heartbeat please", wake: false },
+  });
+  const tick = await request.post("http://127.0.0.1:8790/api/v1/heartbeats/tick", { data: {} });
+  const body = (await tick.json()) as { due?: Array<{ seatId?: string; coalesced?: boolean }> };
+  expect(body.due?.some((d) => d.seatId === "product")).toBeTruthy();
+  await request.patch("http://127.0.0.1:8790/api/v1/seats/devops", { data: { heartbeatMinutes: 5 } });
+  await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "devops", text: "deploy ping", wake: false },
+  });
+  const deployTick = await request.post("http://127.0.0.1:8790/api/v1/heartbeats/tick", { data: {} });
+  const deployBody = (await deployTick.json()) as { due?: Array<{ seatId?: string }> };
+  expect(deployBody.due?.some((d) => d.seatId === "devops")).toBeFalsy();
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-product").first()).toHaveAttribute("data-heartbeat", "1");
+  await page.getByTestId("roster-product").click();
+  await expect(page.getByTestId("seat-inspector")).toContainText("Product");
+  await expect(page.getByTestId("disable-heartbeat")).toBeVisible();
+  await page.getByTestId("disable-heartbeat").click();
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-product").first()).toHaveAttribute("data-heartbeat", "0");
+});
+
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app/settings");

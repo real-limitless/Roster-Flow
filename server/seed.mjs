@@ -123,6 +123,9 @@ export function normalizeSeat(seat) {
     spent: kind === "bot" ? Math.max(0, Math.floor(Number(seat.spent) || 0)) : undefined,
     budgetPeriod: kind === "bot" ? seat.budgetPeriod || undefined : undefined,
     pauseReason: seat.status === "paused" ? seat.pauseReason : undefined,
+    heartbeatMinutes:
+      kind === "bot" && Number(seat.heartbeatMinutes) > 0 ? Math.max(1, Math.floor(Number(seat.heartbeatMinutes))) : undefined,
+    heartbeatLastAt: kind === "bot" ? seat.heartbeatLastAt || undefined : undefined,
   };
 }
 

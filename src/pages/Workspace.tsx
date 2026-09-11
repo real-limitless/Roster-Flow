@@ -1799,6 +1799,33 @@ function Inspector({
               At or over 80% of tokenBudget.
             </p>
           )}
+          <label className="kv-label">
+            Heartbeat (minutes)
+            <input
+              data-testid="seat-heartbeat-minutes"
+              type="number"
+              min={0}
+              defaultValue={seat.heartbeatMinutes ?? 0}
+              key={`${seat.id}-heartbeat-${seat.heartbeatMinutes ?? 0}`}
+              onBlur={(e) => {
+                const n = Number(e.target.value);
+                onPatch({ heartbeatMinutes: Number.isFinite(n) && n > 0 ? n : 0 });
+              }}
+            />
+          </label>
+          {(seat.heartbeatMinutes || 0) > 0 && (
+            <button
+              className="pill-btn"
+              type="button"
+              data-testid="disable-heartbeat"
+              onClick={() => onPatch({ heartbeatMinutes: 0 })}
+            >
+              Disable heartbeat
+            </button>
+          )}
+          {(seat.tools || []).includes("deploy") && (
+            <p className="micro">Deploy seats stay event-driven. Heartbeats will not auto-run them.</p>
+          )}
         </>
       )}
       {seat.team && (

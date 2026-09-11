@@ -113,6 +113,7 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | POST | `/api/v1/seats/:id/resume` | Resume a paused bot. **400** `raise tokenBudget first` when `spent >= tokenBudget`. |
 | GET | `/api/v1/usage` | Meter rows (`tokens`, `usdEstimate`, `hours`) — filter `?projectId=` `?teamId=` `?seatId=` `&format=csv` |
 | POST | `/api/v1/usage` | Record a meter row (`seatId`, `inputTokens`, `outputTokens`) |
+| POST | `/api/v1/heartbeats/tick` | Wake seats with unread inbox / claimed tasks and `heartbeatMinutes` |
 | POST | `/api/v1/teams/:id/pause` | Pause every bot seat on the team |
 | POST | `/api/v1/runs/:runId/kill` | Add to `pausedRunIds` — `wakeSeat` returns `{ paused: true }` |
 | GET | `/api/v1/approvals` | Optional `?status=pending` |
@@ -135,6 +136,10 @@ Monthly token caps on bot seats. Unset `tokenBudget` is unmetered (wakes still r
 Hire/PATCH fields: `tokenBudget`, optional `budgetCents`, `spent`. Raising `tokenBudget` above `spent` clears a budget pause. `GET /api/v1/usage` never includes API keys. `GET /api/v1/usage?format=csv` downloads the same rows. Filter with `?projectId=` `?teamId=` `?seatId=`. `POST /api/v1/usage` records a meter row (`seatId`, `inputTokens`, `outputTokens`, optional `runId` / `ms`) — used by tests and the audit export story.
 
 Company and System `wakeSeat` prompts increment `spent` (prompt-size estimate plus 200 output tokens when OpenCode does not return usage). `@mention` / `POST /api/v1/bus/send` with `wake: true` and `POST /api/v1/seats/:id/attach` all go through `wakeBlocked`.
+
+## Seat heartbeats
+
+Per-seat `heartbeatMinutes` (off when unset or `0`). Distinct from routines: a heartbeat checks unread inbox and claimed tasks, then wakes with a prompt that forbids deploy/merge. Skips paused and over-budget seats. Seats whose tools include `deploy` stay event-driven. Coalesces with another bus wake to the same seat in the same minute. `POST /api/v1/heartbeats/tick` runs one pass (CORE also ticks with routines). Inspector **Disable heartbeat** sets `heartbeatMinutes: 0`.
 
 ## Rooms and threads
 

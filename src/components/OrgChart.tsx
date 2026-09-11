@@ -443,7 +443,8 @@ function SeatBtn({
   onAttach?: (s: Seat) => void;
 }) {
   const budget = budgetPaused(seat);
-  const pip = budget ? "paused budget" : seat.status === "paused" ? "paused" : liveId === seat.id ? "run" : "on";
+  const scheduled = !budget && seat.status !== "paused" && Number(seat.heartbeatMinutes) > 0;
+  const pip = budget ? "paused budget" : seat.status === "paused" ? "paused" : liveId === seat.id ? "run" : scheduled ? "scheduled" : "on";
   return (
     <button
       type="button"
@@ -451,7 +452,8 @@ function SeatBtn({
       data-testid={`seat-${seat.id}`}
       data-paused={seat.status === "paused" ? "1" : "0"}
       data-budget-paused={budget ? "1" : "0"}
-      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""} ${budget ? "budget-paused" : ""}`}
+      data-heartbeat={scheduled ? "1" : "0"}
+      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""} ${budget ? "budget-paused" : ""} ${scheduled ? "heartbeat" : ""}`}
       onClick={() => onSelect(seat)}
       onDoubleClick={() => onAttach?.(seat)}
     >
@@ -471,7 +473,7 @@ function SeatBtn({
         {seat.system ? " · system" : ""}
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}
-        {budget ? " · budget" : seat.status === "paused" ? " · paused" : ""}
+        {budget ? " · budget" : seat.status === "paused" ? " · paused" : scheduled ? " · beat" : ""}
       </div>
     </button>
   );

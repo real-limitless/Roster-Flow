@@ -19,6 +19,7 @@ import { listUsage, meterWake, usageCsv } from "./budget.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
 import { clearRoutineActive, createRoutine, patchRoutine, publicRoutine, runRoutineNow, tickRoutines } from "./routines.mjs";
+import { tickHeartbeats } from "./heartbeats.mjs";
 import { auditSkill, familyStatus, installSkill, listMcpBackends, registerMcpBackend } from "./family.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
@@ -328,6 +329,24 @@ const server = createServer(async (req, res) => {
         return;
       }
       json(res, 200, rows);
+      return;
+    }
+    if (pathname === "/api/v1/heartbeats/tick" && method === "POST") {
+      let due = [];
+      mutate((s) => {
+        due = tickHeartbeats(s, Date.now());
+      });
+      for (const item of due) {
+        if (item.coalesced) continue;
+        postBus({
+          from: "heartbeat",
+          to: item.seatId,
+          kind: "heartbeat",
+          text: item.prompt,
+          wake: true,
+        });
+      }
+      json(res, 200, { due });
       return;
     }
     if (pathname === "/api/v1/usage" && method === "POST") {
@@ -983,6 +1002,20 @@ function startRoutineTicker() {
           runId: item.runId,
         });
         mutate((s) => clearRoutineActive(s, item.runId));
+      }
+      let beats = [];
+      mutate((s) => {
+        beats = tickHeartbeats(s, Date.now());
+      });
+      for (const item of beats) {
+        if (item.coalesced) continue;
+        postBus({
+          from: "heartbeat",
+          to: item.seatId,
+          kind: "heartbeat",
+          text: item.prompt,
+          wake: true,
+        });
       }
     } catch (err) {
       console.error("routine tick", err);
