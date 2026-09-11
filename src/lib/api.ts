@@ -54,7 +54,57 @@ export const api = {
       teams?: import("../data").Team[];
       projects?: import("../data").Project[];
       organizations?: import("../data").Organization[];
+      goals?: import("../data").Goal[];
+      approvals?: import("../data").Approval[];
+      routines?: import("../data").Routine[];
+      inboxUnread?: Record<string, number>;
+      inboxCursors?: Record<string, string>;
     }>("/api/v1/state"),
+  goals: () => req<import("../data").Goal[]>("/api/v1/goals"),
+  createGoal: (body: unknown) =>
+    req<import("../data").Goal>("/api/v1/goals", { method: "POST", body: JSON.stringify(body) }),
+  inbox: (id: string) =>
+    req<{ seatId: string; cursor: string | null; items: Array<Record<string, unknown> & { unread?: boolean; text?: string; from?: string; to?: string; kind?: string; id: string }>; unread: number }>(
+      `/api/v1/seats/${id}/inbox`,
+    ),
+  markInboxRead: (id: string, beforeId?: string) =>
+    req<{ unread: number; cursor: string | null }>(`/api/v1/seats/${id}/inbox/read`, {
+      method: "POST",
+      body: JSON.stringify({ beforeId }),
+    }),
+  pauseSeat: (id: string) => req<import("../data").Seat>(`/api/v1/seats/${id}/pause`, { method: "POST", body: "{}" }),
+  resumeSeat: (id: string) => req<import("../data").Seat>(`/api/v1/seats/${id}/resume`, { method: "POST", body: "{}" }),
+  pauseTeam: (id: string) =>
+    req<{ team: import("../data").Team; seats: import("../data").Seat[] }>(`/api/v1/teams/${id}/pause`, {
+      method: "POST",
+      body: "{}",
+    }),
+  killRun: (runId: string) =>
+    req<{ runId: string; paused: boolean }>(`/api/v1/runs/${encodeURIComponent(runId)}/kill`, {
+      method: "POST",
+      body: "{}",
+    }),
+  approvals: (status?: string) =>
+    req<import("../data").Approval[]>(`/api/v1/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  createApproval: (body: unknown) =>
+    req<import("../data").Approval>("/api/v1/approvals", { method: "POST", body: JSON.stringify(body) }),
+  approveApproval: (id: string) =>
+    req<{ approval: import("../data").Approval; seats?: import("../data").Seat[] }>(`/api/v1/approvals/${id}/approve`, {
+      method: "POST",
+      body: "{}",
+    }),
+  rejectApproval: (id: string) =>
+    req<{ approval: import("../data").Approval }>(`/api/v1/approvals/${id}/reject`, { method: "POST", body: "{}" }),
+  routines: () => req<import("../data").Routine[]>("/api/v1/routines"),
+  createRoutine: (body: unknown) =>
+    req<import("../data").Routine>("/api/v1/routines", { method: "POST", body: JSON.stringify(body) }),
+  patchRoutine: (id: string, body: unknown) =>
+    req<import("../data").Routine>(`/api/v1/routines/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  runRoutine: (id: string) =>
+    req<{ bus?: { id: string; to: string; text: string }; prompt: string }>(`/api/v1/routines/${id}/run`, {
+      method: "POST",
+      body: "{}",
+    }),
   seats: () => req<import("../data").Seat[]>("/api/v1/seats"),
   teams: () => req<import("../data").Team[]>("/api/v1/teams"),
   projects: () => req<import("../data").Project[]>("/api/v1/projects"),
@@ -76,7 +126,14 @@ export const api = {
     req<import("../data").Channel>(`/api/v1/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   messages: (channel: string) => req<import("../data").Msg[]>(`/api/v1/channels/${channel}/messages`),
   attach: (id: string) =>
-    req<{ seat: string; sessionId?: string; attach?: string | null; harness?: { harness: string; port?: number } }>(
+    req<{
+      seat: string;
+      sessionId?: string;
+      attach?: string | null;
+      paused?: boolean;
+      reason?: string;
+      harness?: { harness: string; port?: number };
+    }>(
       `/api/v1/seats/${id}/attach`,
       { method: "POST", body: JSON.stringify({}) },
     ),

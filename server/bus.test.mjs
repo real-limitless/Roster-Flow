@@ -13,6 +13,8 @@ test("wakeSeat records promptAsync on the recipient session", async () => {
   };
   mutate((s) => {
     if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("build", "ship the webhook", { from: "product", kind: "handoff" });
@@ -35,6 +37,8 @@ test("wakeSeat routes team: addresses to the Supervisor", async () => {
   };
   mutate((s) => {
     if (s.sessions) delete s.sessions["eng-supervisor"];
+    const seat = (s.seats || []).find((x) => x.id === "eng-supervisor");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("team:eng", "build the webhook", { from: "product", kind: "send_message" });
@@ -63,6 +67,8 @@ test("wakeSeat stores Architect sessions on systemSessions", async () => {
   mutate((s) => {
     s.systemSessions = { ...(s.systemSessions || {}) };
     delete s.systemSessions.architect;
+    const seat = (s.seats || []).find((x) => x.id === "architect");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("architect", "propose a plan", { from: "you", kind: "architect" });
@@ -92,6 +98,8 @@ test("wakeSeat recreates session after 404", async () => {
   };
   mutate((s) => {
     s.sessions = { ...(s.sessions || {}), build: "ses_stale" };
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("build", "retry", { from: "product" });

@@ -432,6 +432,19 @@ h2, h2.section-title {
   min-height: 0;
   text-align: left;
 }
+.architect-approvals {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rail);
+  display: grid;
+  gap: 8px;
+}
+.approval-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
 .chart-splitter {
   flex: 0 0 8px;
   padding: 0;
@@ -600,9 +613,27 @@ h2, h2.section-title {
 .seat.human { border-style: solid; border-color: var(--rail); background: var(--panel-2); }
 .seat.live { box-shadow: 0 0 0 1px var(--accent), 0 0 18px rgba(232, 93, 117, 0.25); }
 .seat.system { opacity: 0.85; border-style: dotted; border-color: var(--vault); }
-.seat .pip { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 5px; background: var(--dim); }
+.seat .seat-name-row { display: inline-flex; align-items: center; justify-content: center; gap: 0; max-width: 100%; }
+.seat .pip { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 5px; background: var(--dim); flex-shrink: 0; }
 .seat .pip.on { background: var(--phosphor); box-shadow: 0 0 8px var(--phosphor); }
 .seat .pip.run { background: var(--accent-hot); animation: pulse 1.6s infinite; }
+.seat .pip.paused { background: var(--warn); box-shadow: none; animation: none; }
+.seat.paused { opacity: 0.72; }
+.seat .unread-pip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--ink-btn);
+  font-size: 9px;
+  font-family: var(--font-mono);
+  vertical-align: middle;
+}
 
 .chart-canvas { padding: 20px; display: flex; flex-direction: column; align-items: stretch; gap: 18px; position: relative; min-height: 0; }
 .org-chart { position: relative; width: 100%; min-height: 280px; padding: 8px 4px 24px; }
@@ -636,10 +667,11 @@ h2, h2.section-title {
 .tree-collapse {
   width: 42px;
   height: 16px;
+  flex: 0 0 16px;
   border: 1px solid var(--rail);
   background: var(--panel-2);
   border-radius: 999px;
-  cursor: ns-resize;
+  cursor: pointer;
   padding: 0;
   display: flex;
   align-items: center;

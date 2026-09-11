@@ -2,7 +2,7 @@ import { examplePayload, type Block } from "roster-flow-blocks";
 
 export type SeatKind = "human" | "bot";
 export type SeatType = "human" | "supervisor" | "generic" | "specialist";
-export type SeatStatus = "idle" | "running" | "blocked" | "done";
+export type SeatStatus = "idle" | "running" | "blocked" | "done" | "paused";
 
 export type Organization = {
   id: string;
@@ -17,6 +17,44 @@ export type Project = {
   constitution?: string;
   pmSeatId?: string;
   teamIds: string[];
+  goalIds?: string[];
+};
+
+export type Goal = {
+  id: string;
+  title: string;
+  description?: string;
+  parentId?: string;
+  status?: string;
+};
+
+export type Approval = {
+  id: string;
+  kind: "hire" | "strategy" | "budget_override" | "deploy" | string;
+  status: "pending" | "approved" | "rejected" | string;
+  actor: string;
+  planId?: string;
+  seatId?: string;
+  payload?: Record<string, unknown>;
+  createdAt?: string;
+  resolvedAt?: string;
+};
+
+export type Routine = {
+  id: string;
+  seatId: string;
+  title: string;
+  intervalMinutes: number;
+  cron?: string;
+  timezone?: string;
+  prompt: string;
+  skillId?: string;
+  enabled: boolean;
+  impliesDeploy?: boolean;
+  lastRunAt?: string | null;
+  lastError?: string | null;
+  activeRunId?: string | null;
+  hasWebhookSecret?: boolean;
 };
 
 export type Seat = {
@@ -92,6 +130,7 @@ export const projects: Project[] = [
     constitution: "Acceptance over opinions. Confirm on deploy. Do not skip the QA gate.",
     pmSeatId: "product",
     teamIds: ["eng", "ship"],
+    goalIds: ["ship-train"],
   },
 ];
 

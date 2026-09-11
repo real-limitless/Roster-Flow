@@ -64,4 +64,7 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
   const proposed = await tools.roster_propose_org.execute({ message: "staff mobile" });
   assert.match(proposed.title, /Cut scout|Org plan|plan/i);
   assert.ok(calls.some((c) => c.path === "/api/v1/architect/chat"));
+
+  await tools.roster_inbox.execute({}, { agent: "build" });
+  assert.ok(calls.some((c) => c.path === "/api/v1/seats/build/inbox"));
 });

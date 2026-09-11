@@ -51,6 +51,7 @@ export function OrgChart({
   onSelectTeam,
   onSelectProject,
   onAttach,
+  unreadBySeat = {},
 }: {
   roster: Seat[];
   teams?: Team[];
@@ -66,6 +67,7 @@ export function OrgChart({
   onSelectTeam?: (t: Team) => void;
   onSelectProject?: (p: Project) => void;
   onAttach?: (s: Seat) => void;
+  unreadBySeat?: Record<string, number>;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const fittingRef = useRef(false);
@@ -289,6 +291,7 @@ export function OrgChart({
           selectedId={selectedId}
           liveId={liveId}
           fire={Boolean(meta.fire)}
+          unread={unreadBySeat[seat.id] || 0}
           onSelect={onSelect}
           onAttach={onAttach}
         />
@@ -401,21 +404,6 @@ function CollapseHandle({
   collapsed: boolean;
   onToggle: (next?: boolean) => void;
 }) {
-  const start = useRef<{ y: number } | null>(null);
-  function down(e: PointerEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    start.current = { y: e.clientY };
-  }
-  function up(e: PointerEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    if (!start.current) return;
-    const dy = e.clientY - start.current.y;
-    start.current = null;
-    if (Math.abs(dy) < 12) onToggle();
-    else onToggle(dy < 0);
-  }
   return (
     <button
       type="button"
@@ -423,10 +411,12 @@ function CollapseHandle({
       data-testid={`tree-collapse-${id}`}
       aria-label={collapsed ? "Expand" : "Collapse"}
       aria-expanded={!collapsed}
-      onPointerDown={down}
-      onPointerUp={up}
-      onPointerCancel={() => {
-        start.current = null;
+      onPointerDown={(e) => {
+        e.stopPropagation();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
       }}
     >
       <span className="tree-collapse-grip" />
@@ -439,6 +429,7 @@ function SeatBtn({
   selectedId,
   liveId,
   fire,
+  unread = 0,
   onSelect,
   onAttach,
 }: {
@@ -446,27 +437,38 @@ function SeatBtn({
   selectedId: string;
   liveId?: string;
   fire?: boolean;
+  unread?: number;
   onSelect: (s: Seat) => void;
   onAttach?: (s: Seat) => void;
 }) {
+  const pip = seat.status === "paused" ? "paused" : liveId === seat.id ? "run" : "on";
   return (
     <button
       type="button"
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
-      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""}`}
+      data-paused={seat.status === "paused" ? "1" : "0"}
+      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""}`}
       onClick={() => onSelect(seat)}
       onDoubleClick={() => onAttach?.(seat)}
     >
       <SeatAvatar seed={seat.id} kind={seat.kind} size={22} />
-      <span className={`pip ${liveId === seat.id ? "run" : "on"}`} />
-      {seat.name}
+      <span className="seat-name-row">
+        <span className={`pip ${pip}`} data-testid={`pip-${seat.id}`} />
+        {seat.name}
+        {unread > 0 && (
+          <span className="unread-pip" data-testid={`inbox-count-${seat.id}`}>
+            {unread}
+          </span>
+        )}
+      </span>
       <div style={{ color: "var(--muted)", fontSize: 10 }}>
         {seat.role}
         {seat.kind === "human" ? " · human" : ""}
         {seat.system ? " · system" : ""}
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}
+        {seat.status === "paused" ? " · paused" : ""}
       </div>
     </button>
   );

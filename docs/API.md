@@ -93,7 +93,38 @@ Chart-mode planner. Proposes an `OrgPlan`; nothing mutates until Apply.
 | POST | `/api/v1/architect/apply` | `{ planId }` applies ops via hire / team / fire / create_project |
 | GET | `/api/v1/architect/plans/:id` | Stored plan |
 
+`POST /api/v1/architect/apply` records an approved `strategy` approval (actor You) then applies. Chart hire (`POST /api/v1/seats`) is owner-immediate and writes an approved `hire` row. `POST /api/v1/approvals` creates `pending`; pending hire/strategy does not mutate until `POST /api/v1/approvals/:id/approve`.
+
 `source` is `live` when the Architect System-harness session answered. Keyword templates run only when `ROSTER_ARCHITECT_MODE=template` (tests). Missing OpenCode is an error, not a silent mock. Ops: `replace_org`, `create_project`, `create_team`, `hire`, `reparent`, `fire` (max 48). `replace_org` keeps You / Channel / Architect and clears the rest before later ops.
+
+## Goals, inbox, board, routines
+
+Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines` (webhook secrets stripped), `inboxCursors`, `pausedRunIds`, and `inboxUnread`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/goals` | Org goals (`id`, `title`, `description`, `parentId`, `status`) |
+| POST | `/api/v1/goals` | Create a goal |
+| PATCH | `/api/v1/projects/:id` | Also accepts `goalIds` |
+| GET | `/api/v1/seats/:id/inbox` | Bus mail for this seat (direct, `team:` if Supervisor, `channel:` / `#room` membership, `ask_human`) |
+| GET | `/api/v1/seats/me/inbox` | Inbox for You |
+| POST | `/api/v1/seats/:id/inbox/read` | `{ beforeId }` — mark unread after that bus id as read |
+| POST | `/api/v1/seats/:id/pause` | Pause a bot (not You). System seats can pause; fire is still DELETE |
+| POST | `/api/v1/seats/:id/resume` | Resume a paused bot |
+| POST | `/api/v1/teams/:id/pause` | Pause every bot seat on the team |
+| POST | `/api/v1/runs/:runId/kill` | Add to `pausedRunIds` — `wakeSeat` returns `{ paused: true }` |
+| GET | `/api/v1/approvals` | Optional `?status=pending` |
+| POST | `/api/v1/approvals` | `{ kind: hire\|strategy\|budget_override\|deploy, payload?, planId?, seatId? }` — pending |
+| POST | `/api/v1/approvals/:id/approve` | Approve and, for hire/strategy, apply |
+| POST | `/api/v1/approvals/:id/reject` | Reject; no org mutation |
+| GET | `/api/v1/routines` | Scheduled wakes (CORE process only) |
+| POST | `/api/v1/routines` | `{ seatId, title, intervalMinutes, prompt, cron?, timezone?, impliesDeploy?, enabled? }` |
+| PATCH | `/api/v1/routines/:id` | Enable/pause, prompt, interval |
+| POST | `/api/v1/routines/:id/run` | Manual or webhook run — posts bus `{ from: "routine", wake: true }` |
+
+Wake prompts prepend linked goal title, project brief, constitution, and `meta.runId` when present. `wakeSeat` does not prompt when the seat is paused or the run is killed. Create/run a routine is rejected when `impliesDeploy` (or the prompt is clearly a deploy) and the seat `deny` includes `deploy`. Tick coalesces with another wake to the same seat in the same minute.
+
+Plugin tool: `roster_inbox`.
 
 ## Rooms and threads
 

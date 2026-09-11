@@ -141,7 +141,7 @@ export function seatModelPlan(seat) {
 
 function looksLikeWakePrompt(text) {
   const t = String(text || "");
-  return /^You are .+ on the Roster-flow org chart/.test(t) || t.includes("Propose ONE OrgPlan");
+  return /You are .+ on the Roster-flow org chart/.test(t) || t.includes("Propose ONE OrgPlan");
 }
 
 function resolvedSeatId(to, state = getState()) {
@@ -218,7 +218,9 @@ async function runWakes(channelId, text, from, targets) {
       detail: { reason: target.reason, model, harness: ready.kind },
     });
     const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId });
-    if (woke?.offline) {
+    if (woke?.paused) {
+      statusMessage(channelId, `${ready.seat?.name || seatId} is paused — wake skipped.`);
+    } else if (woke?.offline) {
       statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
     } else if (woke?.error) {
       statusMessage(channelId, `Wake failed for ${ready.seat?.name || seatId}: ${woke.error}`);

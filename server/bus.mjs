@@ -13,6 +13,8 @@ import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
 import { emit } from "./trace.mjs";
+import { goalPackLines } from "./goals.mjs";
+import { wakeBlocked } from "./seats.mjs";
 
 export const deps = {
   createSession,
@@ -68,7 +70,8 @@ export async function ensureSeatSession(to) {
   return sessionId || null;
 }
 
-function promptBody(seat, to, text, meta, model) {
+export function promptBody(seat, to, text, meta, model) {
+  const pack = goalPackLines(getState(), { seat, runId: meta.runId });
   return {
     agent: to,
     model,
@@ -76,6 +79,7 @@ function promptBody(seat, to, text, meta, model) {
       {
         type: "text",
         text: [
+          ...pack,
           `You are ${seat.name} (${seat.role}) on the Roster-flow org chart.`,
           seat.seatType ? `Seat type: ${seat.seatType}` : "",
           seat.team ? `Team: ${seat.team}` : "",
@@ -141,6 +145,18 @@ export async function wakeSeat(to, text, meta = {}) {
   const seat = seatById(to);
   if (!seat) return { error: "seat not found", seat: to };
   if (seat.kind !== "bot") return { human: true, seat: to };
+  const blocked = wakeBlocked(getState(), seat, meta);
+  if (blocked) {
+    emit({
+      level: "warn",
+      scope: "chat",
+      step: "seat.paused",
+      seat: to,
+      channel: meta.channel || null,
+      detail: { reason: blocked.reason, runId: meta.runId || null },
+    });
+    return { paused: true, seat: to, reason: blocked.reason };
+  }
   const kind = harnessKindForSeat(seat);
   const h = deps.harnessStatus(kind);
   if (h.harness !== "up") {

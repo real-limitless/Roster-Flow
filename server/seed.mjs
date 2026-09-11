@@ -48,6 +48,16 @@ export const projects = [
     constitution: "Acceptance over opinions. Confirm on deploy. Do not skip the QA gate.",
     pmSeatId: "product",
     teamIds: ["eng", "ship"],
+    goalIds: ["ship-train"],
+  },
+];
+
+export const goals = [
+  {
+    id: "ship-train",
+    title: "Ship the billing train",
+    description: "Webhook idempotency and the ship train.",
+    status: "active",
   },
 ];
 
@@ -300,6 +310,25 @@ export function migrateOrgsAndProjects(state) {
   return state;
 }
 
+export function migrateCompanyLoop(state) {
+  if (!Array.isArray(state.goals)) state.goals = [];
+  if (!Array.isArray(state.approvals)) state.approvals = [];
+  if (!state.inboxCursors || typeof state.inboxCursors !== "object") state.inboxCursors = {};
+  if (!Array.isArray(state.pausedRunIds)) state.pausedRunIds = [];
+  if (!Array.isArray(state.routines)) state.routines = [];
+  if (!Array.isArray(state.routineRuns)) state.routineRuns = [];
+  if (holdOrgSeed(state)) return state;
+  if (!state.goals.some((g) => g.id === "ship-train")) {
+    state.goals.push(structuredClone(goals[0]));
+  }
+  const billing = (state.projects || []).find((p) => p.id === "billing");
+  if (billing) {
+    billing.goalIds = Array.isArray(billing.goalIds) ? billing.goalIds : [];
+    if (!billing.goalIds.includes("ship-train")) billing.goalIds.unshift("ship-train");
+  }
+  return state;
+}
+
 function defaultChannelMembership(id) {
   if (id === "ship") return { teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya"] };
   if (id === "eng-agents") return { teamIds: ["eng"], seatIds: ["channel"] };
@@ -359,6 +388,7 @@ export function migrateState(state) {
       seatIds: [...new Set((seatIds.length ? seatIds : seeded.seatIds).concat(["channel"]))],
     };
   });
+  migrateCompanyLoop(next);
   return next;
 }
 
@@ -374,6 +404,12 @@ function baseFields() {
     defaultModel: "",
     users: [],
     authSessions: [],
+    goals: [],
+    approvals: [],
+    inboxCursors: {},
+    pausedRunIds: [],
+    routines: [],
+    routineRuns: [],
   };
 }
 
@@ -405,6 +441,7 @@ export function starterState() {
     projects: structuredClone(projects),
     messages: structuredClone(messages),
     ...baseFields(),
+    goals: structuredClone(goals),
     onboarding: { ...defaultOnboarding },
   };
 }

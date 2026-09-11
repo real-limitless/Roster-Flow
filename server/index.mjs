@@ -13,8 +13,12 @@ import { createChannel, patchChannel } from "./channels.mjs";
 import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
-import { fireSeat, hireSeat } from "./seats.mjs";
+import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
+import { createGoal, listGoals } from "./goals.mjs";
+import { listInbox, markInboxRead } from "./inbox.mjs";
+import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
+import { clearRoutineActive, createRoutine, patchRoutine, publicRoutine, runRoutineNow, tickRoutines } from "./routines.mjs";
 import { auditSkill, familyStatus, installSkill, listMcpBackends, registerMcpBackend } from "./family.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
@@ -294,6 +298,122 @@ const server = createServer(async (req, res) => {
       json(res, 200, updated);
       return;
     }
+    if (pathname === "/api/v1/goals" && method === "GET") {
+      json(res, 200, listGoals(getState()));
+      return;
+    }
+    if (pathname === "/api/v1/goals" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createGoal(s, body);
+      });
+      json(res, 201, created);
+      return;
+    }
+    if (pathname === "/api/v1/approvals" && method === "GET") {
+      json(res, 200, listApprovals(getState(), { status: url.searchParams.get("status") || undefined }));
+      return;
+    }
+    if (pathname === "/api/v1/approvals" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createApproval(s, body, user?.seatId || "you");
+      });
+      json(res, 201, created);
+      return;
+    }
+    const approvalAct = pathname.match(/^\/api\/v1\/approvals\/([^/]+)\/(approve|reject)$/);
+    if (approvalAct && method === "POST") {
+      const id = decodeURIComponent(approvalAct[1]);
+      const action = approvalAct[2];
+      let result = null;
+      mutate((s) => {
+        result = resolveApproval(s, id, { status: action === "approve" ? "approved" : "rejected", actor: user?.seatId || "you" });
+      });
+      for (const seat of result.created?.seats || (result.seat ? [result.seat] : [])) {
+        if (seat.kind === "bot") syncSeatAgent(seat);
+      }
+      for (const team of result.created?.teams || []) syncTeamAgent(team);
+      json(res, 200, {
+        ...result,
+        seats: getState().seats,
+        teams: enrichTeams(getState().teams, getState().seats),
+        projects: getState().projects,
+      });
+      return;
+    }
+    if (pathname === "/api/v1/routines" && method === "GET") {
+      json(res, 200, (getState().routines || []).map(publicRoutine));
+      return;
+    }
+    if (pathname === "/api/v1/routines" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createRoutine(s, body);
+      });
+      json(res, 201, publicRoutine(created));
+      return;
+    }
+    const routineOne = pathname.match(/^\/api\/v1\/routines\/([^/]+)$/);
+    if (routineOne && method === "PATCH") {
+      const id = decodeURIComponent(routineOne[1]);
+      const body = await readBody(req);
+      let updated = null;
+      mutate((s) => {
+        updated = patchRoutine(s, id, body);
+      });
+      if (!updated) {
+        json(res, 404, { error: "routine not found" });
+        return;
+      }
+      json(res, 200, publicRoutine(updated));
+      return;
+    }
+    const routineRun = pathname.match(/^\/api\/v1\/routines\/([^/]+)\/run$/);
+    if (routineRun && method === "POST") {
+      const id = decodeURIComponent(routineRun[1]);
+      const body = await readBody(req).catch(() => ({}));
+      const rec = (getState().routines || []).find((r) => r.id === id);
+      if (!rec) {
+        json(res, 404, { error: "routine not found" });
+        return;
+      }
+      if (rec.webhookSecret) {
+        const got = req.headers["x-roster-webhook-secret"] || body.secret || url.searchParams.get("secret");
+        if (got && got !== rec.webhookSecret) {
+          json(res, 403, { error: "invalid webhook secret" });
+          return;
+        }
+      }
+      let prepared = null;
+      mutate((s) => {
+        prepared = runRoutineNow(s, id);
+      });
+      const entry = postBus({
+        from: "routine",
+        to: prepared.seatId,
+        kind: "routine",
+        text: prepared.prompt,
+        wake: true,
+        runId: prepared.runId,
+      });
+      mutate((s) => clearRoutineActive(s, prepared.runId));
+      json(res, 200, { ...prepared, routine: publicRoutine(prepared.routine), bus: entry });
+      return;
+    }
+    const runKill = pathname.match(/^\/api\/v1\/runs\/([^/]+)\/kill$/);
+    if (runKill && method === "POST") {
+      const runId = decodeURIComponent(runKill[1]);
+      let result = null;
+      mutate((s) => {
+        result = killRun(s, runId);
+      });
+      json(res, 200, result);
+      return;
+    }
     if (pathname === "/api/v1/architect/chat" && method === "POST") {
       const body = await readBody(req);
       const out = await chatArchitect(getState(), body);
@@ -312,6 +432,13 @@ const server = createServer(async (req, res) => {
       let result = null;
       mutate((s) => {
         const plan = getPlan(s, planId);
+        recordApproval(s, {
+          kind: "strategy",
+          status: "approved",
+          actor: user?.seatId || "you",
+          planId,
+          payload: { summary: plan.summary },
+        });
         result = applyPlan(s, plan);
       });
       for (const seat of result.created.seats || []) {
@@ -345,6 +472,16 @@ const server = createServer(async (req, res) => {
       for (const seat of created.seats) syncSeatAgent(seat);
       syncTeamAgent(created.team);
       json(res, 201, created);
+      return;
+    }
+    const teamPause = pathname.match(/^\/api\/v1\/teams\/([^/]+)\/pause$/);
+    if (teamPause && method === "POST") {
+      const id = decodeURIComponent(teamPause[1]);
+      let result = null;
+      mutate((s) => {
+        result = pauseTeam(s, id);
+      });
+      json(res, 200, result);
       return;
     }
     const teamPatch = pathname.match(/^\/api\/v1\/teams\/([^/]+)$/);
@@ -391,9 +528,72 @@ const server = createServer(async (req, res) => {
       let seat = null;
       mutate((s) => {
         seat = hireSeat(s, body);
+        recordApproval(s, {
+          kind: "hire",
+          status: "approved",
+          actor: user?.seatId || "you",
+          seatId: seat.id,
+          payload: { id: seat.id, name: seat.name, team: seat.team, projectId: seat.projectId },
+        });
       });
       if (seat.kind === "bot") syncSeatAgent(seat);
       json(res, 201, seat);
+      return;
+    }
+    if (pathname === "/api/v1/seats/me/inbox" && method === "GET") {
+      const seatId = user?.seatId || "you";
+      const box = listInbox(getState(), seatId);
+      if (!box) {
+        json(res, 404, { error: "seat not found" });
+        return;
+      }
+      json(res, 200, box);
+      return;
+    }
+    const seatInbox = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/inbox$/);
+    if (seatInbox && method === "GET") {
+      const id = decodeURIComponent(seatInbox[1]);
+      const box = listInbox(getState(), id);
+      if (!box) {
+        json(res, 404, { error: "seat not found" });
+        return;
+      }
+      json(res, 200, box);
+      return;
+    }
+    const seatInboxRead = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/inbox\/read$/);
+    if (seatInboxRead && method === "POST") {
+      const id = decodeURIComponent(seatInboxRead[1]);
+      const body = await readBody(req).catch(() => ({}));
+      let box = null;
+      mutate((s) => {
+        box = markInboxRead(s, id, body.beforeId);
+      });
+      if (!box) {
+        json(res, 404, { error: "seat not found" });
+        return;
+      }
+      json(res, 200, box);
+      return;
+    }
+    const seatPause = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/pause$/);
+    if (seatPause && method === "POST") {
+      const id = decodeURIComponent(seatPause[1]);
+      let updated = null;
+      mutate((s) => {
+        updated = pauseSeat(s, id);
+      });
+      json(res, 200, updated);
+      return;
+    }
+    const seatResume = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/resume$/);
+    if (seatResume && method === "POST") {
+      const id = decodeURIComponent(seatResume[1]);
+      let updated = null;
+      mutate((s) => {
+        updated = resumeSeat(s, id);
+      });
+      json(res, 200, updated);
       return;
     }
     const seatPatch = pathname.match(/^\/api\/v1\/seats\/([^/]+)$/);
@@ -432,7 +632,13 @@ const server = createServer(async (req, res) => {
     const attach = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/attach$/);
     if (attach && method === "POST") {
       const id = decodeURIComponent(attach[1]);
+      const body = await readBody(req).catch(() => ({}));
       const seat = getState().seats.find((s) => s.id === id);
+      const blocked = wakeBlocked(getState(), seat, { runId: body.runId });
+      if (blocked) {
+        json(res, 200, { seat: id, paused: true, reason: blocked.reason, sessionId: null, attach: null });
+        return;
+      }
       const kind = harnessKindForSeat(seat);
       try {
         await ensure({ kind });
@@ -718,8 +924,38 @@ server.on("clientError", (err, socket) => {
 });
 
 startSessionSync();
+const ROUTINE_TICK_MS = Number(process.env.ROSTER_ROUTINE_TICK_MS) || 15_000;
+function startRoutineTicker() {
+  if (process.env.ROSTER_DISABLE_ROUTINES === "1") return;
+  setInterval(() => {
+    let due = [];
+    try {
+      mutate((s) => {
+        due = tickRoutines(s, Date.now());
+      });
+      for (const item of due) {
+        if (item.coalesced) {
+          mutate((s) => clearRoutineActive(s, item.runId));
+          continue;
+        }
+        postBus({
+          from: "routine",
+          to: item.seatId,
+          kind: "routine",
+          text: item.prompt,
+          wake: true,
+          runId: item.runId,
+        });
+        mutate((s) => clearRoutineActive(s, item.runId));
+      }
+    } catch (err) {
+      console.error("routine tick", err);
+    }
+  }, ROUTINE_TICK_MS);
+}
 server.listen(PORT, HOST, () => {
   const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
   console.log(`Setup: ${publicUrl()}/setup`);
+  startRoutineTicker();
 });
