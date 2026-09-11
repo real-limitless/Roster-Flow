@@ -79,6 +79,7 @@ This is the **product branch**: the runnable app, API, and tests. Concept and me
 - [Campaign README](docs/CAMPAIGN.md)
 - [CORE API](docs/API.md)
 - [OpenCode wrapper + plugin](docs/OPENCODE.md)
+- [Slack bridge](docs/SLACK.md)
 - [Standup](docs/STANDUP.md)
 
 | Branch | Contents |

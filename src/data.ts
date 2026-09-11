@@ -248,6 +248,7 @@ export type Msg = {
   system?: boolean;
   mirrored?: boolean;
   sessionId?: string;
+  slack?: { inbound?: boolean; channel?: string; ts?: string; user?: string };
 };
 
 export const skills: Skill[] = [

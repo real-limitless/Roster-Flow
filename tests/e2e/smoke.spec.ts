@@ -473,3 +473,103 @@ test("settings routine test-run posts bus mail", async ({ page, request }) => {
     return bus.some((e) => e.from === "routine" && e.to === "product" && /ship train/i.test(e.text || ""));
   }).toBeTruthy();
 });
+
+test("slack inbound lands in #ship and ask_human confirm posts bus", async ({ page, request }) => {
+  const posted: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const mock = await startSlackMock(8796, posted);
+  try {
+    await resetApi(request);
+    const ev = await request.post("http://127.0.0.1:8790/api/v1/slack/events", {
+      data: {
+        type: "event_callback",
+        event: {
+          type: "message",
+          channel: "C-SHIP",
+          user: "U1",
+          text: "please ask @eng to ship the webhook",
+          ts: "1.1",
+        },
+      },
+    });
+    expect(ev.ok()).toBeTruthy();
+    const body = (await ev.json()) as { ok?: boolean; room?: string };
+    expect(body.ok).toBeTruthy();
+    expect(body.room).toBe("ship");
+
+    await page.goto("/app");
+    await expect(page.getByText("please ask @eng to ship the webhook").first()).toBeVisible();
+    await expect(page.locator('[data-testid^="chip-slack-"]').first()).toBeVisible();
+    await page.screenshot({ path: "/tmp/walkthrough/room-slack-inbound.png", fullPage: true });
+
+    const ask = await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+      data: {
+        from: "product",
+        to: "you",
+        kind: "ask_human",
+        channel: "ship",
+        text: "Confirm staging deploy?",
+        wake: false,
+      },
+    });
+    expect(ask.ok()).toBeTruthy();
+    await expect.poll(() => posted.some((p) => String(p.url).includes("chat.postMessage"))).toBeTruthy();
+    const slackBody = posted.find((p) => String(p.url).includes("chat.postMessage"))?.body as {
+      blocks?: Array<{ type: string; elements?: Array<{ action_id?: string }> }>;
+    };
+    const actions = slackBody?.blocks?.find((b) => b.type === "actions")?.elements?.map((e) => e.action_id);
+    expect(actions).toEqual(["slack.confirm", "slack.deny"]);
+
+    const messages = (await (await request.get("http://127.0.0.1:8790/api/v1/channels/ship/messages")).json()) as Array<{
+      id: string;
+      text?: string;
+    }>;
+    const askMsg = messages.find((m) => /Confirm staging deploy/.test(m.text || ""));
+    const action = await request.post("http://127.0.0.1:8790/api/v1/slack/actions", {
+      data: { actions: [{ action_id: "slack.confirm", value: askMsg?.id }] },
+    });
+    expect(action.ok()).toBeTruthy();
+    const bus = (await (await request.get("http://127.0.0.1:8790/api/v1/bus")).json()) as Array<{
+      kind?: string;
+      text?: string;
+    }>;
+    expect(bus.some((e) => e.kind === "block_actions" && /slack.confirm/.test(e.text || ""))).toBeTruthy();
+
+    await page.goto("/app/settings");
+    await page.getByTestId("settings-nav-family").click();
+    await expect(page.getByTestId("family-card-slack")).toBeVisible();
+    await expect(page.getByTestId("family-slack-status")).toContainText("token stays in env");
+    await page.screenshot({ path: "/tmp/walkthrough/family-slack.png", fullPage: true });
+  } finally {
+    await mock.close().catch(() => undefined);
+  }
+});
+
+async function startSlackMock(port: number, posted: Array<{ url: string; body: Record<string, unknown> }>) {
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let body: Record<string, unknown> = {};
+      try {
+        body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      } catch {
+        body = {};
+      }
+      posted.push({ url: String(req.url || ""), body });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, ts: "2.2" }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+  return {
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}

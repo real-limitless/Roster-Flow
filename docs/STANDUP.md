@@ -169,6 +169,7 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 | `harness-term` `harness-xterm` | Live OpenCode TUI (xterm) |
 | `settings-providers` | Settings form |
 | `provider-id` `provider-save` | Add provider |
+| `family-card-slack` `family-slack-status` `chip-slack-{id}` | Slack transport |
 | `access-form` | `/access` |
 | `setup-page` `setup-step-install` `setup-step-first-user` `setup-step-login` `setup-step-harness` `setup-step-welcome` | `/setup` wizard |
 | `setup-name` `setup-email` `setup-password` `setup-create-owner` | First user |
@@ -201,6 +202,20 @@ curl -s -X POST http://127.0.0.1:8790/api/v1/harness/ensure -H 'content-type: ap
 ```
 
 If the CLI is missing, health returns `"harness":"offline"` and the room still works. Chart Architect needs the **System** harness (`systemHarness`); without OpenCode it errors instead of mocking a plan. Playwright sets `ROSTER_ARCHITECT_MODE=template` so CI does not need the CLI.
+
+## Slack (optional transport)
+
+`#ship` can map to a Slack channel. Tokens stay in env. Local path without a public URL:
+
+```bash
+export SLACK_CHANNEL_SHIP=C-SHIP
+export ROSTER_SLACK_SKIP_VERIFY=1
+curl -s -X POST http://127.0.0.1:8790/api/v1/slack/events \
+  -H 'content-type: application/json' \
+  -d '{"type":"event_callback","event":{"type":"message","channel":"C-SHIP","text":"@channel hello from Slack","user":"U1"}}'
+```
+
+Socket Mode: `SLACK_APP_TOKEN=xapp-… npm run slack`. Full notes: [docs/SLACK.md](SLACK.md).
 
 Two-bot proof (needs a provider key in env or Settings):
 

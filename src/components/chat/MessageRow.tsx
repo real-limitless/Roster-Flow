@@ -73,9 +73,15 @@ function MessageChips({ msg }: { msg: Msg }) {
   const skills = msg.skills || [];
   const files = msg.files || [];
   const attachments = msg.attachments || [];
-  if (!skills.length && !files.length && !attachments.length) return null;
+  const viaSlack = Boolean(msg.slack?.inbound);
+  if (!skills.length && !files.length && !attachments.length && !viaSlack) return null;
   return (
     <div className="msg-chips">
+      {viaSlack && (
+        <span className="chip" data-testid={`chip-slack-${msg.id}`}>
+          via Slack
+        </span>
+      )}
       {skills.map((s) => (
         <span className="chip ok" key={s.id} data-testid={`chip-skill-${s.id}`}>
           skill:{s.name}

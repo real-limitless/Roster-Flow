@@ -291,6 +291,7 @@ export const api = {
     req<{
       mcpFlow: { url: string; ok: boolean; status?: number; error?: string; admin: boolean };
       skillFlow: { url: string; bin: string; ok: boolean; status?: number; error?: string };
+      slack?: { connected: boolean; env: string | null; shipChannel?: string | null };
     }>("/api/v1/family/status"),
   familySkillAudit: (source: string) =>
     req<{ ok: boolean; json?: unknown; stderr?: string; error?: string }>("/api/v1/family/skills/audit", {
