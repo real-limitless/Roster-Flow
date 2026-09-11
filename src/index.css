@@ -1151,7 +1151,7 @@ input:focus, textarea:focus, select:focus {
 .app-body { display: grid; grid-template-columns: 220px 1fr; min-height: 0; }
 .app-body.has-inspector { grid-template-columns: 220px 1fr 280px; }
 .app-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.thread { flex: 1; overflow: auto; }
+.thread { flex: 1; overflow: auto; padding-bottom: 16px; }
 .room-split {
   flex: 1;
   min-height: 0;

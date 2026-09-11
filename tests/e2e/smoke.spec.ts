@@ -512,6 +512,8 @@ test("github PR report card in #ship is human-gated and goes stale", async ({ pa
     await expect(card).toBeVisible();
     await expect(card).toContainText("Idempotent Stripe webhooks");
     await expect(card.getByTestId("github-checks-" + cardMsg!.id)).toContainText("checks");
+    await card.scrollIntoViewIfNeeded();
+    await expect(card.getByTestId("github-merge")).toBeVisible();
     await page.screenshot({ path: "/tmp/walkthrough/room-github-pr-card.png", fullPage: true });
 
     await card.getByTestId("github-merge").click();
@@ -524,6 +526,7 @@ test("github PR report card in #ship is human-gated and goes stale", async ({ pa
     await mock.close();
     await card.getByTestId("github-refresh").click();
     await expect(card).toHaveAttribute("data-stale", "1", { timeout: 10_000 });
+    await card.scrollIntoViewIfNeeded();
     await expect(page.getByTestId(`github-link-${cardMsg!.id}`)).toHaveAttribute(
       "href",
       "https://github.com/real-limitless/Roster-Flow/pull/42",
