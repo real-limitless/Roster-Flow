@@ -517,6 +517,7 @@ test("mcp guest posts onto the bus and appears on the chart", async ({ page, req
 
   await page.goto("/app");
   await expect(page.getByText("hello from MCP guest").first()).toBeVisible();
+  await page.screenshot({ path: "/tmp/walkthrough/room-mcp-guest.png" });
   await page.getByTestId("mode-chart").click();
   await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
   await expect(page.getByTestId("seat-mcp-guest")).toBeVisible();
@@ -532,5 +533,6 @@ test("mcp guest posts onto the bus and appears on the chart", async ({ page, req
   await page.getByTestId("settings-nav-family").click();
   await expect(page.getByTestId("roster-mcp-snippet")).toBeVisible();
   await expect(page.getByTestId("roster-mcp-url")).toContainText("127.0.0.1:8790/mcp");
+  await page.getByTestId("roster-mcp-snippet").scrollIntoViewIfNeeded();
   await page.screenshot({ path: "/tmp/walkthrough/family-mcp-room.png" });
 });
