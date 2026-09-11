@@ -1,4 +1,4 @@
-import { skipOnboarding } from "./flags.mjs";
+import { skipOnboarding, demoMode, demoResetMs } from "./flags.mjs";
 import { unreadBySeat } from "./inbox.mjs";
 import { publicRoutine } from "./routines.mjs";
 import { emptyOrgState, migrateState, starterState } from "./seed.mjs";
@@ -43,6 +43,8 @@ export function setupStatus(state, { user = null, binary = null, providerKeys = 
     binary: binary || null,
     email: hasUser ? users[0].email : null,
     name: hasUser ? users[0].name : null,
+    demo: demoMode(),
+    demoResetMs: demoResetMs(),
   };
 }
 

@@ -25,6 +25,12 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 
 `GET /api/v1/state` never includes `users` or `authSessions`. Passwords are scrypt hashes.
 
+`GET /api/v1/setup/status` and `GET /api/v1/health` include `demo` and `demoResetMs` when `ROSTER_DEMO=1`. `POST /api/v1/reset` reseeds the starter company; it returns **403** on a public demo unless `ROSTER_ALLOW_RESET=1` (Playwright).
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/reset` | Re-seed starter company (disabled on `ROSTER_DEMO` unless `ROSTER_ALLOW_RESET=1`) |
+
 ## Health and harness
 
 | Method | Path | Purpose |

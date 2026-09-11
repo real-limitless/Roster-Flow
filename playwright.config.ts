@@ -21,6 +21,9 @@ export default defineConfig({
         ...process.env,
         ROSTER_ARCHITECT_MODE: "template",
         ROSTER_SKIP_ONBOARDING: "1",
+        ROSTER_DEMO: "1",
+        ROSTER_ALLOW_RESET: "1",
+        ROSTER_DEMO_RESET_MS: "0",
       },
     },
     {

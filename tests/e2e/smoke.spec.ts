@@ -5,6 +5,23 @@ test("home renders Room / Harness / Chart story", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Staff an org of agents");
 });
 
+test("homepage See #ship lands in starter #ship without an owner", async ({ page }) => {
+  await page.goto("/");
+  await page.screenshot({ path: "/tmp/walkthrough/home-see-ship.png", fullPage: true });
+  await page.getByTestId("cta-see-ship").click();
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await expect(page.getByTestId("channel-ship")).toBeVisible();
+  await expect(page.getByTestId("demo-banner")).toContainText("Demo");
+  await expect(page.getByTestId("demo-banner")).toContainText("resets on restart");
+  await page.screenshot({ path: "/tmp/walkthrough/demo-room.png", fullPage: true });
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toBeVisible();
+  await page.screenshot({ path: "/tmp/walkthrough/demo-chart.png", fullPage: true });
+  await page.getByTestId("mode-harness").click();
+  await expect(page.getByTestId("harness-term")).toBeVisible();
+  await page.screenshot({ path: "/tmp/walkthrough/demo-harness.png", fullPage: true });
+});
+
 test("workspace room send and block kit seed", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app");

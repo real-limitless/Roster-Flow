@@ -37,6 +37,7 @@ import { ChartSplitter, loadDock, saveDock, useNarrowChart, type DockLayout } fr
 import { previewFromPlan, type OrgPlan } from "../components/chart/planPreview";
 import { COLLAPSED_KEY } from "../components/OrgChart";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { ChatDebugPanel, loadDebugOpen, saveDebugOpen } from "../components/chat/ChatDebugPanel";
 import {
   channelIdForFocus,
@@ -53,6 +54,7 @@ import type { SearchHit } from "../lib/search";
 type CreateKind = "channel" | "project" | "team" | "seat";
 
 export function Workspace() {
+  const { status } = useAuth();
   const [mode, setMode] = useState<Mode>("room");
   const [roster, setRoster] = useState<Seat[]>(seedSeats);
   const [rooms, setRooms] = useState<Channel[]>(seedChannels);
@@ -633,6 +635,13 @@ export function Workspace() {
           Rooms
         </button>
         <Logo to="/" />
+        {status?.demo && (
+          <span className="chip" data-testid="demo-banner">
+            {status.demoResetMs
+              ? `Demo · starter company · resets every ${Math.max(1, Math.round(status.demoResetMs / 60000))} min`
+              : "Demo · starter company · resets on restart"}
+          </span>
+        )}
         <div className="seg">
           {(["room", "harness", "chart"] as Mode[]).map((m) => (
             <button

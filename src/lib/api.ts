@@ -12,6 +12,8 @@ export type SetupStatus = {
   binary: string | null;
   email?: string | null;
   name?: string | null;
+  demo?: boolean;
+  demoResetMs?: number;
 };
 
 export type AuthUser = { id: string; name: string; email: string; role: string; seatId: string };

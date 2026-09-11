@@ -51,7 +51,17 @@ State lives in the `roster-data` volume (survives `compose down`). Provider keys
 
 Published URL is **5173** (UI, `/setup`, `/app`, and `/api` on the same origin). The API is also published on **8790** (leave 8787 for mcp-flow). Override UI with `ROSTER_HTTP_PORT`. Host `npm run api` uses 8790.
 
-## Stand up (host Node, humans and Playwright agents)
+## Public demo (no owner)
+
+Seeded starter company — Room `#ship`, Chart, Harness (offline banner is OK). No account.
+
+```bash
+npm run demo
+```
+
+Then http://127.0.0.1:5173/app (or homepage **See #ship**). State reseeds on restart and every 30 minutes. `POST /api/v1/reset` is off so a hosted demo cannot be wiped from a browser.
+
+## Stand up (host Node, owner + keys + OpenCode)
 
 ```bash
 npm install
