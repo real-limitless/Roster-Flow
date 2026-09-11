@@ -144,6 +144,16 @@ export async function wakeSeat(to, text, meta = {}) {
   }
   const seat = seatById(to);
   if (!seat) return { error: "seat not found", seat: to };
+  if (seat.mcpGuest) {
+    emit({
+      scope: "chat",
+      step: "seat.mcp-guest",
+      seat: to,
+      channel: meta.channel || null,
+      detail: { origin: seat.origin || "mcp" },
+    });
+    return { guest: true, seat: to, origin: seat.origin || "mcp" };
+  }
   if (seat.kind !== "bot") return { human: true, seat: to };
   const blocked = wakeBlocked(getState(), seat, meta);
   if (blocked) {

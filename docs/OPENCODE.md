@@ -51,7 +51,8 @@ Configured in `.opencode/opencode.json` (company) and `.roster-flow/system/.open
 Flow-family map (OpenChamber setting → owner):
 
 - **Skills** — [skill-flow](https://github.com/real-limitless/skill-flow)
-- **MCP** — [mcp-flow](https://github.com/real-limitless/mcp-flow)
+- **MCP tools** — [mcp-flow](https://github.com/real-limitless/mcp-flow)
+- **MCP room** — Roster-Flow CORE `POST /mcp` (guest seat on the chart; not an OpenCode loop). [docs/MCP.md](MCP.md)
 - **Integrations** — [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp) + [OpenFlow](https://github.com/real-limitless/OpenFlow) catalogs
 
 Provider contract:
@@ -75,4 +76,5 @@ ROSTER_DATA_DIR=.roster-flow
 ROSTER_OPENCODE_DIR=.opencode
 ROSTER_WORKSPACE=.roster-flow/workspace
 ROSTER_STATIC_DIR=          # set to dist/ so CORE serves the UI
+ROSTER_MCP_TOKEN=            # optional dedicated bearer for POST /mcp
 ```

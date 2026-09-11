@@ -1694,6 +1694,7 @@ function Inspector({
         <b>
           {seat.kind}
           {seat.seatType ? ` · ${seat.seatType}` : ""}
+          {seat.mcpGuest ? " · mcp" : ""}
           {seat.system ? " · system" : ""}
         </b>
       </div>
@@ -1729,7 +1730,12 @@ function Inspector({
           {seat.kind === "bot" && <option value="services">Services lane</option>}
         </select>
       </label>
-      {seat.kind === "bot" ? (
+      {seat.mcpGuest && (
+        <p className="micro" data-testid="mcp-guest-note">
+          Room chair via CORE /mcp ({seat.origin || "mcp"}). Not an OpenCode loop — no attach, PTY, or provider keys.
+        </p>
+      )}
+      {seat.kind === "bot" && !seat.mcpGuest ? (
         <>
           <label className="kv-label">
             Default model
@@ -1761,7 +1767,7 @@ function Inspector({
         </div>
       )}
       <p style={{ color: "var(--muted)", fontSize: 13 }}>{seat.job}</p>
-      {seat.kind === "bot" && (
+      {seat.kind === "bot" && !seat.mcpGuest && (
         <>
           <label className="kv-label">
             Persona
@@ -1802,7 +1808,7 @@ function Inspector({
         ))}
       </div>
       <div style={{ display: "grid", gap: 8, marginTop: 18 }}>
-        {seat.kind === "bot" && (
+        {seat.kind === "bot" && !seat.mcpGuest && (
           <button className="pill-btn primary" data-testid="attach-harness" onClick={onAttach}>
             Attach harness
           </button>
@@ -1820,7 +1826,7 @@ function Inspector({
         <button className="pill-btn" onClick={onOpenRoom}>
           Open in room
         </button>
-        {onFire && seat.id !== "you" && !seat.system && (
+        {onFire && seat.id !== "you" && !seat.system && !seat.mcpGuest && (
           <button
             className="pill-btn"
             data-testid="fire-seat"

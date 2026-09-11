@@ -11,18 +11,19 @@ test("harness kinds split system seats from company bots", () => {
   assert.equal(sessionKeyForKind("company"), "sessions");
 });
 
-test("replace_org keeps You, Channel, and Architect", () => {
+test("replace_org keeps You, Channel, Architect, and the MCP guest", () => {
   const state = emptyState();
   const { fired } = replaceOrg(state);
   assert.ok(fired.length > 0);
   const ids = state.seats.map((s) => s.id).sort();
-  assert.deepEqual(ids, ["architect", "channel", "you"]);
+  assert.deepEqual(ids, ["architect", "channel", "mcp-guest", "you"]);
   assert.equal(state.projects.length, 0);
   assert.equal(state.teams.length, 0);
   for (const ch of state.channels) {
     assert.ok(ch.seatIds.includes("you"));
     assert.ok(ch.seatIds.includes("channel"));
     assert.ok(ch.seatIds.includes("architect"));
+    assert.ok(ch.seatIds.includes("mcp-guest"));
     assert.equal(ch.teamIds.length, 0);
   }
 });

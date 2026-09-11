@@ -78,6 +78,7 @@ This is the **product branch**: the runnable app, API, and tests. Concept and me
 - [Product / architecture](docs/ARCHITECTURE.md)
 - [Campaign README](docs/CAMPAIGN.md)
 - [CORE API](docs/API.md)
+- [Room MCP](docs/MCP.md) — Claude Code / Cursor join `#ship`; mcp-flow stays the tool gateway
 - [OpenCode wrapper + plugin](docs/OPENCODE.md)
 - [Standup](docs/STANDUP.md)
 

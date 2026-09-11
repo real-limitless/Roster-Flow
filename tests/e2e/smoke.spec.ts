@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { mkdirSync } from "node:fs";
 
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
@@ -472,4 +473,64 @@ test("settings routine test-run posts bus mail", async ({ page, request }) => {
     const bus = (await res.json()) as Array<{ from?: string; to?: string; text?: string }>;
     return bus.some((e) => e.from === "routine" && e.to === "product" && /ship train/i.test(e.text || ""));
   }).toBeTruthy();
+});
+
+test("mcp guest posts onto the bus and appears on the chart", async ({ page, request }) => {
+  mkdirSync("/tmp/walkthrough", { recursive: true });
+  await resetApi(request);
+  const init = await request.post("http://127.0.0.1:8790/mcp", {
+    data: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-03-26", clientInfo: { name: "playwright" } },
+    },
+  });
+  expect(init.ok()).toBeTruthy();
+  const initBody = (await init.json()) as { result?: { serverInfo?: { name?: string } } };
+  expect(initBody.result?.serverInfo?.name).toBe("roster-flow");
+  expect(init.headers()["mcp-session-id"]).toBeTruthy();
+
+  const listed = await request.post("http://127.0.0.1:8790/mcp", {
+    data: { jsonrpc: "2.0", id: 2, method: "tools/list" },
+  });
+  const listedBody = (await listed.json()) as { result?: { tools?: Array<{ name: string }> } };
+  const names = (listedBody.result?.tools || []).map((t) => t.name);
+  expect(names).toContain("roster_send_message");
+  expect(names).toContain("roster_inbox");
+
+  const sent = await request.post("http://127.0.0.1:8790/mcp", {
+    data: {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "roster_send_message",
+        arguments: { to: "channel:ship", text: "hello from MCP guest" },
+      },
+    },
+  });
+  expect(sent.ok()).toBeTruthy();
+  const bus = await request.get("http://127.0.0.1:8790/api/v1/bus");
+  const entries = (await bus.json()) as Array<{ from?: string; text?: string }>;
+  expect(entries.some((e) => e.from === "mcp-guest" && /hello from MCP guest/.test(e.text || ""))).toBeTruthy();
+
+  await page.goto("/app");
+  await expect(page.getByText("hello from MCP guest").first()).toBeVisible();
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-mcp-guest")).toBeVisible();
+  await expect(page.getByTestId("seat-mcp-guest")).toHaveAttribute("data-mcp-guest", "1");
+  await expect(page.getByTestId("seat-mcp-guest")).toContainText("mcp");
+  await page.getByTestId("seat-mcp-guest").first().click({ force: true });
+  await expect(page.getByTestId("seat-inspector")).toContainText("MCP Guest");
+  await expect(page.getByTestId("mcp-guest-note")).toBeVisible();
+  await expect(page.getByTestId("attach-harness")).toHaveCount(0);
+  await page.screenshot({ path: "/tmp/walkthrough/chart-mcp-guest.png" });
+
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-family").click();
+  await expect(page.getByTestId("roster-mcp-snippet")).toBeVisible();
+  await expect(page.getByTestId("roster-mcp-url")).toContainText("127.0.0.1:8790/mcp");
+  await page.screenshot({ path: "/tmp/walkthrough/family-mcp-room.png" });
 });
