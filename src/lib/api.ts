@@ -16,6 +16,20 @@ export type SetupStatus = {
 
 export type AuthUser = { id: string; name: string; email: string; role: string; seatId: string };
 
+export type AccessRequest = {
+  id: string;
+  name: string;
+  email: string;
+  company: string;
+  role?: string;
+  size?: string;
+  replace?: string;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+  updated?: boolean;
+};
+
 export function getAuthToken() {
   try {
     return localStorage.getItem(TOKEN_KEY) || "";
@@ -309,4 +323,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  requestAccess: (body: {
+    name: string;
+    email: string;
+    company: string;
+    role?: string;
+    size?: string;
+    replace?: string;
+    note?: string;
+  }) => req<AccessRequest>("/api/v1/access", { method: "POST", body: JSON.stringify(body) }),
+  accessRequests: () => req<{ requests: AccessRequest[] }>("/api/v1/access"),
 };

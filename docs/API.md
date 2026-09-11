@@ -10,7 +10,7 @@ All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, 
 
 ## Setup and auth
 
-Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`.
+Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -23,7 +23,16 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 | GET | `/api/v1/auth/me` | Current owner |
 | POST | `/api/v1/auth/logout` | Drop this token |
 
-`GET /api/v1/state` never includes `users` or `authSessions`. Passwords are scrypt hashes.
+`GET /api/v1/state` never includes `users`, `authSessions`, or waitlist PII. Passwords are scrypt hashes.
+
+## Access waitlist
+
+`POST /api/v1/access` is public. Rows live in CORE `accessRequests[]` (survive reload). Same email upserts. No mail is sent.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/access` | `{ name, email, company, role?, size?, replace?, note? }` — **201** new, **200** upsert |
+| GET | `/api/v1/access` | `{ requests[] }` — owner / skip-onboarding operator dump |
 
 ## Health and harness
 

@@ -5,7 +5,7 @@ import { emptyOrgState, migrateState, starterState } from "./seed.mjs";
 
 export function publicState(state) {
   if (!state || typeof state !== "object") return state;
-  const { users, authSessions, ...rest } = state;
+  const { users, authSessions, accessRequests, ...rest } = state;
   return {
     ...rest,
     routines: (rest.routines || []).map(publicRoutine),

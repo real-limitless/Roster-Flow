@@ -455,6 +455,25 @@ test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
   await expect(page.getByTestId("inbox-count-build")).toHaveCount(0);
 });
 
+test("access form persists on CORE and Settings lists it", async ({ page, request }) => {
+  await resetApi(request);
+  const email = `playwright-${Date.now()}@example.com`;
+  await page.goto("/access");
+  await page.getByLabel("Name").fill("Playwright Visitor");
+  await page.getByLabel("Work email").fill(email);
+  await page.getByLabel("Company").fill("Helix");
+  await page.getByRole("button", { name: "Request access" }).click();
+  await expect(page.getByTestId("access-success")).toBeVisible();
+  const listed = await request.get("http://127.0.0.1:8790/api/v1/access");
+  expect(listed.ok()).toBeTruthy();
+  const body = (await listed.json()) as { requests: Array<{ email: string; company: string }> };
+  expect(body.requests.some((row) => row.email === email && row.company === "Helix")).toBeTruthy();
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-access").click();
+  await expect(page.getByTestId("settings-access")).toBeVisible();
+  await expect(page.getByText(email)).toBeVisible();
+});
+
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app/settings");

@@ -24,7 +24,7 @@ export type HarnessStatus = HarnessKindStatus & {
   systemHarness?: HarnessKindStatus;
 };
 
-export type SettingsPane = "harness" | "providers" | "agents" | "family" | "routines";
+export type SettingsPane = "harness" | "providers" | "agents" | "family" | "routines" | "access";
 
 export const PRESET_PROVIDERS = [
   { id: "anthropic", name: "Anthropic", apiKeyEnv: "ANTHROPIC_API_KEY", models: "claude-sonnet-4", baseURL: "" },

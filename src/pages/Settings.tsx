@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Logo } from "../components/Logo";
 import { seats as seedSeats, type Seat } from "../data";
 import { api } from "../lib/api";
+import { AccessPanel } from "./settings/AccessPanel";
 import { AgentsPanel } from "./settings/AgentsPanel";
 import { FamilyPanel } from "./settings/FamilyPanel";
 import { HarnessPanel } from "./settings/HarnessPanel";
@@ -15,6 +16,7 @@ const PANES: Array<[SettingsPane, string]> = [
   ["harness", "Harness"],
   ["agents", "Agents"],
   ["routines", "Routines"],
+  ["access", "Access"],
   ["family", "Family"],
 ];
 
@@ -114,6 +116,7 @@ export function Settings() {
           )}
           {pane === "agents" && <AgentsPanel seats={seats} />}
           {pane === "routines" && <RoutinesPanel seats={seats} onError={setErr} />}
+          {pane === "access" && <AccessPanel onError={setErr} />}
           {pane === "family" && <FamilyPanel />}
         </main>
       </div>

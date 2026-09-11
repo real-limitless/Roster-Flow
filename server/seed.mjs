@@ -317,6 +317,7 @@ export function migrateCompanyLoop(state) {
   if (!Array.isArray(state.pausedRunIds)) state.pausedRunIds = [];
   if (!Array.isArray(state.routines)) state.routines = [];
   if (!Array.isArray(state.routineRuns)) state.routineRuns = [];
+  if (!Array.isArray(state.accessRequests)) state.accessRequests = [];
   if (holdOrgSeed(state)) return state;
   if (!state.goals.some((g) => g.id === "ship-train")) {
     state.goals.push(structuredClone(goals[0]));
@@ -410,6 +411,7 @@ function baseFields() {
     pausedRunIds: [],
     routines: [],
     routineRuns: [],
+    accessRequests: [],
   };
 }
 
