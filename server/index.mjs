@@ -15,6 +15,7 @@ import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
+import { createAccessRequest, listAccessRequests } from "./access.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
@@ -100,6 +101,7 @@ function isPublicPath(method, pathname) {
   if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
   if (method === "POST" && pathname === "/api/v1/setup/install") return true;
   if (method === "POST" && pathname === "/api/v1/auth/login") return true;
+  if (method === "POST" && pathname === "/api/v1/access") return true;
   return false;
 }
 
@@ -211,6 +213,20 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/auth/logout" && method === "POST") {
       mutate((s) => revokeSession(s, token));
       json(res, 200, { ok: true });
+      return;
+    }
+
+    if (pathname === "/api/v1/access" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createAccessRequest(s, body);
+      });
+      json(res, created.updated ? 200 : 201, created);
+      return;
+    }
+    if (pathname === "/api/v1/access" && method === "GET") {
+      json(res, 200, { requests: listAccessRequests(getState()) });
       return;
     }
 

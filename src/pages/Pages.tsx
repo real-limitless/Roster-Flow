@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { changelog, seats } from "../data";
 import { WorkspaceMock } from "../components/WorkspaceMock";
+import { api } from "../lib/api";
 
 function PageHero({ kicker, title, sub }: { kicker: string; title: string; sub: string }) {
   return (
@@ -237,22 +238,47 @@ export function Changelog() {
 
 export function Access() {
   const [ok, setOk] = useState(false);
-  function onSubmit(e: FormEvent) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setOk(true);
+    const form = e.currentTarget;
+    const data = new FormData(form);
+    setBusy(true);
+    setErr("");
+    try {
+      await api.requestAccess({
+        name: String(data.get("name") || ""),
+        email: String(data.get("email") || ""),
+        company: String(data.get("company") || ""),
+        role: String(data.get("role") || ""),
+        size: String(data.get("size") || ""),
+        replace: String(data.get("replace") || ""),
+        note: String(data.get("note") || ""),
+      });
+      setOk(true);
+    } catch (er) {
+      setErr(er instanceof Error ? er.message : "Could not save request");
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <>
-      <PageHero kicker="Access" title="Tell us what Roster-flow should replace first." sub="Work email only. We’ll reply within one business day — usually with a walkthrough of Room and Harness on the same bot." />
+      <PageHero
+        kicker="Access"
+        title="Tell us what Roster-flow should replace first."
+        sub="Work email only. CORE stores the request for the operator. There is no automated email yet."
+      />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         {ok ? (
-          <div className="success">
+          <div className="success" data-testid="access-success">
             <h3 style={{ marginTop: 0 }}>You’re on the list.</h3>
-            <p>We’ll reply within one business day. No demo theater — we’ll show a real channel.</p>
+            <p>Saved on this CORE instance. An operator can read it under Settings → Access. No automated reply yet.</p>
             <Link to="/app">Meanwhile, open the workspace →</Link>
           </div>
         ) : (
-          <form className="form" data-testid="access-form" onSubmit={onSubmit}>
+          <form className="form" data-testid="access-form" onSubmit={(e) => void onSubmit(e)}>
             <label>
               Name
               <input required name="name" />
@@ -292,10 +318,15 @@ export function Access() {
               Anything we should know?
               <textarea name="note" rows={4} />
             </label>
-            <button className="pill-btn primary" type="submit">
-              Request access
+            {err && (
+              <p className="micro" data-testid="access-error" style={{ color: "var(--deny)" }}>
+                {err}
+              </p>
+            )}
+            <button className="pill-btn primary" type="submit" disabled={busy}>
+              {busy ? "Saving…" : "Request access"}
             </button>
-            <p className="micro">We don’t train on your workspace. We won’t sell this list.</p>
+            <p className="micro">We don’t train on your workspace. We won’t sell this list. Duplicate emails update the same row.</p>
           </form>
         )}
       </section>

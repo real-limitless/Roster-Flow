@@ -56,6 +56,7 @@ test("completeSetup applies starter or empty and strips secrets from publicState
   const pub = publicState(staffed);
   assert.equal(pub.users, undefined);
   assert.equal(pub.authSessions, undefined);
+  assert.equal(pub.accessRequests, undefined);
   assert.ok(pub.seats.some((s) => s.id === "channel"));
 
   const empty = pendingState();
