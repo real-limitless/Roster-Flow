@@ -185,6 +185,16 @@ Plugin tool: `roster_inbox`.
 
 `POST /api/v1/messages` and `POST /api/v1/bus/send` also accept optional `blocks` (Roster Block Kit array). `text` may be omitted when `blocks` is present.
 
+## Slack transport
+
+Optional. Secrets in env (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_APP_TOKEN`). See [SLACK.md](SLACK.md).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/slack` | `{ connected, env, shipChannel }` — never the token |
+| POST | `/api/v1/slack/events` | Slack Events API (url_verification + human messages → mapped room) |
+| POST | `/api/v1/slack/actions` | Interactive Confirm/Deny → bus `block_actions` |
+
 ## Roster Block Kit
 
 Bots can attach a Slack-shaped `blocks` array on room messages. Types: `header`, `section`, `divider`, `context`, `image`, `actions`, `markdown`. Buttons with `action_id` post back to the originating seat.

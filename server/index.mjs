@@ -24,6 +24,7 @@ import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
 import { isDataWritable } from "./paths.mjs";
 import { tryServeStatic } from "./static.mjs";
+import { handleSlackAction, handleSlackEvent, mirrorToSlack, slackStatus, verifySlackRequest } from "./slack.mjs";
 
 const PORT = apiPort();
 const HOST = apiHost();
@@ -49,6 +50,12 @@ async function readBody(req) {
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
   return JSON.parse(raw);
+}
+
+async function readRaw(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function asList(value) {
@@ -100,6 +107,7 @@ function isPublicPath(method, pathname) {
   if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
   if (method === "POST" && pathname === "/api/v1/setup/install") return true;
   if (method === "POST" && pathname === "/api/v1/auth/login") return true;
+  if (pathname === "/api/v1/slack/events" || pathname === "/api/v1/slack/actions") return true;
   return false;
 }
 
@@ -225,6 +233,60 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/family/status" && method === "GET") {
       json(res, 200, await familyStatus());
+      return;
+    }
+    if (pathname === "/api/v1/slack" && method === "GET") {
+      json(res, 200, slackStatus());
+      return;
+    }
+    if (pathname === "/api/v1/slack/events" && method === "POST") {
+      const raw = await readRaw(req);
+      const ts = req.headers["x-slack-request-timestamp"];
+      const sig = req.headers["x-slack-signature"];
+      if (!verifySlackRequest(raw, ts, sig)) {
+        json(res, 401, { error: "invalid slack signature" });
+        return;
+      }
+      let body = {};
+      try {
+        body = raw ? JSON.parse(raw) : {};
+      } catch {
+        json(res, 400, { error: "invalid json" });
+        return;
+      }
+      try {
+        const out = await handleSlackEvent(body);
+        json(res, 200, out);
+      } catch (err) {
+        fail(res, err);
+      }
+      return;
+    }
+    if (pathname === "/api/v1/slack/actions" && method === "POST") {
+      const raw = await readRaw(req);
+      const ts = req.headers["x-slack-request-timestamp"];
+      const sig = req.headers["x-slack-signature"];
+      if (!verifySlackRequest(raw, ts, sig)) {
+        json(res, 401, { error: "invalid slack signature" });
+        return;
+      }
+      let payload = {};
+      try {
+        if (String(req.headers["content-type"] || "").includes("application/x-www-form-urlencoded")) {
+          payload = JSON.parse(new URLSearchParams(raw).get("payload") || "{}");
+        } else {
+          payload = raw ? JSON.parse(raw) : {};
+        }
+      } catch {
+        json(res, 400, { error: "invalid payload" });
+        return;
+      }
+      try {
+        const out = await handleSlackAction(payload);
+        json(res, 200, out);
+      } catch (err) {
+        fail(res, err);
+      }
       return;
     }
     if (pathname === "/api/v1/family/skills/audit" && method === "POST") {
@@ -783,10 +845,11 @@ const server = createServer(async (req, res) => {
         return;
       }
       const fromSeat = getState().seats.find((s) => s.id === body.from);
-      postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
+      const msg = postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
       });
+      void mirrorToSlack(msg, { kind: body.kind }).catch(() => undefined);
       json(res, 201, postBus({ ...body, text }));
       return;
     }

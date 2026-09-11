@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { slackStatus } from "./slack.mjs";
 
 export function familyEnv() {
   return {
@@ -29,6 +30,7 @@ export async function familyStatus() {
   return {
     mcpFlow: { url: env.mcpFlowUrl, ...mcp, admin: Boolean(env.mcpAdminToken) },
     skillFlow: { url: env.skillFlowUrl, bin: env.skillFlowBin, ...skill },
+    slack: slackStatus(),
   };
 }
 

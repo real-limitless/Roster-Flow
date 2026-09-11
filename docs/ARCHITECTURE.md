@@ -55,6 +55,7 @@ Faithful behaviors we implement (not UI-only):
 - **Inter-bot mail** — `send_message` / `handoff` / `report` / `ask_human` on an audited bus (Oh My OpenAgent team mailbox pattern: fire-and-forget, inbox, wake idle recipient).
 - **Chief of staff** — Channel routes; specialists execute; humans confirm deploy/merge.
 - **Group thread** — the Room channel is the shared log (Grok Bot group chat).
+- **Slack** — optional transport for `#ship`. OpenCode stays the harness.
 
 The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools so an agent inside the harness can talk to peers through the same bus.
 

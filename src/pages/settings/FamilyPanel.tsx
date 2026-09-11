@@ -35,6 +35,7 @@ const FAMILY = [
 type FamilyStatus = {
   mcpFlow?: { url: string; ok: boolean; error?: string; admin?: boolean };
   skillFlow?: { url: string; bin: string; ok: boolean; error?: string };
+  slack?: { connected: boolean; env: string | null; shipChannel?: string | null };
 };
 
 export function FamilyPanel() {
@@ -76,7 +77,7 @@ export function FamilyPanel() {
         <h1>Family</h1>
         <p className="micro">
           Roster owns the org and OpenCode write-through. Skills install through skill-flow. MCP backends
-          register on mcp-flow. Set MCP_FLOW_URL, SKILL_FLOW_URL, and MCP_FLOW_ADMIN_TOKEN on the API.
+          register on mcp-flow. Slack is a transport for #ship — tokens stay in SLACK_BOT_TOKEN.
         </p>
       </div>
       <div className="settings-grid">
@@ -105,6 +106,22 @@ export function FamilyPanel() {
             </div>
           </div>
         ))}
+        <div className="card" data-testid="family-card-slack">
+          <h3>
+            Slack <span className="chip">transport</span>
+          </h3>
+          <p className="micro">#ship ↔ Slack channel. Not a second agent loop.</p>
+          <p>
+            Inbound Events API posts into the mapped room. ask_human / report post back with Confirm / Deny. Secrets
+            stay in env.
+          </p>
+          <p className="micro" data-testid="family-slack-status">
+            {status?.slack?.connected
+              ? `${status.slack.env || "SLACK_BOT_TOKEN"} set · token stays in env`
+              : "not connected · set SLACK_BOT_TOKEN"}
+            {status?.slack?.shipChannel ? ` · ship ${status.slack.shipChannel}` : ""}
+          </p>
+        </div>
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
