@@ -1,7 +1,7 @@
 import { skipOnboarding } from "./flags.mjs";
 import { unreadBySeat } from "./inbox.mjs";
 import { publicRoutine } from "./routines.mjs";
-import { emptyOrgState, migrateState, starterState } from "./seed.mjs";
+import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
 
 export function publicState(state) {
   if (!state || typeof state !== "object") return state;
@@ -95,4 +95,24 @@ export function completeSetup(state, { template, ownerName } = {}) {
     throw err;
   }
   return applyOrgTemplate(state, template, ownerName || state.users?.[0]?.name || "You");
+}
+
+export function startOver(state, { email, confirm } = {}) {
+  if (skipOnboarding()) {
+    const err = new Error("onboarding is skipped");
+    err.status = 409;
+    throw err;
+  }
+  if (!confirm) {
+    const err = new Error("confirm required");
+    err.status = 400;
+    throw err;
+  }
+  const ownerEmail = String(state.users?.[0]?.email || "").trim().toLowerCase();
+  if (ownerEmail && String(email || "").trim().toLowerCase() !== ownerEmail) {
+    const err = new Error("email does not match owner");
+    err.status = 403;
+    throw err;
+  }
+  return migrateState(pendingState());
 }
