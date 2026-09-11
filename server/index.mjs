@@ -4,6 +4,7 @@ import { normalizeSeat, normalizeModelId } from "./seed.mjs";
 import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
+import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
@@ -220,6 +221,8 @@ const server = createServer(async (req, res) => {
         ...combinedStatus(),
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
+        demo: demoMode(),
+        demoResetMs: demoResetMs(),
       });
       return;
     }
@@ -248,6 +251,10 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/reset" && method === "POST") {
+      if (!allowStateReset()) {
+        json(res, 403, { error: "reset disabled on public demo" });
+        return;
+      }
       const st = resetState();
       try {
         syncBotAgents(st.seats, st.teams);
@@ -953,9 +960,30 @@ function startRoutineTicker() {
     }
   }, ROUTINE_TICK_MS);
 }
+
+function startDemoResetTicker() {
+  const ms = demoResetMs();
+  if (!ms) return;
+  console.log(`Demo reseed every ${ms}ms`);
+  setInterval(() => {
+    try {
+      const st = resetState();
+      try {
+        syncBotAgents(st.seats, st.teams);
+      } catch {
+        /* agent files are best-effort */
+      }
+    } catch (err) {
+      console.error("demo reset", err);
+    }
+  }, ms);
+}
+
 server.listen(PORT, HOST, () => {
   const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
   console.log(`Setup: ${publicUrl()}/setup`);
+  if (demoMode()) console.log(`Demo: ${publicUrl()}/app`);
   startRoutineTicker();
+  startDemoResetTicker();
 });

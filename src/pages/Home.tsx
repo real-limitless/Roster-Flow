@@ -20,6 +20,9 @@ export function Home() {
             <Link to={workspaceHref(status)} className="pill-btn primary">
               Open workspace
             </Link>
+            <Link to="/app" className="pill-btn" data-testid="cta-see-ship">
+              See #ship
+            </Link>
             <Link to="/access" className="pill-btn ghost">
               Request access
             </Link>
@@ -229,11 +232,16 @@ owner: maya
       <section className="section wrap" style={{ textAlign: "center" }}>
         <h2>Put the harness on the org chart.</h2>
         <p className="sub" style={{ margin: "0 auto 20px" }}>
-          Invite-only while we scale agent computers.
+          Invite-only while we scale agent computers. Or open the seeded starter company with no account.
         </p>
-        <Link to="/access" className="pill-btn primary">
-          Request access
-        </Link>
+        <div className="hero-ctas" style={{ justifyContent: "center" }}>
+          <Link to="/app" className="pill-btn" data-testid="cta-see-ship-footer">
+            See #ship
+          </Link>
+          <Link to="/access" className="pill-btn primary">
+            Request access
+          </Link>
+        </div>
       </section>
     </>
   );

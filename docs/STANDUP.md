@@ -76,14 +76,19 @@ npx playwright install chromium   # first time only
 
 ```bash
 npm run standup
+# public seeded demo (no owner): npm run demo
 ```
 
-This starts:
+`npm run standup` starts:
 
 | Process | URL | Role |
 |---|---|---|
 | CORE API | http://127.0.0.1:8790 | Teams, bots, bus, harness wrapper |
 | Vite | http://127.0.0.1:5173 | Marketing + `/setup` + `/app` workspace |
+
+`npm run demo` is the same processes with `ROSTER_SKIP_ONBOARDING=1` + `ROSTER_DEMO=1`. It seeds the starter company, shows a Demo chip in `/app`, reseeds on restart and every 30 minutes, and returns **403** on `POST /api/v1/reset`. Homepage **See #ship** goes to `/app` with no owner.
+
+Owner + keys + OpenCode still uses `npm run standup` then `/setup`.
 
 Or separately:
 
@@ -139,6 +144,8 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 | `team-eng` `team-inspector` `team-seat-count` | Teams rail + title-modal inspector |
 | `hire-form` `hire-persona` `seat-model` | Specialist hire + seat model |
 | `workspace-shell` | `/app` root |
+| `demo-banner` | Public demo chip (resets on restart / interval) |
+| `cta-see-ship` `cta-see-ship-footer` | Homepage See #ship |
 | `mode-room` `mode-harness` `mode-chart` | Triple-mode toggle |
 | `channel-ship` | `#ship` in the rail |
 | `composer` | Room composer textarea |
