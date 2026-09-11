@@ -233,6 +233,34 @@ export type WorkspaceFile = {
   name: string;
 };
 
+export type GithubCheckState = "success" | "pending" | "failure" | "unknown";
+
+export type GithubCard = {
+  kind: "pull" | "issue";
+  owner: string;
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  state: "open" | "closed" | "merged" | string;
+  merged?: boolean;
+  draft?: boolean;
+  branch?: string;
+  base?: string;
+  checks?: {
+    status: GithubCheckState;
+    summary: string;
+    total: number;
+    passed: number;
+    failed: number;
+  };
+  stale: boolean;
+  connected: boolean;
+  fetchedAt?: string;
+  mergeable?: boolean | null;
+  note?: string;
+};
+
 export type Msg = {
   id: string;
   channel: string;
@@ -245,6 +273,7 @@ export type Msg = {
   skills?: MsgSkill[];
   files?: MsgFile[];
   blocks?: Block[];
+  github?: GithubCard;
   system?: boolean;
   mirrored?: boolean;
   sessionId?: string;

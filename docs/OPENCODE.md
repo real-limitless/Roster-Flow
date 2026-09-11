@@ -26,7 +26,7 @@ Package: `packages/roster-flow-opencode`
 | `roster_list_seats` | Who is on the chart |
 | `roster_send_message` | Peer or channel mail |
 | `roster_handoff` | Close my phase, open yours |
-| `roster_report` | Structured result to the originating thread |
+| `roster_report` | Structured result to the originating thread (`prUrl` / `branch` → GitHub card) |
 | `roster_ask_human` | Park on `reports_to` (never `#general`) |
 | `roster_propose_org` | Architect OrgPlan (does not apply) |
 
@@ -75,4 +75,7 @@ ROSTER_DATA_DIR=.roster-flow
 ROSTER_OPENCODE_DIR=.opencode
 ROSTER_WORKSPACE=.roster-flow/workspace
 ROSTER_STATIC_DIR=          # set to dist/ so CORE serves the UI
+GITHUB_TOKEN=               # optional PAT / GitHub App installation token
+GH_TOKEN=                   # alias
+ROSTER_GITHUB_API=https://api.github.com
 ```

@@ -24,6 +24,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
     volumes:
       - roster-data:/data
     restart: unless-stopped

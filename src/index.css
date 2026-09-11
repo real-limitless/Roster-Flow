@@ -565,6 +565,23 @@ h2, h2.section-title {
   border-radius: 3px;
 }
 
+.gh-card {
+  margin-top: 8px;
+  max-width: 520px;
+  padding: 10px 12px;
+  border: 1px solid var(--rail);
+  background: var(--panel-2);
+  border-radius: 6px;
+}
+.gh-card.stale { border-style: dashed; }
+.gh-card-top { display: flex; gap: 8px; align-items: flex-start; }
+.gh-title { font-size: 13px; font-weight: 600; color: var(--ink); text-decoration: none; }
+.gh-title:hover { color: var(--accent-hot); text-decoration: underline; }
+.gh-meta { margin: 6px 0 4px; }
+.gh-card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.gh-state.ok { color: var(--phosphor); }
+.gh-state.warn { color: var(--warn); }
+
 .bk-shell { grid-template-rows: 48px 1fr; }
 .bk-body { display: grid; grid-template-columns: 200px 1fr 340px; min-height: 0; border-top: 1px solid var(--rail); }
 .bk-palette { overflow: auto; padding: 12px; border-right: 1px solid var(--rail); background: var(--panel); }
@@ -1134,7 +1151,7 @@ input:focus, textarea:focus, select:focus {
 .app-body { display: grid; grid-template-columns: 220px 1fr; min-height: 0; }
 .app-body.has-inspector { grid-template-columns: 220px 1fr 280px; }
 .app-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.thread { flex: 1; overflow: auto; }
+.thread { flex: 1; overflow: auto; padding-bottom: 16px; }
 .room-split {
   flex: 1;
   min-height: 0;

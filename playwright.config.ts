@@ -21,6 +21,8 @@ export default defineConfig({
         ...process.env,
         ROSTER_ARCHITECT_MODE: "template",
         ROSTER_SKIP_ONBOARDING: "1",
+        GITHUB_TOKEN: process.env.GITHUB_TOKEN || "e2e-github-token",
+        ROSTER_GITHUB_API: process.env.ROSTER_GITHUB_API || "http://127.0.0.1:8798",
       },
     },
     {

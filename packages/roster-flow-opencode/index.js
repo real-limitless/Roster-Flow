@@ -85,11 +85,13 @@ export function buildTools(tool, fetchApi = api) {
       },
     }),
     roster_report: tool({
-      description: "Post a structured result back to the originating Room thread. Optional blocks is Roster Block Kit JSON.",
+      description: "Post a structured result back to the originating Room thread. Optional prUrl/branch render a GitHub card. Optional blocks is Roster Block Kit JSON.",
       args: {
         text: z.string(),
         channel: z.string().optional(),
         from: z.string().optional(),
+        prUrl: z.string().optional().describe("GitHub pull request URL to render as a Room card"),
+        branch: z.string().optional().describe("Worktree branch name (local; not a sandbox)"),
         blocks: z.string().optional().describe("Optional Roster Block Kit JSON array"),
       },
       async execute(args, ctx) {
@@ -106,6 +108,8 @@ export function buildTools(tool, fetchApi = api) {
             channel,
             wake: false,
             blocks,
+            prUrl: args.prUrl,
+            branch: args.branch,
           }),
         });
         return { title: "report", output: JSON.stringify(entry) };

@@ -185,13 +185,15 @@ Plugin tool: `roster_inbox`.
 
 `POST /api/v1/messages` and `POST /api/v1/bus/send` also accept optional `blocks` (Roster Block Kit array). `text` may be omitted when `blocks` is present.
 
+`roster_report` / `POST /api/v1/bus/send` also accept optional `prUrl` and `branch`. A GitHub pull or issue URL in `text` renders a Room card. Token: `GITHUB_TOKEN` or `GH_TOKEN` (env only). See [GitHub cards](GITHUB.md).
+
 ## Roster Block Kit
 
 Bots can attach a Slack-shaped `blocks` array on room messages. Types: `header`, `section`, `divider`, `context`, `image`, `actions`, `markdown`. Buttons with `action_id` post back to the originating seat.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/block-actions` | `{ messageId, actionId, value?, userId? }` → bus `block_actions` + wake |
+| POST | `/api/v1/block-actions` | `{ messageId, actionId, value?, userId? }` → bus `block_actions` + wake. `github.refresh` / `github.merge` skip the harness wake. |
 
 Builder UI: `/app/blocks`. SDK: `roster-flow-blocks` (`Blocks`, `Elements`, `validateBlocks`).
 
@@ -242,6 +244,16 @@ Settings UI at `/app/settings` writes these.
 ```
 
 Literal keys go to `.roster-flow/auth.json` (gitignored) and `{env:VAR}` is preferred in `opencode.json`, same idea as OpenChamber writing OpenCode config + auth.
+
+## GitHub cards
+
+Optional. See [GITHUB.md](GITHUB.md).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/github` | `{ connected, env, api }` — never the token |
+| GET | `/api/v1/messages/:id/github` | Refresh PR/issue checks |
+| POST | `/api/v1/block-actions` | `github.merge` is human-gated (`deny: ["deploy"]` cannot merge) |
 
 ## Errors
 
