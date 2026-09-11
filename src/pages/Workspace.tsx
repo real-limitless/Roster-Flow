@@ -28,6 +28,7 @@ import { SeatAvatar } from "../components/SeatAvatar";
 import { HarnessTerm } from "../components/HarnessTerm";
 import type { Mode } from "../components/WorkspaceMock";
 import { Composer, type ComposePayload } from "../components/chat/Composer";
+import { ShipCoach } from "../components/chat/ShipCoach";
 import { ConversationHeader } from "../components/chat/ConversationHeader";
 import { FilesLinksPane } from "../components/chat/ConversationPanes";
 import { SearchModal } from "../components/chat/SearchModal";
@@ -49,6 +50,7 @@ import {
   type RoomTab,
 } from "../lib/conversation";
 import type { SearchHit } from "../lib/search";
+import { loadCoachOpen, saveCoachOpen, SHIP_PATH, SHIP_SENTENCE } from "../lib/shipCoach";
 
 type CreateKind = "channel" | "project" | "team" | "seat";
 
@@ -81,6 +83,8 @@ export function Workspace() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
   const [debugOpen, setDebugOpen] = useState(loadDebugOpen);
+  const [coachOpen, setCoachOpen] = useState(loadCoachOpen);
+  const [coachSeed, setCoachSeed] = useState(0);
   const [harnessSessions, setHarnessSessions] = useState<
     Array<{ id: string; title: string; agent: string | null; harness: string; seatId: string | null; channel: string | null }>
   >([]);
@@ -811,8 +815,25 @@ export function Workspace() {
                         />
                       ))}
                     </div>
+                    {coachOpen && (
+                      <ShipCoach
+                        emptyOrg={!roster.some((s) => s.id === "product")}
+                        onInsert={() => setCoachSeed((n) => n + 1)}
+                        onSend={() => {
+                          send({ text: SHIP_SENTENCE, attachments: [], skills: [], files: [] });
+                          setMode("chart");
+                        }}
+                        onOpenChart={() => setMode("chart")}
+                        onDismiss={() => {
+                          saveCoachOpen(false);
+                          setCoachOpen(false);
+                        }}
+                      />
+                    )}
                     <Composer
                       channelName={channelName}
+                      seedText={SHIP_SENTENCE}
+                      seedNonce={coachSeed}
                       onSend={send}
                       sendError={sendError}
                       mentions={[
@@ -867,6 +888,7 @@ export function Workspace() {
               unreadBySeat={inboxUnread}
               pendingApprovals={approvals.filter((a) => a.status === "pending")}
               onApprovePending={approvePending}
+              pathIds={coachOpen && roster.some((s) => s.id === "product") ? SHIP_PATH : []}
             />
           )}
         </main>
@@ -1117,6 +1139,7 @@ function ChartPane({
   unreadBySeat = {},
   pendingApprovals = [],
   onApprovePending,
+  pathIds = [],
 }: {
   roster: Seat[];
   projects: Project[];
@@ -1144,6 +1167,7 @@ function ChartPane({
   unreadBySeat?: Record<string, number>;
   pendingApprovals?: Approval[];
   onApprovePending?: (id: string) => void;
+  pathIds?: string[];
 }) {
   const [layoutResetKey, setLayoutResetKey] = useState(0);
   const [dock, setDock] = useState<DockLayout>(loadDock);
@@ -1204,6 +1228,7 @@ function ChartPane({
           onAttach={onAttach}
           resetLayoutKey={layoutResetKey}
           unreadBySeat={unreadBySeat}
+          pathIds={pathIds}
         />
       </div>
       {!dock.collapsed && <ChartSplitter dock={dock} onChange={setDock} narrow={narrow} />}

@@ -52,6 +52,7 @@ export function OrgChart({
   onSelectProject,
   onAttach,
   unreadBySeat = {},
+  pathIds = [],
 }: {
   roster: Seat[];
   teams?: Team[];
@@ -68,6 +69,7 @@ export function OrgChart({
   onSelectProject?: (p: Project) => void;
   onAttach?: (s: Seat) => void;
   unreadBySeat?: Record<string, number>;
+  pathIds?: string[];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const fittingRef = useRef(false);
@@ -290,6 +292,7 @@ export function OrgChart({
           seat={seat}
           selectedId={selectedId}
           liveId={liveId}
+          onPath={pathIds.includes(seat.id)}
           fire={Boolean(meta.fire)}
           unread={unreadBySeat[seat.id] || 0}
           onSelect={onSelect}
@@ -428,6 +431,7 @@ function SeatBtn({
   seat,
   selectedId,
   liveId,
+  onPath,
   fire,
   unread = 0,
   onSelect,
@@ -436,6 +440,7 @@ function SeatBtn({
   seat: Seat;
   selectedId: string;
   liveId?: string;
+  onPath?: boolean;
   fire?: boolean;
   unread?: number;
   onSelect: (s: Seat) => void;
@@ -448,7 +453,8 @@ function SeatBtn({
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
       data-paused={seat.status === "paused" ? "1" : "0"}
-      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""}`}
+      data-coach-path={onPath ? "1" : "0"}
+      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""} ${onPath ? "coach-path" : ""}`}
       onClick={() => onSelect(seat)}
       onDoubleClick={() => onAttach?.(seat)}
     >
