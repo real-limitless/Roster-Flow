@@ -197,7 +197,8 @@ test("chart nodes collapse from the handle and reset expands them", async ({ pag
   const mayaHandle = page.getByTestId("tree-collapse-maya");
   await expect(mayaHandle).toBeVisible();
   await expect(mayaHandle).toHaveAttribute("aria-expanded", "true");
-  await mayaHandle.click({ force: true });
+  // Fitted zoom shrinks SVG foreignObject controls; click via the DOM node.
+  await mayaHandle.evaluate((el) => (el as HTMLButtonElement).click());
   await expect(mayaHandle).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByTestId("org-project-billing")).toHaveCount(0);
   await page.getByTestId("reset-chart-layout").click();

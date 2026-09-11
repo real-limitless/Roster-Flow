@@ -453,13 +453,15 @@ function SeatBtn({
       onDoubleClick={() => onAttach?.(seat)}
     >
       <SeatAvatar seed={seat.id} kind={seat.kind} size={22} />
-      <span className={`pip ${pip}`} data-testid={`pip-${seat.id}`} />
-      {seat.name}
-      {unread > 0 && (
-        <span className="unread-pip" data-testid={`inbox-count-${seat.id}`}>
-          {unread}
-        </span>
-      )}
+      <span className="seat-name-row">
+        <span className={`pip ${pip}`} data-testid={`pip-${seat.id}`} />
+        {seat.name}
+        {unread > 0 && (
+          <span className="unread-pip" data-testid={`inbox-count-${seat.id}`}>
+            {unread}
+          </span>
+        )}
+      </span>
       <div style={{ color: "var(--muted)", fontSize: 10 }}>
         {seat.role}
         {seat.kind === "human" ? " · human" : ""}
