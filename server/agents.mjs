@@ -99,6 +99,8 @@ function writeSystemOpenCodeConfig(seat) {
 
 export function syncSeatAgent(seat) {
   if (!seat || seat.kind !== "bot") return null;
+  const adapter = String(seat.adapter || "opencode").toLowerCase();
+  if (adapter && adapter !== "opencode") return null;
   if (seat.system) {
     mkdirSync(systemAgentsDir, { recursive: true });
     const file = join(systemAgentsDir, `${seat.id}.md`);

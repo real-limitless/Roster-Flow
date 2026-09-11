@@ -14,6 +14,7 @@ import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
+import { adapterSecretOk, isOpenCodeAdapter, parseAdapterCallback, publicSeat, publicSeats } from "./adapters.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
@@ -516,11 +517,11 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/bots" && method === "GET") {
-      json(res, 200, getState().seats.filter((s) => s.kind === "bot"));
+      json(res, 200, publicSeats(getState().seats.filter((s) => s.kind === "bot")));
       return;
     }
     if (pathname === "/api/v1/seats" && method === "GET") {
-      json(res, 200, getState().seats);
+      json(res, 200, publicSeats(getState().seats));
       return;
     }
     if (pathname === "/api/v1/seats" && method === "POST") {
@@ -537,7 +538,7 @@ const server = createServer(async (req, res) => {
         });
       });
       if (seat.kind === "bot") syncSeatAgent(seat);
-      json(res, 201, seat);
+      json(res, 201, publicSeat(seat));
       return;
     }
     if (pathname === "/api/v1/seats/me/inbox" && method === "GET") {
@@ -617,7 +618,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       if (updated.kind === "bot") syncSeatAgent(updated);
-      json(res, 200, updated);
+      json(res, 200, publicSeat(updated));
       return;
     }
     if (seatPatch && method === "DELETE") {
@@ -629,11 +630,58 @@ const server = createServer(async (req, res) => {
       json(res, 200, result);
       return;
     }
+    const adapterCb = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/adapter\/(report|handoff)$/);
+    if (adapterCb && method === "POST") {
+      const id = decodeURIComponent(adapterCb[1]);
+      const verb = adapterCb[2];
+      const seat = getState().seats.find((s) => s.id === id);
+      if (!seat) {
+        json(res, 404, { error: "seat not found" });
+        return;
+      }
+      if (isOpenCodeAdapter(seat)) {
+        json(res, 400, { error: "OpenCode seats use the plugin bus, not adapter callbacks" });
+        return;
+      }
+      if (!adapterSecretOk(seat, req)) {
+        json(res, 401, { error: "adapter secret required" });
+        return;
+      }
+      const body = await readBody(req);
+      const parsed = parseAdapterCallback({ ...body, kind: verb });
+      if (!parsed.text) {
+        json(res, 400, { error: "text required" });
+        return;
+      }
+      const to = verb === "handoff" ? parsed.to : `channel:${parsed.channel}`;
+      postMessage(parsed.channel, seat.name, seat.kind || "bot", parsed.text, { seatId: id });
+      json(
+        res,
+        201,
+        postBus({
+          from: id,
+          to,
+          kind: verb === "handoff" ? "handoff" : "report",
+          text: parsed.text,
+          channel: parsed.channel,
+          wake: verb === "handoff" && !String(to).startsWith("channel:"),
+        }),
+      );
+      return;
+    }
     const attach = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/attach$/);
     if (attach && method === "POST") {
       const id = decodeURIComponent(attach[1]);
       const body = await readBody(req).catch(() => ({}));
       const seat = getState().seats.find((s) => s.id === id);
+      if (seat && !isOpenCodeAdapter(seat)) {
+        json(res, 400, {
+          error: "non-OpenCode adapters do not attach a PTY",
+          adapter: seat.adapter || "webhook",
+          seat: id,
+        });
+        return;
+      }
       const blocked = wakeBlocked(getState(), seat, { runId: body.runId });
       if (blocked) {
         json(res, 200, { seat: id, paused: true, reason: blocked.reason, sessionId: null, attach: null });

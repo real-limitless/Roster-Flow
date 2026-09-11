@@ -114,6 +114,9 @@ export function normalizeSeat(seat) {
     knowledge: seat.knowledge || undefined,
     skills: Array.isArray(seat.skills) ? seat.skills.map(String).filter(Boolean) : undefined,
     projectId: seat.projectId || undefined,
+    adapter: kind === "human" ? undefined : seat.adapter || undefined,
+    adapterUrl: kind === "human" ? undefined : seat.adapterUrl || undefined,
+    adapterSecret: kind === "human" ? undefined : seat.adapterSecret || undefined,
   };
 }
 

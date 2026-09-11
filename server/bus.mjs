@@ -15,6 +15,7 @@ import { CONDUCTOR_ID } from "./mentions.mjs";
 import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
+import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
 
 export const deps = {
   createSession,
@@ -156,6 +157,9 @@ export async function wakeSeat(to, text, meta = {}) {
       detail: { reason: blocked.reason, runId: meta.runId || null },
     });
     return { paused: true, seat: to, reason: blocked.reason };
+  }
+  if (!isOpenCodeAdapter(seat)) {
+    return wakeAdapter(seat, text, meta);
   }
   const kind = harnessKindForSeat(seat);
   const h = deps.harnessStatus(kind);

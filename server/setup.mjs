@@ -2,12 +2,14 @@ import { skipOnboarding } from "./flags.mjs";
 import { unreadBySeat } from "./inbox.mjs";
 import { publicRoutine } from "./routines.mjs";
 import { emptyOrgState, migrateState, starterState } from "./seed.mjs";
+import { publicSeats } from "./adapters.mjs";
 
 export function publicState(state) {
   if (!state || typeof state !== "object") return state;
   const { users, authSessions, ...rest } = state;
   return {
     ...rest,
+    seats: publicSeats(rest.seats || []),
     routines: (rest.routines || []).map(publicRoutine),
     inboxUnread: unreadBySeat(state),
   };

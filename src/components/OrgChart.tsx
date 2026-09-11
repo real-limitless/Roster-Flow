@@ -1,6 +1,6 @@
 import { PointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Tree, { type CustomNodeElementProps, type TreeLinkDatum } from "react-d3-tree";
-import { type Project, type Seat, type Team } from "../data";
+import { isOpenCodeSeat, seatAdapter, type Project, type Seat, type Team } from "../data";
 import { SeatAvatar } from "./SeatAvatar";
 import type { ChartPreview } from "./chart/planPreview";
 import { buildOrgTree, toRawNodeDatum, type OrgTreeNode } from "./chart/orgTreeData";
@@ -448,9 +448,12 @@ function SeatBtn({
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
       data-paused={seat.status === "paused" ? "1" : "0"}
+      data-adapter={seatAdapter(seat)}
       className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""}`}
       onClick={() => onSelect(seat)}
-      onDoubleClick={() => onAttach?.(seat)}
+      onDoubleClick={() => {
+        if (isOpenCodeSeat(seat)) onAttach?.(seat);
+      }}
     >
       <SeatAvatar seed={seat.id} kind={seat.kind} size={22} />
       <span className="seat-name-row">
@@ -465,6 +468,7 @@ function SeatBtn({
       <div style={{ color: "var(--muted)", fontSize: 10 }}>
         {seat.role}
         {seat.kind === "human" ? " · human" : ""}
+        {seat.kind === "bot" && !isOpenCodeSeat(seat) ? ` · ${seatAdapter(seat)}` : ""}
         {seat.system ? " · system" : ""}
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}

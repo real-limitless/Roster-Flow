@@ -50,6 +50,9 @@ export function hireSeat(state, body = {}) {
     skills: body.skills,
     job: body.job || "New seat.",
     status: "idle",
+    adapter: body.adapter,
+    adapterUrl: body.adapterUrl,
+    adapterSecret: body.adapterSecret,
   });
   state.seats = [...(state.seats || []), seat];
   if (teamId) attachSeatToTeam(state, teamId, seat.id);

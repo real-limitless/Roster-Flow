@@ -181,7 +181,19 @@ Plugin tool: `roster_inbox`.
 }
 ```
 
-`wake: true` starts (or continues) the recipient’s OpenCode session when the harness is up.
+`wake: true` starts (or continues) the recipient’s OpenCode session when the harness is up **and** the seat uses the OpenCode adapter. Webhook / Claude Code / Codex seats get a notify payload instead. See [ADAPTERS.md](ADAPTERS.md).
+
+## Seat adapters
+
+`adapter` on a seat is a **transport**, not a second agent runtime. Unset or `opencode` is today’s attach/PTY path. `webhook` POSTs the wake to `adapterUrl` and accepts `report` / `handoff` callbacks. `claude-code` and `codex` notify (POST if `adapterUrl` is set); CORE does not wrap those loops.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/seats` | Hire accepts `adapter`, `adapterUrl`, `adapterSecret` |
+| POST | `/api/v1/seats/:id/adapter/report` | Callback into `#ship` (`text`) |
+| POST | `/api/v1/seats/:id/adapter/handoff` | Callback + optional wake of `to` |
+
+`GET /api/v1/seats` strips `adapterSecret` (`hasAdapterSecret` remains).
 
 `POST /api/v1/messages` and `POST /api/v1/bus/send` also accept optional `blocks` (Roster Block Kit array). `text` may be omitted when `blocks` is present.
 

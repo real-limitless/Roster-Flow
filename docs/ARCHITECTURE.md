@@ -16,7 +16,7 @@ Three surfaces, same seats and (when the harness is up) the same OpenCode sessio
 | **Harness** | OpenCode TUI / CLI | Session, tool trace, attach |
 | **Chart** | Living org tree | Seat, reporting line, run path |
 
-A **bot** is an OpenCode agent with a Roster-flow identity: name, reports-to, allow/deny tools, model, owner. A **team** is a named roster you can @mention (`@eng`, `@qa`). **Channel** is the conductor: it compiles a human sentence into a run graph and owns `@channel`. It does not ship code. A **room** (`#ship`) is a membership list of teams and seats.
+A **bot** is an OpenCode agent with a Roster-flow identity: name, reports-to, allow/deny tools, model, owner. A seat may instead use a **transport adapter** (`webhook`, `claude-code`, `codex`) so an existing harness can sit on the chart. Adapters are not a second agent loop. A **team** is a named roster you can @mention (`@eng`, `@qa`). **Channel** is the conductor: it compiles a human sentence into a run graph and owns `@channel`. It does not ship code. A **room** (`#ship`) is a membership list of teams and seats.
 
 ## Hierarchy
 
