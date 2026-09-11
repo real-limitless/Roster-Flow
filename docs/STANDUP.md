@@ -32,7 +32,7 @@ curl -s http://127.0.0.1:5173/setup
 
 First run: http://127.0.0.1:5173/setup. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`.
 
-If 5173 is busy: `ROSTER_HTTP_PORT=8080 docker compose up --build`. Family API port is 8790 (mcp-flow keeps 8787).
+If 5173 is busy: `ROSTER_HTTP_PORT=8080 docker compose up --build`. Family API port is 8790 (mcp-flow keeps 8787). Inside the container CORE listens on 8787; Family health must not treat Roster’s own SPA or `/api/v1/health` as mcp-flow. The entrypoint always `chown`s `/data/opencode` to `node` before `setpriv` so `opencode.json` is writable.
 
 Optional bind mount instead of the named volume (Fedora/Podman SELinux: add `:Z`):
 

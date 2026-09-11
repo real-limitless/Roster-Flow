@@ -15,6 +15,13 @@ export ROSTER_API_HOST="${ROSTER_API_HOST:-0.0.0.0}"
 export ROSTER_API="${ROSTER_API:-http://127.0.0.1:$API_PORT}"
 export OPENCODE_BIN="${OPENCODE_BIN:-/usr/local/bin/opencode}"
 
+if [ "$(id -u)" = "0" ] && id node >/dev/null 2>&1; then
+  # mkdir above ran as root. /data itself is often already node-writable
+  # (named volume), which used to skip chown and leave /data/opencode
+  # root-owned → EACCES on opencode.json after setpriv.
+  chown -R node:node "$OC" "$HOME_DIR" "$DATA/workspace" "$DATA/system"
+fi
+
 if [ "$(id -u)" = "0" ] && command -v setpriv >/dev/null 2>&1 && id node >/dev/null 2>&1; then
   if ! setpriv --reuid=node --regid=node --init-groups test -w "$DATA"; then
     chown -R node:node "$DATA"

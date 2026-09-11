@@ -88,7 +88,7 @@ export function FamilyPanel() {
             <p className="micro">{item.replaces}</p>
             <p>{item.role}</p>
             {item.id === "mcp-flow" && status?.mcpFlow && (
-              <p className="micro">
+              <p className="micro" data-testid="family-mcp-status">
                 {status.mcpFlow.url} · {status.mcpFlow.ok ? "up" : status.mcpFlow.error || "down"}
                 {status.mcpFlow.admin ? " · admin token set" : " · no admin token"}
               </p>

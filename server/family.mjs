@@ -9,11 +9,38 @@ export function familyEnv() {
   };
 }
 
+/** Roster CORE /api/v1/health — must not count as mcp-flow. */
+export function looksLikeRosterHealth(body) {
+  return Boolean(
+    body &&
+      typeof body === "object" &&
+      Object.prototype.hasOwnProperty.call(body, "harness") &&
+      (Object.prototype.hasOwnProperty.call(body, "seats") ||
+        Object.prototype.hasOwnProperty.call(body, "systemHarness")),
+  );
+}
+
 export async function pingHttp(url, path = "/health", token = "") {
   try {
     const headers = { Accept: "application/json" };
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`${url}${path}`, { headers, signal: AbortSignal.timeout(2500) });
+    const ctype = (res.headers.get("content-type") || "").toLowerCase();
+    const text = await res.text();
+    let json = null;
+    if (ctype.includes("json")) {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
+    }
+    if (!json || typeof json !== "object") {
+      return { ok: false, status: res.status, error: "not mcp-flow (HTML or non-JSON)" };
+    }
+    if (looksLikeRosterHealth(json)) {
+      return { ok: false, status: res.status, error: "this URL is Roster CORE, not mcp-flow" };
+    }
     return { ok: res.ok, status: res.status };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
