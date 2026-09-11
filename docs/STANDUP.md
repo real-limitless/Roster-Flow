@@ -142,6 +142,7 @@ ROSTER_SKIP_ONBOARDING=1 npm run api
 | `mode-room` `mode-harness` `mode-chart` | Triple-mode toggle |
 | `channel-ship` | `#ship` in the rail |
 | `composer` | Room composer textarea |
+| `ship-coach` `ship-coach-insert` `ship-coach-send` `ship-coach-dismiss` `ship-coach-chart` | First-run ship-train coach (dismiss forever) |
 | `send-message` | Send |
 | `composer-attach` `composer-skill` `composer-file` `composer-mic` | Slack-style compose tools |
 | `composer-picker` | Skill / file picker popover |

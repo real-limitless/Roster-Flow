@@ -619,6 +619,7 @@ h2, h2.section-title {
 .seat .pip.run { background: var(--accent-hot); animation: pulse 1.6s infinite; }
 .seat .pip.paused { background: var(--warn); box-shadow: none; animation: none; }
 .seat.paused { opacity: 0.72; }
+.seat.coach-path { box-shadow: 0 0 0 1px var(--phosphor), 0 0 14px rgba(62, 207, 142, 0.28); }
 .seat .unread-pip {
   display: inline-flex;
   align-items: center;
@@ -1276,6 +1277,20 @@ input:focus, textarea:focus, select:focus {
 }
 .compose-static { color: var(--dim); }
 .compose-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ship-coach {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(62, 207, 142, 0.35);
+  background: rgba(62, 207, 142, 0.06);
+}
+.ship-coach-copy { max-width: 72ch; }
+.ship-coach-copy strong { display: block; margin-bottom: 4px; }
+.ship-coach-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .compose-tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .picker {
   position: absolute;

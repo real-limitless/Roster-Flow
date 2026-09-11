@@ -1,4 +1,4 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   fileTestId,
   skills as skillCatalog,
@@ -24,11 +24,15 @@ export function Composer({
   onSend,
   sendError,
   mentions = [],
+  seedText = "",
+  seedNonce = 0,
 }: {
   channelName: string;
   onSend: (payload: ComposePayload) => void;
   sendError?: string;
   mentions?: PickerItem[];
+  seedText?: string;
+  seedNonce?: number;
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -39,6 +43,11 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null);
   const draft = useRef({ text, attachments, skills, files });
   draft.current = { text, attachments, skills, files };
+
+  useEffect(() => {
+    if (!seedNonce) return;
+    setText(seedText);
+  }, [seedNonce, seedText]);
 
   const speech = useSpeechToText((chunk) => {
     setText((prev) => (prev && !prev.endsWith(" ") ? `${prev} ${chunk}` : `${prev}${chunk}`));

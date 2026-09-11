@@ -5,6 +5,28 @@ test("home renders Room / Harness / Chart story", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Staff an org of agents");
 });
 
+test("ship coach inserts the sentence, highlights Chart, and dismisses", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await expect(page.getByTestId("ship-coach")).toBeVisible();
+  await expect(page.getByTestId("run-ship-train")).toHaveCount(0);
+  await page.getByTestId("ship-coach-insert").click();
+  await expect(page.getByTestId("composer")).toHaveValue(/Talk to Product and the Eng team/);
+  await page.screenshot({ path: "/tmp/walkthrough/ship-coach.png", fullPage: true });
+  await page.getByTestId("ship-coach-send").click();
+  await expect(page.getByTestId("mode-chart")).toHaveClass(/on/);
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-build").first()).toHaveAttribute("data-coach-path", "1");
+  await expect(page.getByTestId("seat-qa").first()).toHaveAttribute("data-coach-path", "1");
+  await page.screenshot({ path: "/tmp/walkthrough/ship-coach-chart.png", fullPage: true });
+  await page.getByTestId("mode-room").click();
+  await page.getByTestId("ship-coach-dismiss").click();
+  await expect(page.getByTestId("ship-coach")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await expect(page.getByTestId("ship-coach")).toHaveCount(0);
+});
+
 test("workspace room send and block kit seed", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app");
