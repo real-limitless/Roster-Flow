@@ -49,7 +49,7 @@ import {
   type RoomTab,
 } from "../lib/conversation";
 import type { SearchHit } from "../lib/search";
-import { budgetPaused, budgetRemaining, budgetWarn } from "../lib/budget";
+import { budgetPaused, budgetRemaining, budgetWarn, summarizeUsage } from "../lib/budget";
 
 type CreateKind = "channel" | "project" | "team" | "seat";
 
@@ -1155,6 +1155,20 @@ function ChartPane({
   const [layoutResetKey, setLayoutResetKey] = useState(0);
   const [dock, setDock] = useState<DockLayout>(loadDock);
   const narrow = useNarrowChart();
+  const [usageChip, setUsageChip] = useState("Usage · unmetered");
+  useEffect(() => {
+    void api
+      .usage()
+      .then((rows) => {
+        const sum = summarizeUsage(Array.isArray(rows) ? rows : []);
+        if (!sum.wakes) {
+          setUsageChip("Usage · unmetered");
+          return;
+        }
+        setUsageChip(`Usage · ${sum.tokens} tok · $${sum.usd}`);
+      })
+      .catch(() => setUsageChip("Usage · unmetered"));
+  }, []);
   return (
     <div className={`chart-workspace ${narrow ? "is-narrow" : ""} ${dock.collapsed ? "dock-collapsed" : ""}`}>
       <div className="chart-canvas" style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
@@ -1169,6 +1183,9 @@ function ChartPane({
           <button className="pill-btn primary" data-testid="hire-seat-chart" type="button" onClick={onStartHire}>
             Hire seat
           </button>
+          <Link to="/app/settings?pane=usage" className="pill-btn" data-testid="usage-chip">
+            {usageChip}
+          </Link>
           {onToggleDebug && (
             <button
               type="button"

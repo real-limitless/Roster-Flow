@@ -179,6 +179,8 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return req<import("../data").UsageRow[]>(`/api/v1/usage${suffix}`);
   },
+  recordUsage: (body: unknown) =>
+    req<import("../data").UsageRow>("/api/v1/usage", { method: "POST", body: JSON.stringify(body) }),
   architectChat: (message: string, history: Array<{ role: string; text: string }> = []) =>
     req<{
       reply: string;

@@ -501,6 +501,44 @@ test("seat tokenBudget pause is distinct from idle", async ({ page, request }) =
   await expect(page.getByTestId("budget-banner-budget-bot")).toContainText("tokenBudget exhausted");
 });
 
+test("settings usage filters and pricing is honest about the meter", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app/settings?pane=usage");
+  await expect(page.getByTestId("settings-usage")).toBeVisible();
+  await expect(page.getByTestId("usage-empty")).toContainText(/unmetered|harness-offline|No meter events/i);
+  await request.post("http://127.0.0.1:8790/api/v1/usage", {
+    data: { seatId: "channel", inputTokens: 120, outputTokens: 40, source: "wake" },
+  });
+  await request.post("http://127.0.0.1:8790/api/v1/usage", {
+    data: { seatId: "build", inputTokens: 300, outputTokens: 80, runId: "ship-train" },
+  });
+  await page.goto("/app/settings?pane=usage");
+  await expect(page.getByTestId("usage-seat-channel")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("settings-usage")).not.toContainText("sk-");
+  await expect(page.getByTestId("usage-key-leak")).toHaveCount(0);
+  await page.getByTestId("usage-filter-project").selectOption("billing");
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-channel")).toHaveCount(0);
+  await page.getByTestId("usage-filter-project").selectOption("");
+  await page.getByTestId("usage-filter-team").selectOption("eng");
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-channel")).toHaveCount(0);
+  const csv = await request.get("http://127.0.0.1:8790/api/v1/usage?format=csv");
+  const text = await csv.text();
+  expect(text).toMatch(/seatId/);
+  expect(text).not.toMatch(/apiKey|sk-/);
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("usage-chip")).toContainText(/tok/);
+
+  await page.goto("/pricing");
+  await expect(page.getByRole("heading", { name: /tokens on the meter/i })).toBeVisible();
+  await expect(page.getByText(/not a billed bot-hour product/i)).toBeVisible();
+  await expect(page.getByText("Shared bot-hours")).toHaveCount(0);
+});
+
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
   await resetApi(request);
   await page.goto("/app/settings");

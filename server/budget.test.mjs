@@ -10,6 +10,8 @@ import {
   publicUsageRow,
   rolloverSeatBudget,
   seatOverBudget,
+  summarizeUsage,
+  usageCsv,
 } from "./budget.mjs";
 import { deps, wakeSeat } from "./bus.mjs";
 import { hireSeat, resumeSeat, wakeBlocked } from "./seats.mjs";
@@ -173,4 +175,17 @@ test("budgetWarn at 80 percent and usage never includes keys", () => {
   assert.equal(billing.length, 1);
   assert.equal(listUsage(state, { projectId: "other" }).length, 0);
   assert.ok(!("apiKey" in billing[0]));
+});
+
+test("usage csv omits keys and summarizeUsage totals tokens", () => {
+  const rows = [
+    { time: "t", seatId: "channel", tokens: 10, usdEstimate: 0.01, hours: 0.1, apiKey: "nope" },
+    { time: "t2", seatId: "build", projectId: "billing", teamId: "eng", tokens: 20, usdEstimate: 0.02, hours: 0.2 },
+  ];
+  const csv = usageCsv(rows);
+  assert.match(csv, /seatId/);
+  assert.doesNotMatch(csv, /sk-secret|apiKey/);
+  const sum = summarizeUsage(rows);
+  assert.equal(sum.wakes, 2);
+  assert.equal(sum.tokens, 30);
 });

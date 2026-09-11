@@ -154,3 +154,41 @@ export function listUsage(state, query = {}) {
       return true;
     });
 }
+
+const CSV_COLS = [
+  "time",
+  "seatId",
+  "teamId",
+  "projectId",
+  "model",
+  "inputTokens",
+  "outputTokens",
+  "tokens",
+  "usdEstimate",
+  "hours",
+  "source",
+  "runId",
+];
+
+export function usageCsv(rows) {
+  const esc = (v) => {
+    const s = v == null ? "" : String(v);
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const lines = [CSV_COLS.join(",")];
+  for (const row of rows || []) {
+    lines.push(CSV_COLS.map((k) => esc(row[k])).join(","));
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function summarizeUsage(rows) {
+  const list = rows || [];
+  return {
+    wakes: list.length,
+    tokens: list.reduce((n, r) => n + Number(r.tokens || 0), 0),
+    usd: Number(list.reduce((n, r) => n + Number(r.usdEstimate || 0), 0).toFixed(6)),
+    hours: Number(list.reduce((n, r) => n + Number(r.hours || 0), 0).toFixed(6)),
+  };
+}

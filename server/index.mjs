@@ -15,7 +15,7 @@ import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat, killRun, patchSeat, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
-import { listUsage } from "./budget.mjs";
+import { listUsage, meterWake, usageCsv } from "./budget.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
 import { clearRoutineActive, createRoutine, patchRoutine, publicRoutine, runRoutineNow, tickRoutines } from "./routines.mjs";
@@ -312,15 +312,43 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/usage" && method === "GET") {
-      json(
-        res,
-        200,
-        listUsage(getState(), {
-          projectId: url.searchParams.get("projectId") || undefined,
-          teamId: url.searchParams.get("teamId") || undefined,
-          seatId: url.searchParams.get("seatId") || undefined,
-        }),
-      );
+      const rows = listUsage(getState(), {
+        projectId: url.searchParams.get("projectId") || undefined,
+        teamId: url.searchParams.get("teamId") || undefined,
+        seatId: url.searchParams.get("seatId") || undefined,
+      });
+      if (url.searchParams.get("format") === "csv") {
+        const body = usageCsv(rows);
+        res.writeHead(200, {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": "attachment; filename=roster-usage.csv",
+          "access-control-allow-origin": "*",
+        });
+        res.end(body);
+        return;
+      }
+      json(res, 200, rows);
+      return;
+    }
+    if (pathname === "/api/v1/usage" && method === "POST") {
+      const body = await readBody(req);
+      let out = null;
+      mutate((s) => {
+        out = meterWake(s, {
+          seatId: body.seatId,
+          runId: body.runId,
+          model: body.model,
+          inputTokens: body.inputTokens,
+          outputTokens: body.outputTokens,
+          ms: body.ms,
+          source: body.source || "manual",
+        });
+      });
+      if (!out?.row) {
+        json(res, 400, { error: "bot seatId required" });
+        return;
+      }
+      json(res, 201, out.row);
       return;
     }
     if (pathname === "/api/v1/approvals" && method === "GET") {

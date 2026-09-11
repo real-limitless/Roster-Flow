@@ -164,6 +164,7 @@ export function Security() {
     ["Tool permissions", "Deny by default. OpenCode frontmatter is source of truth."],
     ["Deploy / merge / delete", "Confirm (human or dual-control)."],
     ["Bus", "Authenticated, audited, rate-limited, cycle-detected."],
+    ["Usage export", "Settings → Usage JSON/CSV. Keys never appear in the log."],
     ["Memory", "Scoped seat / team / project / org."],
     ["Kill switch", "Per bot, per team, per run."],
   ];
@@ -186,13 +187,17 @@ export function Security() {
 
 export function Pricing() {
   const tiers = [
-    ["Starter", "1 project, small roster", "Shared bot-hours", "Room + Harness + Chart"],
+    ["Starter", "1 project, small roster", "Usage meter in Settings", "Room + Harness + Chart"],
     ["Team", "Orgs + teams + bus", "Pool + harness attach", "Parallel runs"],
-    ["Enterprise", "SSO, VPC placement", "Dedicated hours + SLA", "Policy engine, audit export"],
+    ["Enterprise", "SSO, VPC placement", "Dedicated roster + SLA", "Policy engine, audit export"],
   ];
   return (
     <>
-      <PageHero kicker="Pricing" title="Seats for humans. Hours for bots." sub="Invite-only. We’ll place you. Bot-hours are OpenCode session time." />
+      <PageHero
+        kicker="Pricing"
+        title="Seats for humans. Tokens on the meter."
+        sub="Invite-only. We’ll place you. Settings → Usage shows tokens, estimated USD, and session hours from CORE wakes — not a billed bot-hour product."
+      />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         <div className="grid-3">
           {tiers.map((t) => (

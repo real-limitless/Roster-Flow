@@ -20,3 +20,13 @@ export function budgetWarn(seat?: Seat | null) {
 export function budgetPaused(seat?: Seat | null) {
   return Boolean(seat && seat.status === "paused" && (seat.pauseReason === "budget" || seatOverBudget(seat)));
 }
+
+export function summarizeUsage(rows: Array<{ tokens?: number; usdEstimate?: number; hours?: number }>) {
+  const list = rows || [];
+  return {
+    wakes: list.length,
+    tokens: list.reduce((n, r) => n + Number(r.tokens || 0), 0),
+    usd: Number(list.reduce((n, r) => n + Number(r.usdEstimate || 0), 0).toFixed(6)),
+    hours: Number(list.reduce((n, r) => n + Number(r.hours || 0), 0).toFixed(6)),
+  };
+}
