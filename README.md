@@ -80,6 +80,7 @@ This is the **product branch**: the runnable app, API, and tests. Concept and me
 - [CORE API](docs/API.md)
 - [OpenCode wrapper + plugin](docs/OPENCODE.md)
 - [Standup](docs/STANDUP.md)
+- [Competitive: agent chat rooms](docs/COMPETITIVE-ROOMS.md)
 
 | Branch | Contents |
 |--------|----------|

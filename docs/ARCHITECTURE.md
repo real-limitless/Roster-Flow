@@ -76,6 +76,8 @@ CORE API (ROSTER_API_HOST, default 127.0.0.1:8787; Compose binds 0.0.0.0)
 
 `docker compose up` is the official install: one image runs CORE + the built UI + OpenCode. Company and System serves stay on container localhost so PTY attach still uses `opencode attach http://127.0.0.1:<port>`. Persist `/data` (`roster-data` volume). Host `npm run standup` is unchanged (Vite + loopback CORE).
 
+Room-join peers (Claude Code / Codex / Cursor sitting in `#ship`) are tracked in [COMPETITIVE-ROOMS.md](COMPETITIVE-ROOMS.md). The MCP guest path is GitHub [#3](https://github.com/real-limitless/Roster-Flow/issues/3), not a second agent loop.
+
 ## What is not in this slice
 
 - Multi-tenant cloud sandboxes (that is Everflow’s product).
