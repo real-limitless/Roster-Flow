@@ -25,6 +25,7 @@ test("agentMarkdown uses provider/model and persona", () => {
   assert.match(md, /mode: all/);
   assert.match(md, /Persona: Terse implementer/);
   assert.match(md, /Instructions: Implement only what Product accepted/);
+  assert.match(md, /permission:\n  bash:\n    "deploy \*": deny\n    "\*": allow/);
 });
 
 test("supervisor markdown is primary and denies writes", () => {
@@ -42,7 +43,8 @@ test("supervisor markdown is primary and denies writes", () => {
     deny: ["edit", "deploy", "bash"],
   });
   assert.match(md, /mode: primary/);
-  assert.match(md, /effect: "deny"/);
+  assert.match(md, /^permission:\n  edit: deny\n  bash: deny$/m);
+  assert.doesNotMatch(md, /permissions:/);
 });
 
 test("syncSeatAgent writes .opencode/agents/<id>.md", () => {
