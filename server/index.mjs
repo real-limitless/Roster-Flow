@@ -5,6 +5,7 @@ import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, cre
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
+import { autostartHarness, harnessReadiness, seedProviderFromEnv } from "./autostart.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
@@ -113,6 +114,12 @@ try {
 } catch (err) {
   console.error(`Owner seed from env failed: ${err.message}`);
   process.exit(1);
+}
+try {
+  const seeded = seedProviderFromEnv();
+  if (seeded) console.log(`Provider ${seeded.id} configured from env.`);
+} catch (err) {
+  console.error(`Provider seed from env failed: ${err.message}`);
 }
 save();
 try {
@@ -236,6 +243,8 @@ const server = createServer(async (req, res) => {
         ...combinedStatus(),
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
+        harnessReady: harnessReadiness().ready,
+        readiness: harnessReadiness(),
       });
       return;
     }
@@ -974,4 +983,5 @@ server.listen(PORT, HOST, () => {
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
   if (!setupClosed(getState())) console.log(`Setup: ${publicUrl()}/setup`);
   startRoutineTicker();
+  void autostartHarness({ hasOwner: (getState().users || []).length > 0 });
 });
