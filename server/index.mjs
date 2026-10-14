@@ -102,6 +102,8 @@ function isPublicPath(method, pathname) {
   if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
   if (method === "POST" && pathname === "/api/v1/setup/install") return true;
   if (method === "POST" && pathname === "/api/v1/auth/login") return true;
+  // Reachable without a session so a logged-out owner can present a password.
+  // When setupClosed(), startOver still requires an owner session or password.
   if (method === "POST" && pathname === "/api/v1/setup/start-over") return true;
   return false;
 }
@@ -262,9 +264,28 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/setup/start-over" && method === "POST") {
       const body = await readBody(req);
-      let next = null;
+      const seen = getState();
+      // Bearer identity only (login session, or an API token userFromToken resolves). Never body.user.
+      // Non-admin API tokens are already rejected above: /setup/* requires the admin scope.
+      const sessionUser = userFromToken(seen, token);
+      const next = await startOver(seen, {
+        email: body.email,
+        confirm: body.confirm,
+        password: body.password,
+        user: sessionUser,
+        req,
+        body,
+      });
       mutate((s) => {
-        next = startOver(s, body);
+        const sameOwner =
+          setupClosed(s) === setupClosed(seen) &&
+          (s.users?.[0]?.id || "") === (seen.users?.[0]?.id || "") &&
+          (s.users?.[0]?.passwordHash || "") === (seen.users?.[0]?.passwordHash || "");
+        if (!sameOwner) {
+          const err = new Error("owner changed; retry start-over");
+          err.status = 409;
+          throw err;
+        }
         return next;
       });
       json(

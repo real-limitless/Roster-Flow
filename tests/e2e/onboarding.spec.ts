@@ -98,6 +98,7 @@ test.describe("first-run onboarding", () => {
 
     await page.getByTestId("login-start-over").click();
     await page.getByTestId("start-over-email").fill("chen@example.com");
+    await page.getByTestId("start-over-password").fill("password1");
     await page.getByTestId("start-over-confirm").click();
     await expect(page).toHaveURL(/\/setup/);
     await expect(page.getByTestId("setup-page")).toBeVisible();

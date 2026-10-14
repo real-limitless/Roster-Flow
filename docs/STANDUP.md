@@ -130,7 +130,7 @@ ROSTER_OWNER_TEMPLATE=empty          # or starter
 Generate a hash so the plaintext never sits in env: `ROSTER_OWNER_PASSWORD=... node scripts/create-owner.mjs --hash`.
 CLI alternative (writes to `ROSTER_DATA_DIR`, run before CORE starts): `ROSTER_OWNER_PASSWORD=... node scripts/create-owner.mjs --email ops@example.com`.
 
-If you keep the interactive flow on a reachable host, set `ROSTER_BOOTSTRAP_TOKEN`. `POST /api/v1/setup/first-user` then requires it (header `x-roster-bootstrap-token`, or the Bootstrap token field on `/setup`). Once an owner exists, `first-user` returns 409 regardless.
+If you keep the interactive flow on a reachable host, set `ROSTER_BOOTSTRAP_TOKEN`. `POST /api/v1/setup/first-user` then requires it (header `x-roster-bootstrap-token`, or the Bootstrap token field on `/setup`). Once an owner exists, `first-user` returns 409 regardless. `POST /api/v1/setup/start-over` can reopen setup after that, but only with a valid owner session or the owner's password, and the same bootstrap token when it is set. Missing or wrong proof is 401; a mismatched owner email is 403.
 
 ### API tokens for automation
 

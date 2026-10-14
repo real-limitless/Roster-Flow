@@ -1,5 +1,6 @@
+import { verifyPassword } from "./auth.mjs";
 import { skipOnboarding } from "./flags.mjs";
-import { bootstrapToken } from "./bootstrap.mjs";
+import { bootstrapToken, requireBootstrapToken, setupClosed } from "./bootstrap.mjs";
 import { unreadBySeat } from "./inbox.mjs";
 import { publicRoutine } from "./routines.mjs";
 import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
@@ -101,22 +102,36 @@ export function completeSetup(state, { template, ownerName } = {}) {
   return applyOrgTemplate(state, template, ownerName || state.users?.[0]?.name || "You");
 }
 
-export function startOver(state, { email, confirm } = {}) {
-  if (skipOnboarding()) {
-    const err = new Error("onboarding is skipped");
-    err.status = 409;
-    throw err;
-  }
-  if (!confirm) {
-    const err = new Error("confirm required");
-    err.status = 400;
-    throw err;
-  }
-  const ownerEmail = String(state.users?.[0]?.email || "").trim().toLowerCase();
-  if (ownerEmail && String(email || "").trim().toLowerCase() !== ownerEmail) {
-    const err = new Error("email does not match owner");
-    err.status = 403;
-    throw err;
+function fail(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function ownerSession(user, owner) {
+  if (!user || !owner) return false;
+  const id = String(user.id || "");
+  return id.length > 0 && id === owner.id;
+}
+
+/**
+ * Reopen setup. When an owner exists (`setupClosed`), the caller must present
+ * that owner's session or password. `ROSTER_BOOTSTRAP_TOKEN`, when set, is
+ * required as well (header `x-roster-bootstrap-token` or `body.bootstrapToken`).
+ */
+export async function startOver(state, { email, confirm, password, user, req, body } = {}) {
+  if (skipOnboarding()) throw fail(409, "onboarding is skipped");
+  if (!confirm) throw fail(400, "confirm required");
+  requireBootstrapToken(req, body ?? {});
+  if (setupClosed(state)) {
+    const owner = state.users[0];
+    const ownerEmail = String(owner?.email || "").trim().toLowerCase();
+    if (String(email || "").trim().toLowerCase() !== ownerEmail) {
+      throw fail(403, "email does not match owner");
+    }
+    const sessionOk = ownerSession(user, owner);
+    const passwordOk = await verifyPassword(password, owner?.passwordSalt, owner?.passwordHash);
+    if (!sessionOk && !passwordOk) throw fail(401, "owner authentication required");
   }
   return migrateState(pendingState());
 }

@@ -73,6 +73,8 @@ export function Login() {
   const { status, loading, refresh } = useAuth();
   const [wipeOpen, setWipeOpen] = useState(false);
   const [emailConfirm, setEmailConfirm] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
   const [wipeErr, setWipeErr] = useState("");
   const [wipeBusy, setWipeBusy] = useState(false);
   if (loading) return <div className="setup-shell">Loading…</div>;
@@ -83,7 +85,12 @@ export function Login() {
     setWipeErr("");
     setWipeBusy(true);
     try {
-      await api.setupStartOver({ email: emailConfirm, confirm: true });
+      await api.setupStartOver({
+        email: emailConfirm,
+        confirm: true,
+        password: passwordConfirm,
+        ...(bootstrapToken ? { bootstrapToken } : {}),
+      });
       setAuthToken("");
       await refresh();
     } catch (error) {
@@ -112,7 +119,9 @@ export function Login() {
           </p>
         ) : (
           <div className="card" data-testid="start-over-form" style={{ marginTop: 16 }}>
-            <p className="micro">This deletes the local owner and org from this machine. Type the owner email to confirm.</p>
+            <p className="micro">
+              This deletes the local owner and org from this machine. Type the owner email and password to confirm.
+            </p>
             <label>
               Owner email
               <input
@@ -122,6 +131,29 @@ export function Login() {
                 onChange={(e) => setEmailConfirm(e.target.value)}
                 autoComplete="username"
                 required
+              />
+            </label>
+            <label>
+              Owner password
+              <input
+                data-testid="start-over-password"
+                type="password"
+                value={passwordConfirm}
+                onChange={(e) => setPasswordConfirm(e.target.value)}
+                autoComplete="current-password"
+                minLength={8}
+                required
+              />
+            </label>
+            <label>
+              Bootstrap token
+              <input
+                data-testid="start-over-bootstrap-token"
+                type="password"
+                value={bootstrapToken}
+                onChange={(e) => setBootstrapToken(e.target.value)}
+                autoComplete="off"
+                placeholder="Only if ROSTER_BOOTSTRAP_TOKEN is set"
               />
             </label>
             {wipeErr && (

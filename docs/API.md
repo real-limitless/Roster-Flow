@@ -10,7 +10,7 @@ All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, 
 
 ## Setup and auth
 
-Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /setup/start-over`, `POST /auth/login`. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`.
+Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -19,7 +19,7 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 | POST | `/api/v1/setup/first-user` | Create the owner `{ name, email, password }` — **409** if a user exists |
 | POST | `/api/v1/setup/harness` | `{ skipped?: true }` — mark harness step done |
 | POST | `/api/v1/setup/complete` | `{ template: "starter" \| "empty" }` applies the org and finishes setup |
-| POST | `/api/v1/setup/start-over` | `{ email, confirm: true }` — public. Must match the owner email. Wipes org + users and reopens `/setup` |
+| POST | `/api/v1/setup/start-over` | `{ email, confirm: true, password? }`. When an owner exists (`setupClosed`), requires a valid owner session (login bearer, or an admin API token for that owner) **or** the owner's `password`, plus `ROSTER_BOOTSTRAP_TOKEN` when that env is set (`x-roster-bootstrap-token` or `bootstrapToken`). Otherwise **401** (missing or wrong session, password, or bootstrap token) or **403** (email does not match, or the API token is not `admin`). Wipes org + users and reopens `/setup` |
 | POST | `/api/v1/auth/login` | `{ email, password }` → `{ token, user }` |
 | GET | `/api/v1/auth/me` | Current owner |
 | POST | `/api/v1/auth/logout` | Drop this token |
