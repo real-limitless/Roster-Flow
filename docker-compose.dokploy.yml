@@ -1,0 +1,60 @@
+# Test build for Dokploy (development env). Joins dokploy-network as alias roster.
+# OpenCode stays on 127.0.0.1 inside the container; nothing published.
+services:
+  roster-flow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: roster-flow:suite-test
+    init: true
+    expose:
+      - "8790"
+    environment:
+      ROSTER_API_HOST: "0.0.0.0"
+      ROSTER_API_PORT: "8790"
+      ROSTER_API: "http://127.0.0.1:8790"
+      ROSTER_WEB_PORT: "5175"
+      ROSTER_PUBLIC_URL: ${ROSTER_PUBLIC_URL:-http://127.0.0.1:8790}
+      ROSTER_DATA_DIR: /data
+      ROSTER_OPENCODE_DIR: /data/opencode
+      ROSTER_STATIC_DIR: /app/dist
+      OPENCODE_BIN: /usr/local/bin/opencode
+      OPENCODE_HOSTNAME: 127.0.0.1
+      HOME: /data/home
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      WIKIFLOW_URL: ${WIKIFLOW_URL:-http://wiki-flow:8788}
+      WIKIFLOW_TOKEN: ${WIKIFLOW_TOKEN:-}
+    volumes:
+      - roster-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+    networks:
+      default: {}
+      dokploy-network:
+        aliases: [roster]
+  roster-setup:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM node:22-alpine
+        WORKDIR /s
+        COPY scripts/setup-wiki-team.mjs ./
+    command: ["node", "/s/setup-wiki-team.mjs"]
+    environment:
+      ROSTER_API: http://roster-flow:8790
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      WIKI_MODEL: ${WIKI_MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct}
+    restart: "no"
+    depends_on:
+      roster-flow:
+        condition: service_healthy
+networks:
+  dokploy-network:
+    external: true
+volumes:
+  roster-data:
