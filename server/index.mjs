@@ -4,6 +4,7 @@ import { normalizeSeat, normalizeModelId } from "./seed.mjs";
 import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
+import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
@@ -103,6 +104,16 @@ function isPublicPath(method, pathname) {
   return false;
 }
 
+try {
+  const seeded = await seedOwnerFromEnv(getState());
+  if (seeded.seeded) {
+    mutate(() => seeded.state);
+    console.log(`Owner ${seeded.user.email} seeded from env; setup is closed.`);
+  }
+} catch (err) {
+  console.error(`Owner seed from env failed: ${err.message}`);
+  process.exit(1);
+}
 save();
 try {
   syncBotAgents(getState().seats, getState().teams);
@@ -162,6 +173,11 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/setup/first-user" && method === "POST") {
       const body = await readBody(req);
+      if (setupClosed(getState())) {
+        json(res, 409, { error: "setup is closed: an owner already exists" });
+        return;
+      }
+      requireBootstrapToken(req, body);
       const created = await addFirstUser(getState(), body);
       save();
       json(res, 201, { user: publicUser(created) });
@@ -956,6 +972,6 @@ function startRoutineTicker() {
 server.listen(PORT, HOST, () => {
   const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
-  console.log(`Setup: ${publicUrl()}/setup`);
+  if (!setupClosed(getState())) console.log(`Setup: ${publicUrl()}/setup`);
   startRoutineTicker();
 });

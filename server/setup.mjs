@@ -1,4 +1,5 @@
 import { skipOnboarding } from "./flags.mjs";
+import { bootstrapToken } from "./bootstrap.mjs";
 import { unreadBySeat } from "./inbox.mjs";
 import { publicRoutine } from "./routines.mjs";
 import { emptyOrgState, migrateState, starterState } from "./seed.mjs";
@@ -32,6 +33,7 @@ export function setupStatus(state, { user = null, binary = null, providerKeys = 
     hasUser,
     authenticated: Boolean(user) || skip,
     harnessReady: Boolean(binary),
+    bootstrapTokenRequired: Boolean(bootstrapToken()) && !hasUser,
     complete,
     step,
     checks: {
