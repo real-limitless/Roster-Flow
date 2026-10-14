@@ -6,6 +6,7 @@ export type SetupStatus = {
   hasUser: boolean;
   authenticated: boolean;
   harnessReady: boolean;
+  bootstrapTokenRequired?: boolean;
   complete: boolean;
   step: "install" | "first_user" | "login" | "harness" | "welcome" | "done";
   checks: { api: boolean; opencode: boolean; providerKeys: boolean; dataDir: boolean };
@@ -260,7 +261,7 @@ export const api = {
   },
   setupStatus: () => req<SetupStatus>("/api/v1/setup/status"),
   setupInstall: () => req<SetupStatus>("/api/v1/setup/install", { method: "POST", body: "{}" }),
-  setupFirstUser: (body: { name: string; email: string; password: string }) =>
+  setupFirstUser: (body: { name: string; email: string; password: string; bootstrapToken?: string }) =>
     req<{ user: AuthUser }>("/api/v1/setup/first-user", { method: "POST", body: JSON.stringify(body) }),
   setupHarness: (skipped = false) =>
     req<SetupStatus>("/api/v1/setup/harness", { method: "POST", body: JSON.stringify({ skipped }) }),
