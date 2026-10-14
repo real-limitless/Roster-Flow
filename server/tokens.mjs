@@ -38,11 +38,16 @@ export function publicToken(rec) {
 }
 
 /** Adds a token record. Pass `token` to register a known plaintext (env/CLI bootstrap). */
-export function createApiToken(state, { name, scopes, expiresAt, expiresInDays, userId, token } = {}, now = Date.now()) {
+export function createApiToken(state, { name, scopes, expiresAt, expiresInDays, userId, token, seatId: rawSeat } = {}, now = Date.now()) {
   const n = String(name || "").trim();
   if (!n) throw fail(400, "name required");
   const owner = userId || (state.users || [])[0]?.id;
   if (!owner) throw fail(409, "create an owner before issuing API tokens");
+  let seatId = null;
+  if (rawSeat != null && String(rawSeat).trim()) {
+    seatId = String(rawSeat).trim();
+    if (!(state.seats || []).some((s) => s.id === seatId)) throw fail(400, "seat not found");
+  }
   let expiry = null;
   if (expiresAt) expiry = new Date(expiresAt);
   else if (expiresInDays) expiry = new Date(now + Number(expiresInDays) * 86400000);
@@ -58,6 +63,7 @@ export function createApiToken(state, { name, scopes, expiresAt, expiresInDays, 
     prefix: plaintext.slice(0, 10),
     hash,
     userId: owner,
+    seatId,
     createdAt: new Date(now).toISOString(),
     expiresAt: expiry ? expiry.toISOString() : null,
     revokedAt: null,
@@ -96,6 +102,7 @@ export function resolveApiToken(state, token, now = Date.now()) {
 
 /** Scope needed for a request. Session logins are not scope-limited. */
 export function requiredScope(method, pathname) {
+  if (pathname === "/mcp" || pathname.startsWith("/mcp/")) return "read";
   if (pathname.startsWith("/api/v1/tokens") || pathname.startsWith("/api/v1/setup/")) return "admin";
   return method === "GET" || method === "HEAD" ? "read" : "write";
 }

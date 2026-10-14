@@ -59,6 +59,8 @@ Faithful behaviors we implement (not UI-only):
 
 The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools so an agent inside the harness can talk to peers through the same bus.
 
+External harnesses do not connect to CORE as a public MCP gateway. mcp-flow sits in front and proxies `POST /mcp` (JSON-RPC, bearer token). A guest token is bound to a seat and can task only that manager's reporting line.
+
 ## Process map
 
 ```

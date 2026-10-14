@@ -8,7 +8,10 @@ import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiTo
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
-import { deliverCallback, getJob, listJobs, publishNewJob, settleJob, waitForJob } from "./jobs.mjs";
+import { deliverCallback, followUpJob, getJob, listJobs, publishNewJob, settleJob, waitForJob } from "./jobs.mjs";
+import { canReadJob } from "./access.mjs";
+import { readJobFile, writeJobFile } from "./files.mjs";
+import { handleMcp } from "./mcp.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
@@ -100,7 +103,7 @@ function messageText(body, extras) {
 function requestCaller(user, apiToken) {
   return {
     userId: user?.id || null,
-    seatId: user?.seatId || "you",
+    seatId: apiToken?.token?.seatId || user?.seatId || "you",
     name: user?.name || null,
     tokenId: apiToken?.token?.id || null,
   };
@@ -157,7 +160,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
     const { pathname } = url;
     const method = req.method || "GET";
-    if (tryServeStatic(req, res, pathname)) return;
+    if (pathname !== "/mcp" && pathname !== "/mcp/" && tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
     const apiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
     const user = apiToken ? apiToken.user : userFromToken(getState(), token);
@@ -189,6 +192,7 @@ const server = createServer(async (req, res) => {
           expiresAt: body.expiresAt,
           expiresInDays: body.expiresInDays,
           userId: user?.id,
+          seatId: body.seatId,
         });
       });
       json(res, 201, out);
@@ -868,11 +872,13 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/jobs" && method === "GET") {
-      json(res, 200, listJobs(getState(), {
+      const caller = requestCaller(user, apiToken);
+      const jobs = listJobs(getState(), {
         status: url.searchParams.get("status") || undefined,
         target: url.searchParams.get("target") || undefined,
         assignee: url.searchParams.get("assignee") || undefined,
-      }));
+      }).filter((job) => canReadJob(job, caller));
+      json(res, 200, jobs);
       return;
     }
     if (pathname === "/api/v1/jobs" && method === "POST") {
@@ -884,6 +890,12 @@ const server = createServer(async (req, res) => {
     const jobWait = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/wait$/);
     if (jobWait && method === "GET") {
       const id = decodeURIComponent(jobWait[1]);
+      const caller = requestCaller(user, apiToken);
+      const existing = getJob(getState(), id);
+      if (!existing || !canReadJob(existing, caller)) {
+        json(res, 404, { error: "job not found" });
+        return;
+      }
       const out = await waitForJob(id, {
         timeout: url.searchParams.get("timeout"),
         since: url.searchParams.get("since"),
@@ -911,15 +923,76 @@ const server = createServer(async (req, res) => {
       json(res, 200, job);
       return;
     }
-    const jobOne = pathname.match(/^\/api\/v1\/jobs\/([^/]+)$/);
+    const jobFile = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/files\/([^/]+)$/);
+    if (jobFile && method === "GET") {
+      const caller = requestCaller(user, apiToken);
+      json(res, 200, readJobFile(getState(), decodeURIComponent(jobFile[1]), decodeURIComponent(jobFile[2]), caller));
+      return;
+    }
+    const jobFiles = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/files$/);
+    if (jobFiles && method === "POST") {
+      const caller = requestCaller(user, apiToken);
+      const body = await readBody(req);
+      let meta = null;
+      mutate((s) => {
+        meta = writeJobFile(s, decodeURIComponent(jobFiles[1]), body, caller);
+      });
+      json(res, 201, meta);
+      return;
+    }
+    const jobMsg = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/messages$/);
+    if (jobMsg && method === "POST") {
+      const body = await readBody(req);
+      const job = await followUpJob(decodeURIComponent(jobMsg[1]), body, requestCaller(user, apiToken), jobDeps());
+      json(res, 201, job);
+      return;
+    }
+    const jobOne = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/?$/);
     if (jobOne && method === "GET") {
       const id = decodeURIComponent(jobOne[1]);
+      const caller = requestCaller(user, apiToken);
       const job = getJob(getState(), id);
-      if (!job) {
+      if (!job || !canReadJob(job, caller)) {
         json(res, 404, { error: "job not found" });
         return;
       }
       json(res, 200, job);
+      return;
+    }
+    if ((pathname === "/mcp" || pathname === "/mcp/") && method === "GET") {
+      json(res, 200, {
+        ok: true,
+        name: "roster-flow",
+        transport: "streamable-http",
+        endpoint: "/mcp",
+        front: "mcp-flow",
+      });
+      return;
+    }
+    if ((pathname === "/mcp" || pathname === "/mcp/") && method === "POST") {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch {
+        json(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
+        return;
+      }
+      const caller = requestCaller(user, apiToken);
+      const scopes = apiToken?.token?.scopes || null;
+      const out = await handleMcp(body, {
+        caller,
+        scopes,
+        getState,
+        mutate,
+        fileRoot: undefined,
+        jobDeps,
+      });
+      if (out.status === 202) {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+      json(res, out.status, out.body);
       return;
     }
     if (pathname === "/api/v1/block-actions" && method === "POST") {

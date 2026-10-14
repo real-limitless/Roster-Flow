@@ -189,7 +189,7 @@ Plugin tool: `roster_inbox`.
 
 Persistent work a caller hands to a seat or a team. Same bearer auth as the rest of the API: `read` can list, get, and wait; `write` can submit, complete, and cancel. Session logins are not scope-limited.
 
-`fileRefs` store paths only (at most 32). File bytes are not accepted. `budget` is stored and not enforced. Both are seams for a later file store and for per-caller budgets.
+`fileRefs` store paths only (at most 32). File bytes go to the job file store (`POST /api/v1/jobs/:id/files`), capped at 1MB each, 8 files, and 4MB per job. `budget` is stored on the job. Enforcement is per caller (a later milestone); there is no global cap.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -199,6 +199,9 @@ Persistent work a caller hands to a seat or a team. Same bearer auth as the rest
 | GET | `/api/v1/jobs/:id/wait` | Long-poll. `?timeout=` ms (0–60000, default 25000). `?since=` ISO `updatedAt` returns on any newer write; otherwise returns when status is `needs_human`, `done`, `failed`, or `cancelled` |
 | POST | `/api/v1/jobs/:id/complete` | Seat result. `{ result, status?: done\|failed\|needs_human, cost?, tokens?, from?, announce? }` |
 | POST | `/api/v1/jobs/:id/cancel` | Cancel a non-terminal job. `{ reason? }` |
+| POST | `/api/v1/jobs/:id/files` | `{ name, content, encoding?: "utf8"\|"base64" }` stores bytes. **413** over the cap |
+| GET | `/api/v1/jobs/:id/files/:name` | `{ name, size, sha256, encoding: "base64", content }` |
+| POST | `/api/v1/jobs/:id/messages` | Follow-up `{ text }` into an open job. Wakes the assignee |
 
 `POST /api/v1/jobs`:
 
@@ -238,6 +241,32 @@ The attempt is stored on `job.callback` (`ok`, `status`, `error`). A failed call
 A seat finishes with `roster_report` `jobId` (optional `status`, `cost`, `tokens`). `roster_ask_human` `jobId` sets `needs_human` and still parks the question on `reports_to`.
 
 `GET /api/v1/state` includes `jobs`.
+
+A token with no `seatId` acts as the owner seat `you` and can see every job. A token bound to another seat sees jobs it submitted, jobs assigned to that seat, and nothing else. Listing and get return **404** for the rest.
+
+That bound seat may task the descendants of its manager (the reporting line), not the manager and not other lines. Hire the guest with `guest: true` and `reportsTo` set to that manager, then pass the new seat id as `seatId` when creating the token.
+
+## MCP backend
+
+mcp-flow is the public MCP front door. Roster exposes `POST /mcp` as the streamable-http backend mcp-flow proxies. Clients do not need a second public gateway. Send JSON-RPC 2.0 (`Content-Type: application/json`) with the same bearer token. `GET /mcp` returns a short discovery document. A `read` token can list and poll; `submit_task`, `cancel_task`, `put_file`, and `send_message` need `write`.
+
+Register Roster on mcp-flow (admin token on mcp-flow, not on Roster):
+
+```json
+{
+  "slug": "roster",
+  "title": "Roster-Flow",
+  "transport": "streamable-http",
+  "url": "http://127.0.0.1:8790/mcp",
+  "placement": { "mode": "remote" }
+}
+```
+
+Forward the caller's Roster bearer token on that proxy. The token's `seatId` is the guest. Point `reportsTo` at the manager of the seats they may task (for a wiki team, the wiki supervisor).
+
+Tools: `list_seats`, `list_teams`, `submit_task`, `get_task`, `wait_task`, `cancel_task`, `put_file`, `get_file`, `send_message`, `list_models`. `submit_task` takes `target`, `brief`, optional `routing`, `specialist`, `fileRefs`, inline `files`, `budget`, `priority`, and `callbackUrl`. `list_models` returns configured model ids only (no provider keys). PTY attach and Architect apply are not tools.
+
+`initialize` answers protocol `2025-03-26`. Notifications (no `id`) get **202**. The handler is stateless: mcp-flow may call `tools/call` without holding a session.
 
 ## Roster Block Kit
 
@@ -309,5 +338,5 @@ Literal keys go to `.roster-flow/auth.json` (gitignored) and `{env:VAR}` is pref
 | Method | Path | Notes |
 | --- | --- | --- |
 | GET | `/api/v1/tokens` | List (no hashes or plaintext) |
-| POST | `/api/v1/tokens` | `{name, scopes: ["read","write","admin"], expiresAt? \| expiresInDays?}` → `{token, record}`; `token` is shown once |
+| POST | `/api/v1/tokens` | `{name, scopes: ["read","write","admin"], expiresAt? \| expiresInDays?, seatId?}` → `{token, record}`; `token` is shown once. `seatId` binds the token to that seat |
 | DELETE | `/api/v1/tokens/:id` | Revoke; the token then gets 401 |

@@ -3,13 +3,14 @@
  *
  * A job is a unit of work a caller hands to a seat or a team. Submit wakes the
  * resolved seat through the existing bus and posts the brief into the room.
- * File bytes and budgets are not handled here: `fileRefs` is a list of paths
- * for a later file store, and `budget` is stored and not enforced.
+ * `fileRefs` stay paths. Byte storage lives in `files.mjs`. `budget` is stored
+ * and enforced per caller in a later milestone.
  */
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { uid } from "./store.mjs";
+import { canCancelJob, canCompleteJob, canReadJob } from "./access.mjs";
 
 export const JOB_STATUSES = ["queued", "running", "needs_human", "done", "failed", "cancelled"];
 export const TERMINAL_STATUSES = ["done", "failed", "cancelled"];
@@ -49,6 +50,8 @@ export function publicJob(job) {
     specialist: job.specialist,
     brief: job.brief,
     fileRefs: (job.fileRefs || []).map((f) => ({ ...f })),
+    files: (job.files || []).map((f) => ({ name: f.name, size: f.size, sha256: f.sha256, updatedAt: f.updatedAt })),
+    priority: job.priority || null,
     status: job.status,
     result: job.result,
     cost: job.cost,
@@ -228,6 +231,13 @@ export async function normalizeCallback(raw, { env = process.env, lookup: lookup
   return url.toString();
 }
 
+function normalizePriority(raw) {
+  if (raw == null || raw === "") return null;
+  const s = String(raw).trim();
+  if (!s || s.length > 32) throw fail(400, "priority must be 1-32 characters");
+  return s;
+}
+
 function normalizeBudget(raw) {
   if (raw == null || raw === "") return null;
   if (typeof raw !== "object" || Array.isArray(raw)) throw fail(400, "budget must be { tokens?, cost? }");
@@ -380,7 +390,8 @@ export function jobWakeText(job) {
   return [
     `Job ${job.id} for ${job.target}${job.routing ? ` (${job.routing}${job.specialist ? ` ${job.specialist}` : ""})` : ""}.`,
     job.brief,
-    files.length ? `File refs (stored only, not fetched): ${files.join(", ")}` : "",
+    files.length ? `File refs (paths only): ${files.join(", ")}` : "",
+    (job.files || []).length ? `Job files: ${(job.files || []).map((f) => f.name).join(", ")}` : "",
     `When you finish, call roster_report with jobId "${job.id}".`,
     `To park for a human, call roster_ask_human with jobId "${job.id}".`,
   ]
@@ -407,6 +418,7 @@ function placeJob(state, body, caller, callbackUrl) {
   if (brief.length > 20000) throw fail(400, "brief is too long");
   const fileRefs = normalizeFileRefs(body.fileRefs ?? body.files);
   const budget = normalizeBudget(body.budget);
+  const priority = normalizePriority(body.priority);
   const channel = normalizeChannel(state, body.channel);
   const runId = normalizeRunId(body.runId);
   const route = resolveJobTarget(state, body);
@@ -422,6 +434,7 @@ function placeJob(state, body, caller, callbackUrl) {
     cost: null,
     tokens: null,
     budget,
+    priority,
     runId,
     channel,
     callbackUrl,
@@ -483,6 +496,8 @@ function normalizeReportStatus(raw) {
 
 export function reportJob(state, id, body = {}, caller = {}) {
   const job = requireJob(state, id);
+  if (!canReadJob(job, caller)) throw fail(404, "job not found");
+  if (!canCompleteJob(job, caller)) throw fail(403, "this caller cannot complete that job");
   if (TERMINAL.has(job.status)) throw fail(409, `job is ${job.status}`);
   const status = normalizeReportStatus(body.status);
   const result = String(body.result ?? body.text ?? "").trim();
@@ -502,6 +517,8 @@ export function reportJob(state, id, body = {}, caller = {}) {
 
 export function cancelJob(state, id, body = {}, caller = {}) {
   const job = requireJob(state, id);
+  if (!canReadJob(job, caller)) throw fail(404, "job not found");
+  if (!canCancelJob(job, caller)) throw fail(403, "this caller cannot cancel that job");
   if (TERMINAL.has(job.status)) throw fail(409, `job is ${job.status}`);
   if (!OPEN.has(job.status)) throw fail(409, `job is ${job.status}`);
   const reason = String(body.reason ?? body.result ?? "").trim();
@@ -587,6 +604,9 @@ export async function publishNewJob(body, caller, deps, opts) {
   deps.mutate((s) => {
     created = placeJob(s, body, caller, callbackUrl);
   });
+  if (typeof deps.attachFiles === "function") {
+    deps.mutate((s) => deps.attachFiles(s, created.id));
+  }
   const live = deps.getState().jobs.find((j) => j.id === created.id) || created;
   const text = jobWakeText(live);
   const from = live.caller?.seatId || "you";
@@ -643,6 +663,44 @@ async function announce(deps, job, fromId, kind) {
     runId: job.runId,
     jobId: job.id,
   });
+}
+
+export async function followUpJob(id, body, caller, deps) {
+  const text = String(body?.text || "").trim();
+  if (!text) throw fail(400, "text required");
+  if (text.length > 20000) throw fail(400, "text is too long");
+  let job;
+  deps.mutate((s) => {
+    const raw = requireJob(s, id);
+    if (!canReadJob(raw, caller)) throw fail(404, "job not found");
+    if (TERMINAL.has(raw.status)) throw fail(409, "job is finished");
+    raw.updatedAt = nowIso();
+    pushEvent(raw, "follow_up");
+    job = publicJob(raw);
+  });
+  const from = caller.seatId || "you";
+  deps.postMessage(job.channel, seatLabel(deps.getState(), from, caller.name), "job", text, {
+    seatId: from,
+    jobId: job.id,
+  });
+  deps.postBus({
+    from,
+    to: job.assignee,
+    kind: "send_message",
+    text,
+    wake: false,
+    channel: job.channel,
+    runId: job.runId,
+    jobId: job.id,
+  });
+  await deps.wakeSeat(job.assignee, text, {
+    from,
+    kind: "send_message",
+    runId: job.runId,
+    jobId: job.id,
+    channel: job.channel,
+  });
+  return job;
 }
 
 export async function settleJob(id, action, body, caller, deps) {
