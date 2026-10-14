@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
-import { emptyState, migrateState } from "./seed.mjs";
+import { emptyOrgState, emptyState, migrateState } from "./seed.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { bootCore } from "./test-helpers.mjs";
 import {
@@ -9,6 +9,7 @@ import {
   cancelJob,
   createJob,
   deliverCallback,
+  normalizeCallback,
   isWaitSatisfied,
   listJobs,
   parseSince,
@@ -46,9 +47,11 @@ function harness(state, wake) {
   return { deps, messages, bus };
 }
 
-test("createJob stores the brief, caller, file refs, and a run id", () => {
+const loopback = { env: { ROSTER_CALLBACK_ALLOWLIST: "127.0.0.1" } };
+
+test("createJob stores the brief, caller, file refs, and a run id", async () => {
   const state = emptyState();
-  const job = createJob(
+  const job = await createJob(
     state,
     {
       target: "build",
@@ -72,7 +75,7 @@ test("createJob stores the brief, caller, file refs, and a run id", () => {
   assert.equal(state.jobs.length, 1);
 });
 
-test("team routing: supervisor is today's wake target, plus round-robin and a named specialist", () => {
+test("team routing: supervisor is today's wake target, plus round-robin and a named specialist", async () => {
   const state = emptyState();
   assert.equal(teamWakeTarget("team:eng", state.teams), "eng-supervisor");
   const sup = resolveJobTarget(state, { target: "team:eng" });
@@ -83,13 +86,13 @@ test("team routing: supervisor is today's wake target, plus round-robin and a na
   assert.equal(named.assignee, "build");
 
   const seen = [];
-  for (let i = 0; i < 4; i++) seen.push(createJob(state, { target: "team:eng", routing: "round-robin", brief: `task ${i}` }).assignee);
+  for (let i = 0; i < 4; i++) seen.push((await createJob(state, { target: "team:eng", routing: "round-robin", brief: `task ${i}` })).assignee);
   assert.deepEqual(seen, ["eng-generic", "build", "review", "eng-generic"]);
   assert.equal(teamWakeTarget("team:eng", state.teams), "eng-supervisor");
   assert.equal(state.teams.find((t) => t.id === "eng").jobRrIndex, 1);
 });
 
-test("routing rejects unknown modes, off-team specialists, and seat-level routing", () => {
+test("routing rejects unknown modes, off-team specialists, and seat-level routing", async () => {
   const state = emptyState();
   assert.throws(() => resolveJobTarget(state, { target: "team:eng", routing: "fuse" }), (e) => e.status === 400);
   assert.throws(() => resolveJobTarget(state, { target: "team:eng", routing: "specialist" }), (e) => e.status === 400);
@@ -100,16 +103,16 @@ test("routing rejects unknown modes, off-team specialists, and seat-level routin
     (e) => e.status === 400,
   );
   assert.throws(() => resolveJobTarget(state, { target: "team:missing", brief: "x" }), (e) => e.status === 404);
-  assert.throws(() => createJob(state, { target: "build", routing: "supervisor", brief: "x" }), (e) => e.status === 400);
-  assert.throws(() => createJob(state, { target: "nope", brief: "x" }), (e) => e.status === 404);
-  assert.throws(() => createJob(state, { target: "build" }), (e) => e.status === 400);
-  assert.throws(() => createJob(state, { target: "build", brief: "x", callbackUrl: "javascript:alert(1)" }), (e) => e.status === 400);
-  assert.throws(() => createJob(state, { target: "build", brief: "x", fileRefs: Array.from({ length: 33 }, () => "a") }), (e) => e.status === 400);
+  await assert.rejects(createJob(state, { target: "build", routing: "supervisor", brief: "x" }), (e) => e.status === 400);
+  await assert.rejects(createJob(state, { target: "nope", brief: "x" }), (e) => e.status === 404);
+  await assert.rejects(createJob(state, { target: "build" }), (e) => e.status === 400);
+  await assert.rejects(createJob(state, { target: "build", brief: "x", callbackUrl: "javascript:alert(1)" }), (e) => e.status === 400);
+  await assert.rejects(createJob(state, { target: "build", brief: "x", fileRefs: Array.from({ length: 33 }, () => "a") }), (e) => e.status === 400);
 });
 
-test("report, needs_human, and cancel move status and record cost", () => {
+test("report, needs_human, and cancel move status and record cost", async () => {
   const state = emptyState();
-  const job = createJob(state, { target: "build", brief: "ship it" }, caller);
+  const job = await createJob(state, { target: "build", brief: "ship it" }, caller);
   const parked = reportJob(state, job.id, { status: "needs_human", result: "Which idempotency key?" }, caller);
   assert.equal(parked.status, "needs_human");
   assert.equal(parked.finishedAt, null);
@@ -121,7 +124,7 @@ test("report, needs_human, and cancel move status and record cost", () => {
   assert.ok(done.finishedAt);
   assert.throws(() => reportJob(state, job.id, { result: "again" }), (e) => e.status === 409);
 
-  const other = createJob(state, { target: "qa", brief: "test it" });
+  const other = await createJob(state, { target: "qa", brief: "test it" });
   const cancelled = cancelJob(state, other.id, { reason: "caller stopped" }, caller);
   assert.equal(cancelled.status, "cancelled");
   assert.equal(cancelled.result, "caller stopped");
@@ -130,16 +133,16 @@ test("report, needs_human, and cancel move status and record cost", () => {
   assert.equal(listJobs(state)[0].id, other.id);
 });
 
-test("wake marks running only when a session is prompted; offline stays queued", () => {
+test("wake marks running only when a session is prompted; offline stays queued", async () => {
   const state = emptyState();
-  const job = createJob(state, { target: "build", brief: "ship it" });
+  const job = await createJob(state, { target: "build", brief: "ship it" });
   const offline = applyWake(state, job.id, { offline: true, seat: "build" });
   assert.equal(offline.status, "queued");
   assert.equal(offline.wake.offline, true);
   const running = applyWake(state, job.id, { sessionId: "ses_1", seat: "build" });
   assert.equal(running.status, "running");
   assert.ok(running.startedAt);
-  const human = createJob(state, { target: "jules", brief: "look at this" });
+  const human = await createJob(state, { target: "jules", brief: "look at this" });
   const parked = applyWake(state, human.id, { human: true, seat: "jules" });
   assert.equal(parked.status, "needs_human");
 });
@@ -179,6 +182,7 @@ test("settleJob announces, callbacks, and wait returns on a terminal status", as
     { target: "build", brief: "ship it", callbackUrl: "http://127.0.0.1:9/hook" },
     caller,
     deps,
+    loopback,
   );
   const done = await settleJob(job.id, "complete", { result: "shipped", cost: "0.1", tokens: "3" }, caller, deps);
   assert.equal(done.status, "done");
@@ -189,7 +193,7 @@ test("settleJob announces, callbacks, and wait returns on a terminal status", as
   assert.equal(messages.at(-1).text.includes("shipped"), true);
   assert.equal(bus.at(-1).kind, "job_complete");
 
-  const quiet = createJob(state, { target: "qa", brief: "quietly", callbackUrl: "http://127.0.0.1:9/hook" });
+  const quiet = await createJob(state, { target: "qa", brief: "quietly", callbackUrl: "http://127.0.0.1:9/hook" }, caller, loopback);
   const before = messages.length;
   const parked = await settleJob(quiet.id, "complete", { status: "needs_human", result: "approve?", announce: false }, caller, deps);
   assert.equal(parked.status, "needs_human");
@@ -203,7 +207,7 @@ test("settleJob announces, callbacks, and wait returns on a terminal status", as
   assert.equal(out.timedOut, false);
   assert.equal(out.job.status, "done");
 
-  const queued = createJob(state, { target: "docs", brief: "later" });
+  const queued = await createJob(state, { target: "docs", brief: "later" });
   const timed = await waitForJob(queued.id, { timeout: 0 }, deps, async () => {
     throw new Error("timeout 0 does not sleep");
   });
@@ -221,18 +225,19 @@ test("migrateState keeps a jobs array", () => {
 
 test("deliverCallback posts the job snapshot and records a transport failure", async () => {
   const state = emptyState();
-  const job = createJob(state, { target: "build", brief: "ship it", callbackUrl: "http://127.0.0.1/hook" });
+  const job = await createJob(state, { target: "build", brief: "ship it", callbackUrl: "http://127.0.0.1/hook" }, caller, loopback);
   const calls = [];
   const ok = await deliverCallback(job, async (url, init) => {
-    calls.push({ url, body: JSON.parse(init.body) });
+    calls.push({ url, body: JSON.parse(init.body), redirect: init.redirect });
     return { ok: true, status: 204 };
-  });
+  }, loopback);
   assert.equal(ok.ok, true);
   assert.equal(calls[0].body.event, "job.status");
   assert.equal(calls[0].body.job.id, job.id);
+  assert.equal(calls[0].redirect, "manual");
   const bad = await deliverCallback(job, async () => {
     throw new Error("down");
-  });
+  }, loopback);
   assert.equal(bad.ok, false);
   assert.match(bad.error, /down/);
 });
@@ -256,6 +261,7 @@ test("jobs HTTP API authorizes with scoped tokens, waits, and callbacks", async 
     ROSTER_OWNER_PASSWORD: "password1",
     ROSTER_OWNER_TEMPLATE: "starter",
     ROSTER_API_TOKEN: ADMIN,
+    ROSTER_CALLBACK_ALLOWLIST: "127.0.0.1",
   });
   const auth = (token) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
   try {
@@ -366,5 +372,72 @@ test("jobs HTTP API authorizes with scoped tokens, waits, and callbacks", async 
   } finally {
     await core.stop();
     await new Promise((resolve) => hook.close(resolve));
+  }
+});
+
+test("empty org posts an omitted channel to #general", async () => {
+  const state = emptyOrgState();
+  const job = await createJob(state, { target: "you", brief: "x" });
+  assert.equal(job.channel, "general");
+  await assert.rejects(createJob(state, { target: "you", brief: "x", channel: "ship" }), (e) => e.status === 404);
+});
+
+test("callbackUrl rejects private, loopback, link-local, and metadata addresses", async () => {
+  const blocked = [
+    "http://169.254.169.254/latest/meta-data",
+    "http://127.0.0.1/hook",
+    "http://10.1.2.3/hook",
+    "http://192.168.1.9/hook",
+    "http://172.16.0.4/hook",
+    "http://[::1]/hook",
+    "http://[fe80::1]/hook",
+    "http://[fc00::1]/hook",
+  ];
+  for (const callbackUrl of blocked) {
+    await assert.rejects(normalizeCallback(callbackUrl), (e) => e.status === 400 && /blocked/.test(e.message));
+  }
+  const lookup = async () => [{ address: "169.254.169.254", family: 4 }];
+  await assert.rejects(normalizeCallback("https://metadata.google.internal/computeMetadata/v1/", { lookup }), (e) => e.status === 400);
+  const mixed = async () => [
+    { address: "93.184.216.34", family: 4 },
+    { address: "10.0.0.8", family: 4 },
+  ];
+  await assert.rejects(normalizeCallback("https://hooks.example/cb", { lookup: mixed }), (e) => e.status === 400);
+  await assert.rejects(normalizeCallback("https://missing.example/cb", { lookup: async () => { throw new Error("ENOTFOUND"); } }), (e) => e.status === 400);
+  const pub = await normalizeCallback("https://hooks.example/cb", { lookup: async () => [{ address: "93.184.216.34", family: 4 }] });
+  assert.equal(pub, "https://hooks.example/cb");
+  const allowed = await normalizeCallback("http://169.254.169.254/hook", { env: { ROSTER_CALLBACK_ALLOWLIST: "169.254.169.254" } });
+  assert.match(allowed, /^http:\/\/169\.254\.169\.254\/hook$/);
+});
+
+test("empty org HTTP job defaults to #general and blocks metadata callbacks", async () => {
+  const token = "rf_empty_org_token_0123456789abcd";
+  const core = await bootCore({
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_OWNER_TEMPLATE: "empty",
+    ROSTER_API_TOKEN: token,
+    OPENCODE_BIN: "/nonexistent/opencode",
+  });
+  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  try {
+    const created = await fetch(`${core.base}/api/v1/jobs`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ target: "you", brief: "x" }),
+    });
+    assert.equal(created.status, 201);
+    const job = await created.json();
+    assert.equal(job.channel, "general");
+    const blocked = await fetch(`${core.base}/api/v1/jobs`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ target: "you", brief: "x", callbackUrl: "http://169.254.169.254/latest/meta-data" }),
+    });
+    assert.equal(blocked.status, 400);
+    const body = await blocked.json();
+    assert.match(body.error, /blocked/);
+  } finally {
+    await core.stop();
   }
 });

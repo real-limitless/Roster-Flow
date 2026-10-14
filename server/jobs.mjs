@@ -7,6 +7,8 @@
  * for a later file store, and `budget` is stored and not enforced.
  */
 
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { uid } from "./store.mjs";
 
 export const JOB_STATUSES = ["queued", "running", "needs_human", "done", "failed", "cancelled"];
@@ -108,7 +110,104 @@ function normalizeFileRefs(raw) {
   });
 }
 
-function normalizeCallback(raw) {
+function ipv4Parts(ip) {
+  const parts = String(ip).split(".");
+  if (parts.length !== 4) return null;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return nums;
+}
+
+function ipv4Blocked(ip) {
+  const p = ipv4Parts(ip);
+  if (!p) return true;
+  const [a, b] = p;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+}
+
+function ipv6Bytes(ip) {
+  const raw = String(ip).toLowerCase().split("%")[0];
+  if (!raw.includes(":")) return null;
+  const halves = raw.split("::");
+  if (halves.length > 2) return null;
+  const parse = (side) => (side ? side.split(":").map((h) => Number.parseInt(h, 16)) : []);
+  const left = parse(halves[0]);
+  const right = halves.length === 2 ? parse(halves[1]) : [];
+  if ([...left, ...right].some((n) => !Number.isInteger(n) || n < 0 || n > 0xffff)) return null;
+  const missing = 8 - (left.length + right.length);
+  if (missing < 0 || (halves.length === 1 && missing !== 0)) return null;
+  const words = halves.length === 2 ? [...left, ...Array(missing).fill(0), ...right] : left;
+  if (words.length !== 8) return null;
+  const bytes = [];
+  for (const word of words) {
+    bytes.push((word >> 8) & 0xff, word & 0xff);
+  }
+  return bytes;
+}
+
+function ipv6Blocked(ip) {
+  const bytes = ipv6Bytes(ip);
+  if (!bytes) return true;
+  const mapped = bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+  if (mapped) return ipv4Blocked(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`);
+  if (bytes.every((b) => b === 0)) return true;
+  if (bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1) return true;
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true;
+  if ((bytes[0] & 0xfe) === 0xfc) return true;
+  return false;
+}
+
+export function callbackAddressBlocked(address) {
+  const family = isIP(address);
+  if (family === 4) return ipv4Blocked(address);
+  if (family === 6) return ipv6Blocked(address);
+  const dotted = String(address).match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (dotted) return ipv4Blocked(dotted[1]);
+  return true;
+}
+
+function decimalIPv4(host) {
+  if (!/^\d+$/.test(host)) return null;
+  const n = Number(host);
+  if (!Number.isSafeInteger(n) || n < 0 || n > 0xffffffff) return null;
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
+}
+
+function callbackAllowlist(env) {
+  return String(env?.ROSTER_CALLBACK_ALLOWLIST || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase().replace(/\.$/, ""))
+    .filter(Boolean);
+}
+
+async function callbackAddresses(hostname, lookupImpl) {
+  const host = String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!host) throw fail(400, "callbackUrl host is required");
+  if (isIP(host)) return [host];
+  const legacy = decimalIPv4(host);
+  if (legacy) return [legacy];
+  let rows;
+  try {
+    rows = await (lookupImpl || lookup)(host, { all: true, verbatim: true });
+  } catch {
+    throw fail(400, "callbackUrl host did not resolve");
+  }
+  const list = Array.isArray(rows) ? rows : [rows];
+  const addresses = list.map((row) => (typeof row === "string" ? row : row?.address)).filter(Boolean);
+  if (!addresses.length) throw fail(400, "callbackUrl host did not resolve");
+  return addresses;
+}
+
+/**
+ * http(s) only. After DNS, reject loopback, private, link-local, and metadata
+ * addresses. `ROSTER_CALLBACK_ALLOWLIST` (comma-separated hosts) opts a host in.
+ */
+export async function normalizeCallback(raw, { env = process.env, lookup: lookupImpl = lookup } = {}) {
   if (raw == null || raw === "") return null;
   const s = String(raw).trim();
   if (s.length > 2048) throw fail(400, "callbackUrl is too long");
@@ -119,6 +218,13 @@ function normalizeCallback(raw) {
     throw fail(400, "callbackUrl must be an http(s) URL");
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") throw fail(400, "callbackUrl must be an http(s) URL");
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!host) throw fail(400, "callbackUrl host is required");
+  if (callbackAllowlist(env).includes(host)) return url.toString();
+  const addresses = await callbackAddresses(host, lookupImpl);
+  if (addresses.some((address) => callbackAddressBlocked(address))) {
+    throw fail(400, "callbackUrl resolves to a blocked address");
+  }
   return url.toString();
 }
 
@@ -165,10 +271,13 @@ export function normalizeTokens(value) {
 }
 
 function normalizeChannel(state, raw) {
-  const id = String(raw || "ship").replace(/^#/, "").trim();
+  const explicit = !(raw == null || String(raw).trim() === "");
+  const id = String(explicit ? raw : "ship").replace(/^#/, "").trim();
   if (!id) throw fail(400, "channel required");
-  if (!(state.channels || []).some((c) => c.id === id)) throw fail(404, "channel not found");
-  return id;
+  const channels = state.channels || [];
+  if (channels.some((c) => c.id === id)) return id;
+  if (!explicit && channels.some((c) => c.id === "general")) return "general";
+  throw fail(404, "channel not found");
 }
 
 function normalizeRunId(raw) {
@@ -292,12 +401,11 @@ export function jobStatusLine(job) {
   return [`Job ${job.id} ${job.status}`, job.result || ""].filter(Boolean).join("\n");
 }
 
-export function createJob(state, body = {}, caller = {}) {
+function placeJob(state, body, caller, callbackUrl) {
   const brief = String(body.brief ?? body.text ?? "").trim();
   if (!brief) throw fail(400, "brief required");
   if (brief.length > 20000) throw fail(400, "brief is too long");
   const fileRefs = normalizeFileRefs(body.fileRefs ?? body.files);
-  const callbackUrl = normalizeCallback(body.callbackUrl);
   const budget = normalizeBudget(body.budget);
   const channel = normalizeChannel(state, body.channel);
   const runId = normalizeRunId(body.runId);
@@ -329,6 +437,11 @@ export function createJob(state, body = {}, caller = {}) {
   pushEvent(job, "submitted");
   state.jobs = [...(state.jobs || []), job];
   return publicJob(job);
+}
+
+export async function createJob(state, body = {}, caller = {}, opts) {
+  const callbackUrl = await normalizeCallback(body.callbackUrl, opts);
+  return placeJob(state, body, caller, callbackUrl);
 }
 
 function summarizeWake(wake) {
@@ -439,15 +552,24 @@ export function shouldCallback(job) {
 }
 
 /** POST the job snapshot. Failures are recorded; they do not fail the status change. */
-export async function deliverCallback(job, fetchImpl = globalThis.fetch) {
+export async function deliverCallback(job, fetchImpl = globalThis.fetch, opts) {
   if (!job?.callbackUrl) return { skipped: true };
+  try {
+    await normalizeCallback(job.callbackUrl, opts);
+  } catch (err) {
+    return { ok: false, status: null, error: String(err?.message || err).slice(0, 300), at: nowIso() };
+  }
   try {
     const res = await fetchImpl(job.callbackUrl, {
       method: "POST",
+      redirect: "manual",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ event: "job.status", job: publicJob(job) }),
       signal: AbortSignal.timeout(5000),
     });
+    if (res.status >= 300 && res.status < 400) {
+      return { ok: false, status: res.status, error: "callback redirect blocked", at: nowIso() };
+    }
     return { ok: res.ok, status: res.status, at: nowIso() };
   } catch (err) {
     return { ok: false, status: null, error: String(err?.message || err).slice(0, 300), at: nowIso() };
@@ -459,10 +581,11 @@ function seatLabel(state, seatId, fallback) {
   return seat?.name || fallback || seatId || "job";
 }
 
-export async function publishNewJob(body, caller, deps) {
+export async function publishNewJob(body, caller, deps, opts) {
+  const callbackUrl = await normalizeCallback(body.callbackUrl, opts);
   let created;
   deps.mutate((s) => {
-    created = createJob(s, body, caller);
+    created = placeJob(s, body, caller, callbackUrl);
   });
   const live = deps.getState().jobs.find((j) => j.id === created.id) || created;
   const text = jobWakeText(live);

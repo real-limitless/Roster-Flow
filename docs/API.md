@@ -217,13 +217,15 @@ Persistent work a caller hands to a seat or a team. Same bearer auth as the rest
 
 `target` is a seat id or `team:<id>`. Team `routing` is `supervisor` (default; same seat the bus wakes today), `round_robin` (generic, then specialists, skipping humans and the Supervisor), or `specialist` with `specialist` set to a bot seat id on that team. `round-robin` is accepted as an alias. Routing on a seat target is `400`.
 
-Submit writes a `kind: "job"` bus row and a room message (default `#ship`), then wakes `assignee`. Harness offline, paused, or killed runs stay `queued` and record `wake`. A prompted session moves the job to `running`. A human assignee moves it to `needs_human`.
+Submit writes a `kind: "job"` bus row and a room message (default `#ship`), then wakes `assignee`. An empty org has `#general` and no `#ship`; omitting `channel` posts there. An explicit missing channel is still **404**. Harness offline, paused, or killed runs stay `queued` and record `wake`. A prompted session moves the job to `running`. A human assignee moves it to `needs_human`.
 
 Status: `queued`, `running`, `needs_human`, `done`, `failed`, `cancelled`. Terminal jobs reject another complete or cancel with **409**.
 
 `tokens` is a number (stored as `{ "total": n }`) or `{ "input", "output", "total" }`. `cost` is a non-negative number. Omit either when the seat does not know usage.
 
 `GET /api/v1/jobs/:id/wait` returns `{ "job", "timedOut" }`.
+
+`callbackUrl` must be `http` or `https`. After DNS resolution, loopback, private, link-local (including `169.254.169.254`), and other non-public addresses are **400**. Set `ROSTER_CALLBACK_ALLOWLIST` to a comma-separated host list to allow a specific host. Redirects are not followed.
 
 On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set:
 
