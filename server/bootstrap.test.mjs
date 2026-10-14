@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { bootCore } from "./test-helpers.mjs";
 import { loginUser } from "./auth.mjs";
 import {
   formatPasswordHash,
@@ -18,7 +14,6 @@ import {
 import { pendingState } from "./seed.mjs";
 import { setupStatus } from "./setup.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("bootstrap token: open when unset, 401 when wrong or missing, ok when matched", () => {
   assert.equal(requireBootstrapToken({ headers: {} }, {}, {}), true);
@@ -71,45 +66,6 @@ test("setup status flags the bootstrap token only before an owner exists", () =>
     else process.env.ROSTER_BOOTSTRAP_TOKEN = prev;
   }
 });
-
-async function bootCore(env) {
-  const dir = mkdtempSync(join(tmpdir(), "rf-boot-"));
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  const child = spawn(process.execPath, [join(root, "server/index.mjs")], {
-    env: {
-      ...process.env,
-      ROSTER_SKIP_ONBOARDING: "",
-      ROSTER_API_HOST: "127.0.0.1",
-      ROSTER_API_PORT: String(port),
-      ROSTER_DATA_DIR: join(dir, "data"),
-      ROSTER_OPENCODE_DIR: join(dir, "opencode"),
-      ROSTER_WORKSPACE: join(dir, "ws"),
-      ROSTER_DISABLE_ROUTINES: "1",
-      OPENCODE_BIN: "/nonexistent/opencode",
-      HOME: dir,
-      ...env,
-    },
-    stdio: "ignore",
-  });
-  const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 100; i++) {
-    try {
-      const r = await fetch(`${base}/api/v1/health`);
-      if (r.ok) break;
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return {
-    base,
-    async stop() {
-      child.kill("SIGTERM");
-      await new Promise((r) => child.once("exit", r));
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
 
 test("fresh CORE with env owner comes up with an owner and no setup screen", async () => {
   const core = await bootCore({ ROSTER_OWNER_EMAIL: "ops@example.com", ROSTER_OWNER_PASSWORD: "password1" });
