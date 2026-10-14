@@ -5,7 +5,6 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/real-limitless/roster-flow.git}"
 BRANCH="${BRANCH:-DEVELOPMENT}"
 CLONE_DIR="${CLONE_DIR:-$HOME/src/roster-flow}"
-PORT="${ROSTER_WEB_PORT:-5175}"
 
 fail() { echo "$*" >&2; exit 1; }
 
@@ -35,7 +34,4 @@ fi
 dc="$(compose_cmd)"
 # shellcheck disable=SC2086
 $dc up -d --build
-echo "Up. Host port ${PORT}."
-if [ -x scripts/doctor.sh ]; then
-  scripts/doctor.sh || true
-fi
+echo "Up. Exposed on the compose network only (web ${ROSTER_WEB_PORT:-5175}, API ${ROSTER_API_PORT:-8790}). Nothing is published on the host."

@@ -1,6 +1,6 @@
 # CORE API — chatbots, teams, bus, harness
 
-Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` publishes the UI on **5175** (`ROSTER_WEB_PORT`; same origin for `/setup`, `/app`, and `/api`) and the API on **8790** (`ROSTER_API_PORT`). 8787 is mcp-flow.
+Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only and does not publish them on the host. 8787 is mcp-flow.
 
 Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`.
 

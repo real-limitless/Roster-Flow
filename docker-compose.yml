@@ -9,11 +9,10 @@ services:
       dockerfile: Dockerfile
     image: roster-flow:local
     init: true
-    ports:
-      - "${ROSTER_WEB_PORT:-5175}:${ROSTER_API_PORT:-8790}"
-      - "${ROSTER_API_PORT:-8790}:${ROSTER_API_PORT:-8790}"
+    # Exposed on the compose network only. Not published on the host.
     expose:
       - "${ROSTER_API_PORT:-8790}"
+      - "${ROSTER_WEB_PORT:-5175}"
     environment:
       ROSTER_API_HOST: "0.0.0.0"
       ROSTER_API_PORT: ${ROSTER_API_PORT:-8790}

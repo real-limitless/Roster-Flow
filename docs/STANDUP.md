@@ -16,17 +16,17 @@ docker compose up --build
 | Process | URL | Role |
 |---|---|---|
 | Product inside the container | `http://127.0.0.1:${ROSTER_API_PORT:-8790}` | Static UI + CORE on one port. Exposed on the compose network, not published on the host. |
-| Web UI port | `ROSTER_WEB_PORT`, default `5175` | `ROSTER_PUBLIC_URL` follows this. 8787 is mcp-flow, not Roster. |
+| Web UI port | `ROSTER_WEB_PORT`, default `5175` | Exposed on the compose network, not published on the host. `ROSTER_PUBLIC_URL` follows this. 8787 is mcp-flow, not Roster. |
 | Company OpenCode | inside the container (`127.0.0.1:14180`) | Product-bot sessions |
 | System OpenCode | inside the container (`127.0.0.1:14181`) | Architect / Channel |
 
 The image is production-ish: `vite build` plus `node server/index.mjs` serving `dist/`. OpenCode is installed in the image; CORE still starts in harness-offline mode if the binary is missing. State, auth sidecar, workspaces, harness logs, and `.opencode` live in the **`roster-data`** volume at `/data` (`ROSTER_DATA_DIR`). `compose down` / `up` keeps `/setup` completion.
 
-Health (from a host port only if you publish one, or from inside the network at `roster-flow:8790`):
+Health from another container on the compose network (`roster-flow:8790`). Compose does not publish 8790 or 5175 on the host:
 
 ```bash
-curl -s http://127.0.0.1:8790/api/v1/health
-curl -s http://127.0.0.1:8790/setup
+curl -s http://roster-flow:8790/api/v1/health
+curl -s http://roster-flow:8790/setup
 ```
 
 First run is `/setup` on that origin. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`. `GET /api/v1/setup/status` without a session returns booleans (`hasOwner`, `setupClosed`, and the checklist flags) and does not include the owner's email or name.
@@ -37,7 +37,7 @@ Family API port is **8790**. **8787 belongs to mcp-flow** and is not Roster's po
 ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 ```
 
-`ROSTER_API` inside the container follows `ROSTER_API_PORT`. `ROSTER_PUBLIC_URL` follows `ROSTER_WEB_PORT` (`http://127.0.0.1:$ROSTER_WEB_PORT`). Compose publishes host `ROSTER_WEB_PORT` (default 5175) and host `ROSTER_API_PORT` (default 8790) onto the container API port, so `/setup` and `/api` share the UI origin and the family can still call `:8790`. `npm run dev` uses the same `ROSTER_WEB_PORT`. If that API port is already taken, CORE prints `ROSTER_API_PORT <port> is already in use` and exits.
+`ROSTER_API` inside the container follows `ROSTER_API_PORT`. `ROSTER_PUBLIC_URL` follows `ROSTER_WEB_PORT` (`http://127.0.0.1:$ROSTER_WEB_PORT`). Compose `expose`s both ports on the compose network and does not publish them on the host. `npm run dev` still binds `ROSTER_WEB_PORT` (default 5175) on the machine, and `npm run api` binds `ROSTER_API_PORT` (default 8790). If that API port is already taken, CORE prints `ROSTER_API_PORT <port> is already in use` and exits.
 
 ### Compose environment
 
@@ -45,8 +45,8 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 
 | Variable | Compose default | Purpose |
 |---|---|---|
-| `ROSTER_API_PORT` | `8790` | Port CORE listens on. Also the exposed port and the healthcheck. |
-| `ROSTER_WEB_PORT` | `5175` | Web UI port. Drives `ROSTER_PUBLIC_URL`. |
+| `ROSTER_API_PORT` | `8790` | Port CORE listens on. Exposed on the compose network (not published on the host) and used by the healthcheck. |
+| `ROSTER_WEB_PORT` | `5175` | Web UI port. Exposed the same way. Drives `ROSTER_PUBLIC_URL`. |
 | `ROSTER_BOOTSTRAP_TOKEN` | unset | When set, `POST /api/v1/setup/first-user` requires it. |
 | `ROSTER_OWNER_EMAIL` | unset | Seed the owner on first boot. |
 | `ROSTER_OWNER_PASSWORD` | unset | Plaintext password for that owner. |
@@ -72,7 +72,7 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 docker compose -f docker-compose.dokploy.yml up --build
 ```
 
-The file joins the external network `dokploy-network` and registers aliases `roster-flow` and `roster`. wiki-flow should call Roster at `http://roster-flow:8790` (or whatever `ROSTER_API_PORT` is). `ROSTER_PUBLIC_URL` defaults to `http://127.0.0.1:8790` on this file because CORE serves the UI on the API port; override it with the public hostname.
+The file joins the external network `dokploy-network` and registers aliases `roster-flow` and `roster`. It exposes 8790 and 5175 and does not publish them on the host. wiki-flow should call Roster at `http://roster-flow:8790` (or whatever `ROSTER_API_PORT` is). `ROSTER_PUBLIC_URL` defaults to `http://127.0.0.1:8790` on this file because CORE serves the UI on the API port; override it with the public hostname.
 
 `roster-setup` is a one-shot that runs `scripts/setup-wiki-team.mjs` after CORE is healthy. It uses `ROSTER_API_TOKEN` (needs `write`) against `http://roster-flow:$ROSTER_API_PORT`. Set the same token on the app service so boot registers it, and set `ROSTER_OWNER_*` so an owner exists before the one-shot runs. If `ROSTER_API_TOKEN` is unset, the one-shot skips. `WIKI_MODEL` and `WIKI_PROJECT_ID` are optional (`Qwen/Qwen2.5-Coder-32B-Instruct`, `wiki-flow-docs`).
 
