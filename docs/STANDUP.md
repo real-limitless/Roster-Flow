@@ -141,6 +141,22 @@ Scripts should use a scoped API token instead of a login session. Create one in 
 
 Revoked or expired tokens get 401; a token without the needed scope gets 403. `scripts/setup-wiki-team.mjs` requires `ROSTER_API_TOKEN`.
 
+### Harness autostart
+
+When an owner exists (seeded from `ROSTER_OWNER_*` or created in `/setup`) and a provider is configured, CORE starts company and system `opencode serve` on boot. `GET /api/v1/health` then reports `harness: "up"`, `systemHarness.harness: "up"`, and `ready: true` with no clicks. A missing binary leaves the API up and `harness: "offline"`.
+
+Seed a provider from env (the named key var must also be present, for example `FEATHERLESS_API_KEY`):
+
+```
+ROSTER_PROVIDER_ID=featherless
+ROSTER_PROVIDER_NAME=Featherless
+ROSTER_PROVIDER_BASE_URL=https://api.featherless.ai/v1
+ROSTER_PROVIDER_API_KEY_ENV=FEATHERLESS_API_KEY
+ROSTER_PROVIDER_MODELS=model-a,model-b
+```
+
+`ROSTER_DISABLE_HARNESS_AUTOSTART=1` skips the serve start. The provider seed still runs. An existing provider key (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`) or a model already written in `opencode.json` also counts as configured.
+
 ## Seed / demo data
 
 On first API boot **with skip** (or after the welcome step picks **starter company**), `server/seed.mjs` writes `.roster-flow/state.json` from the same starter company as `src/data.ts`. Welcome can also pick an **empty org** (You + Channel + Architect, `#general` only). Existing data dirs without an `onboarding` field migrate as already complete. The starter roster:

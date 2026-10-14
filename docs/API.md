@@ -29,7 +29,7 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness` |
+| GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness`. `ready` is true when both serves are up |
 | POST | `/api/v1/harness/ensure` | Start or reuse `opencode serve` (`{ forceRestart, kind?: "company" \| "system" }`) |
 | GET | `/api/v1/harness` | Company serve plus `systemHarness` (Architect / Channel) |
 | WS | `/api/v1/harness/pty?seat=<id>` | xterm PTY: `opencode attach --session` |

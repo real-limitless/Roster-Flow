@@ -8,11 +8,11 @@ services:
     image: roster-flow:local
     init: true
     expose:
-      - "8787"
+      - "8790"
     environment:
       ROSTER_API_HOST: "0.0.0.0"
-      ROSTER_API_PORT: "8787"
-      ROSTER_API: "http://127.0.0.1:8787"
+      ROSTER_API_PORT: "8790"
+      ROSTER_API: "http://127.0.0.1:8790"
       ROSTER_PUBLIC_URL: "http://127.0.0.1:${ROSTER_HTTP_PORT:-5173}"
       ROSTER_DATA_DIR: /data
       # Headless bootstrap (docs/STANDUP.md). Unset = interactive /setup.
@@ -23,6 +23,13 @@ services:
       ROSTER_OWNER_NAME: ${ROSTER_OWNER_NAME:-}
       ROSTER_OWNER_TEMPLATE: ${ROSTER_OWNER_TEMPLATE:-empty}
       ROSTER_API_TOKEN: ${ROSTER_API_TOKEN:-}
+      ROSTER_PROVIDER_ID: ${ROSTER_PROVIDER_ID:-}
+      ROSTER_PROVIDER_NAME: ${ROSTER_PROVIDER_NAME:-}
+      ROSTER_PROVIDER_NPM: ${ROSTER_PROVIDER_NPM:-}
+      ROSTER_PROVIDER_BASE_URL: ${ROSTER_PROVIDER_BASE_URL:-}
+      ROSTER_PROVIDER_API_KEY_ENV: ${ROSTER_PROVIDER_API_KEY_ENV:-}
+      ROSTER_PROVIDER_MODELS: ${ROSTER_PROVIDER_MODELS:-}
+      ROSTER_DISABLE_HARNESS_AUTOSTART: ${ROSTER_DISABLE_HARNESS_AUTOSTART:-}
       ROSTER_OPENCODE_DIR: /data/opencode
       ROSTER_STATIC_DIR: /app/dist
       OPENCODE_BIN: /usr/local/bin/opencode
@@ -43,7 +50,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:8787/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+          "fetch('http://127.0.0.1:8790/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
         ]
       interval: 10s
       timeout: 5s

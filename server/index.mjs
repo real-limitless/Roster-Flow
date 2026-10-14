@@ -24,6 +24,7 @@ import { clearRoutineActive, createRoutine, patchRoutine, publicRoutine, runRout
 import { auditSkill, familyStatus, installSkill, listMcpBackends, registerMcpBackend } from "./family.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
+import { autostartHarness, seedProviderFromEnv } from "./autostart.mjs";
 import { isDataWritable } from "./paths.mjs";
 import { tryServeStatic } from "./static.mjs";
 
@@ -121,6 +122,13 @@ try {
 } catch (err) {
   console.error(`Owner seed from env failed: ${err.message}`);
   process.exit(1);
+}
+try {
+  const provider = seedProviderFromEnv();
+  if (provider.seeded) console.log(`Provider ${provider.provider.id} seeded from env.`);
+  else if (provider.reason) console.log(`Provider seed skipped: ${provider.reason}`);
+} catch (err) {
+  console.error(`Provider seed from env failed: ${err.message}`);
 }
 save();
 try {
@@ -277,9 +285,11 @@ const server = createServer(async (req, res) => {
     }
 
     if (pathname === "/api/v1/health" && method === "GET") {
+      const status = combinedStatus();
       json(res, 200, {
         ok: true,
-        ...combinedStatus(),
+        ...status,
+        ready: status.harness === "up" && status.systemHarness?.harness === "up",
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
       });
@@ -1020,4 +1030,5 @@ server.listen(PORT, HOST, () => {
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
   if (!setupClosed(getState())) console.log(`Setup: ${publicUrl()}/setup`);
   startRoutineTicker();
+  void autostartHarness().catch((err) => console.error("harness autostart", err));
 });

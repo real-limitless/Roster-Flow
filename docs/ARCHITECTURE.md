@@ -64,7 +64,7 @@ The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools
 Browser (Vite :5173, or CORE-served dist in Compose)
     │  /api/v1/*
     ▼
-CORE API (ROSTER_API_HOST, default 127.0.0.1:8787; Compose binds 0.0.0.0)
+CORE API (ROSTER_API_HOST, default 127.0.0.1:8790; Compose binds 0.0.0.0:8790 so mcp-flow keeps 8787)
     ├── store  (ROSTER_DATA_DIR / .roster-flow/state.json)
     ├── bus    (messages, cycle detect)
     ├── providers → writes ROSTER_OPENCODE_DIR/opencode.json + auth sidecar
