@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTools, wikiflowApi, wikiflowConfig } from "./index.js";
+import { buildTools, rosterApi, rosterHeaders, wikiflowApi, wikiflowConfig } from "./index.js";
 
 function fakeTool(def) {
   return def;
@@ -130,4 +130,25 @@ test("wikiflow_put_page validates sources entries as {path, startLine?, endLine?
   for (const [sources, re] of bad) {
     await assert.rejects(tools.wikiflow_put_page.execute({ ...base, sources }, {}), re);
   }
+});
+
+test("plugin sends ROSTER_API_TOKEN as Bearer on calls back to Roster", async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push({ url, init });
+    return { ok: true, status: 200, text: async () => "[]" };
+  };
+  const env = { ROSTER_API: "http://roster.test/", ROSTER_API_TOKEN: " rf_plugin_token_0123456789abc " };
+  await rosterApi("/api/v1/seats", {}, env, fetchImpl);
+  await rosterApi("/api/v1/bus", { method: "POST", body: "{}" }, env, fetchImpl);
+  assert.equal(seen[0].url, "http://roster.test/api/v1/seats");
+  for (const { init } of seen) assert.equal(init.headers.authorization, "Bearer rf_plugin_token_0123456789abc");
+  assert.equal(seen[1].init.headers["content-type"], "application/json");
+});
+
+test("plugin omits Authorization without ROSTER_API_TOKEN and keeps an explicit one", () => {
+  assert.equal(rosterHeaders({}, {}).authorization, undefined);
+  const h = rosterHeaders({ headers: { Authorization: "Bearer other" } }, { ROSTER_API_TOKEN: "rf_x" });
+  assert.equal(h.Authorization, "Bearer other");
+  assert.equal(h.authorization, undefined);
 });

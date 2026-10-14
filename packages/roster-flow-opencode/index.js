@@ -6,10 +6,23 @@
 
 const API = process.env.ROSTER_API || "http://127.0.0.1:8790";
 
-async function api(path, init = {}) {
+/**
+ * Headers for calls back to the Roster API. ROSTER_API_TOKEN is read at call
+ * time and sent as `Authorization: Bearer`, so a running serve picks up a
+ * rotated token. Without it the request goes out unauthenticated.
+ */
+export function rosterHeaders(init = {}, env = process.env) {
   const headers = { ...(init.headers || {}) };
+  const token = String(env.ROSTER_API_TOKEN || "").trim();
+  const hasAuth = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+  if (token && !hasAuth) headers.authorization = `Bearer ${token}`;
   if (init.body && !headers["content-type"]) headers["content-type"] = "application/json";
-  const res = await fetch(`${API}${path}`, { ...init, headers });
+  return headers;
+}
+
+export async function rosterApi(path, init = {}, env = process.env, fetchImpl = fetch) {
+  const base = String(env.ROSTER_API || API).replace(/\/+$/, "");
+  const res = await fetchImpl(`${base}${path}`, { ...init, headers: rosterHeaders(init, env) });
   const text = await res.text();
   let data = null;
   try {
@@ -19,6 +32,10 @@ async function api(path, init = {}) {
   }
   if (!res.ok) throw new Error(data?.error || res.statusText);
   return data;
+}
+
+function api(path, init = {}) {
+  return rosterApi(path, init);
 }
 
 /**

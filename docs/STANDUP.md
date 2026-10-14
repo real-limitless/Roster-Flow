@@ -136,7 +136,7 @@ If you keep the interactive flow on a reachable host, set `ROSTER_BOOTSTRAP_TOKE
 
 Scripts should use a scoped API token instead of a login session. Create one in **Settings → API tokens**, with `POST /api/v1/tokens` (admin scope), or headlessly:
 
-- `ROSTER_API_TOKEN=rf_<at least 21 more chars>` in env registers that token (all scopes; narrow with `ROSTER_API_TOKEN_SCOPES=read,write`) on boot once an owner exists. Set it alongside `ROSTER_OWNER_*` for a fully unattended deploy.
+- `ROSTER_API_TOKEN=rf_<at least 21 more chars>` in env registers that token (scopes `read,write` by default; set `ROSTER_API_TOKEN_SCOPES=read,write,admin` if it must manage tokens). The OpenCode plugin sends the same `ROSTER_API_TOKEN` as `Authorization: Bearer` on its calls back to Roster on boot once an owner exists. Set it alongside `ROSTER_OWNER_*` for a fully unattended deploy.
 - `node scripts/create-token.mjs --name ci --scopes read,write [--days 90]` prints a new token once.
 
 Revoked or expired tokens get 401; a token without the needed scope gets 403. `scripts/setup-wiki-team.mjs` requires `ROSTER_API_TOKEN`.
