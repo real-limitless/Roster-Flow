@@ -15,6 +15,17 @@ export type SetupStatus = {
   name?: string | null;
 };
 
+export type ApiToken = {
+  id: string;
+  name: string;
+  scopes: string[];
+  prefix: string;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+};
+
 export type AuthUser = { id: string; name: string; email: string; role: string; seatId: string };
 
 export function getAuthToken() {
@@ -288,6 +299,10 @@ export const api = {
         channel: string | null;
       }>;
     }>("/api/v1/harness/sessions"),
+  listTokens: () => req<ApiToken[]>("/api/v1/tokens"),
+  createToken: (body: { name: string; scopes: string[]; expiresInDays?: number }) =>
+    req<{ token: string; record: ApiToken }>("/api/v1/tokens", { method: "POST", body: JSON.stringify(body) }),
+  revokeToken: (id: string) => req<ApiToken>(`/api/v1/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
   familyStatus: () =>
     req<{
       mcpFlow: { url: string; ok: boolean; status?: number; error?: string; admin: boolean };
