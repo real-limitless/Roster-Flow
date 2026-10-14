@@ -97,7 +97,7 @@ The `roster-flow-opencode` plugin adds three tools that call wiki-flow with `Aut
 | `wikiflow_search {owner, repo, q}` | `GET /api/v1/repos/:owner/:repo/sources/search?q=` → `{results:[{path,line,snippet}]}` |
 | `wikiflow_put_page {owner, repo, slug, runId, title, markdown, sources, agent}` | `PUT /api/v1/repos/:owner/:repo/pages/:slug` with body `{runId, title, markdown, sources, agent}` |
 
-`runId` must name an existing wiki-flow run (404 if unknown, 409 if the run is complete). `WIKIFLOW_TOKEN` is the wiki-flow service token (`WIKIFLOW_API_TOKEN` on the wiki-flow side). `sources` is a JSON array; `agent` defaults to the calling OpenCode agent. If `WIKIFLOW_TOKEN` or `WIKIFLOW_URL` is missing, the tool fails with a message naming the variable. Non-2xx responses surface as `wiki-flow <status>: <error>`.
+`runId` must name an existing wiki-flow run (404 if unknown, 409 if the run is complete). `WIKIFLOW_TOKEN` is the wiki-flow service token (`WIKIFLOW_API_TOKEN` on the wiki-flow side). `sources` is a JSON array of `{path, startLine?, endLine?}` (1-based lines, `endLine >= startLine`); other shapes or extra keys are rejected before the request; `agent` defaults to the calling OpenCode agent. If `WIKIFLOW_TOKEN` or `WIKIFLOW_URL` is missing, the tool fails with a message naming the variable. Non-2xx responses surface as `wiki-flow <status>: <error>`.
 
 Both variables are passed to `opencode serve` by `serveChildEnv` (`server/providers.mjs`) and to the container by `docker-compose.yml` (`WIKIFLOW_URL`, `WIKIFLOW_TOKEN` from the host env).
 

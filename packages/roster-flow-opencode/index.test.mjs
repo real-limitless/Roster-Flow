@@ -80,7 +80,7 @@ test("wikiflow tools hit the documented wiki-flow paths", async () => {
   await tools.wikiflow_read_source.execute({ owner: "o", repo: "r", paths: "src/a.ts, README.md" });
   await tools.wikiflow_search.execute({ owner: "real-limitless", repo: "Roster-Flow", q: "port config" });
   await tools.wikiflow_put_page.execute(
-    { owner: "o", repo: "r", slug: "arch", runId: "run-1", title: "Arch", markdown: "# A", sources: '["src/a.ts"]' },
+    { owner: "o", repo: "r", slug: "arch", runId: "run-1", title: "Arch", markdown: "# A", sources: '[{"path":"src/a.ts","startLine":3,"endLine":9},{"path":"README.md"}]' },
     { agent: "wiki-scribe" },
   );
   assert.equal(calls[0].path, "/api/v1/repos/real-limitless/Roster-Flow/sources");
@@ -92,7 +92,7 @@ test("wikiflow tools hit the documented wiki-flow paths", async () => {
     runId: "run-1",
     title: "Arch",
     markdown: "# A",
-    sources: ["src/a.ts"],
+    sources: [{ path: "src/a.ts", startLine: 3, endLine: 9 }, { path: "README.md" }],
     agent: "wiki-scribe",
   });
 });
@@ -114,4 +114,20 @@ test("wikiflow client fails clearly without a token and sends Bearer auth", asyn
     wikiflowApi("/x", {}, { WIKIFLOW_URL: "http://w", WIKIFLOW_TOKEN: "tok" }, failing),
     /wiki-flow 401: bad token/,
   );
+});
+
+test("wikiflow_put_page validates sources entries as {path, startLine?, endLine?}", async () => {
+  const tools = buildTools(fakeTool, async () => ({}), async () => ({}));
+  const base = { owner: "o", repo: "r", slug: "s", runId: "run", title: "T", markdown: "m" };
+  const bad = [
+    ['["src/a.ts"]', /sources\[0\] must be/],
+    ['[{"startLine":1}]', /sources\[0\]\.path is required/],
+    ['[{"path":"a","line":1}]', /unknown keys: line/],
+    ['[{"path":"a","startLine":0}]', /startLine must be a positive integer/],
+    ['[{"path":"a","startLine":5,"endLine":2}]', /endLine must be >= startLine/],
+    ['{"path":"a"}', /must be a JSON array/],
+  ];
+  for (const [sources, re] of bad) {
+    await assert.rejects(tools.wikiflow_put_page.execute({ ...base, sources }, {}), re);
+  }
 });

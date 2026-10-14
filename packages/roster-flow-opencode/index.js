@@ -58,7 +58,21 @@ function parseSources(raw) {
   if (raw === undefined || raw === null || raw === "") return [];
   const v = typeof raw === "string" ? JSON.parse(raw) : raw;
   if (!Array.isArray(v)) throw new Error("sources must be a JSON array");
-  return v;
+  return v.map((entry, i) => {
+    const where = `sources[${i}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`${where} must be {path, startLine?, endLine?}`);
+    const extra = Object.keys(entry).filter((k) => !["path", "startLine", "endLine"].includes(k));
+    if (extra.length) throw new Error(`${where} has unknown keys: ${extra.join(", ")}`);
+    if (typeof entry.path !== "string" || !entry.path.trim()) throw new Error(`${where}.path is required`);
+    const out = { path: entry.path };
+    for (const k of ["startLine", "endLine"]) {
+      if (entry[k] === undefined) continue;
+      if (!Number.isInteger(entry[k]) || entry[k] < 1) throw new Error(`${where}.${k} must be a positive integer`);
+      out[k] = entry[k];
+    }
+    if (out.startLine && out.endLine && out.endLine < out.startLine) throw new Error(`${where}.endLine must be >= startLine`);
+    return out;
+  });
 }
 
 export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
@@ -223,7 +237,7 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
         runId: z.string().describe("wiki-flow run id"),
         title: z.string().describe("Page title"),
         markdown: z.string().describe("Page body (Markdown)"),
-        sources: z.string().optional().describe("JSON array of source references the page cites"),
+        sources: z.string().optional().describe('JSON array of cited sources: [{"path":"src/a.ts","startLine":1,"endLine":20}] (startLine/endLine optional, 1-based)'),
         agent: z.string().optional().describe("Authoring agent id. Defaults to the current agent."),
       },
       async execute(args, ctx) {
