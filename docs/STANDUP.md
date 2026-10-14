@@ -132,6 +132,15 @@ CLI alternative (writes to `ROSTER_DATA_DIR`, run before CORE starts): `ROSTER_O
 
 If you keep the interactive flow on a reachable host, set `ROSTER_BOOTSTRAP_TOKEN`. `POST /api/v1/setup/first-user` then requires it (header `x-roster-bootstrap-token`, or the Bootstrap token field on `/setup`). Once an owner exists, `first-user` returns 409 regardless.
 
+### API tokens for automation
+
+Scripts should use a scoped API token instead of a login session. Create one in **Settings → API tokens**, with `POST /api/v1/tokens` (admin scope), or headlessly:
+
+- `ROSTER_API_TOKEN=rf_<at least 21 more chars>` in env registers that token (all scopes; narrow with `ROSTER_API_TOKEN_SCOPES=read,write`) on boot once an owner exists. Set it alongside `ROSTER_OWNER_*` for a fully unattended deploy.
+- `node scripts/create-token.mjs --name ci --scopes read,write [--days 90]` prints a new token once.
+
+Revoked or expired tokens get 401; a token without the needed scope gets 403. `scripts/setup-wiki-team.mjs` requires `ROSTER_API_TOKEN`.
+
 ## Seed / demo data
 
 On first API boot **with skip** (or after the welcome step picks **starter company**), `server/seed.mjs` writes `.roster-flow/state.json` from the same starter company as `src/data.ts`. Welcome can also pick an **empty org** (You + Channel + Architect, `#general` only). Existing data dirs without an `onboarding` field migrate as already complete. The starter roster:

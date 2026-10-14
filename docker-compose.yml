@@ -22,6 +22,7 @@ services:
       ROSTER_OWNER_PASSWORD_HASH: ${ROSTER_OWNER_PASSWORD_HASH:-}
       ROSTER_OWNER_NAME: ${ROSTER_OWNER_NAME:-}
       ROSTER_OWNER_TEMPLATE: ${ROSTER_OWNER_TEMPLATE:-empty}
+      ROSTER_API_TOKEN: ${ROSTER_API_TOKEN:-}
       ROSTER_OPENCODE_DIR: /data/opencode
       ROSTER_STATIC_DIR: /app/dist
       OPENCODE_BIN: /usr/local/bin/opencode
@@ -30,6 +31,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      WIKIFLOW_URL: ${WIKIFLOW_URL:-}
+      WIKIFLOW_TOKEN: ${WIKIFLOW_TOKEN:-}
     volumes:
       - roster-data:/data
     restart: unless-stopped
