@@ -390,6 +390,7 @@ export function migrateState(state) {
     };
   });
   migrateCompanyLoop(next);
+  if (!Array.isArray(next.jobs)) next.jobs = [];
   return next;
 }
 
@@ -412,6 +413,7 @@ function baseFields() {
     pausedRunIds: [],
     routines: [],
     routineRuns: [],
+    jobs: [],
   };
 }
 

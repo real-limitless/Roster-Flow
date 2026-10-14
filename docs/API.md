@@ -77,7 +77,7 @@ Staffed teams (`eng`, `services`) always have a **Supervisor** and a **Generic**
 
 Creates `platform-supervisor` and `platform-generic`. Optional `specialists[]` hire at create time. `modelStrategy` is `default` | `random` | `round_robin` | `fuse`.
 
-`to: "team:eng"` on the bus wakes that team's Supervisor.
+`to: "team:eng"` on the bus wakes that team's Supervisor. A job addressed to a team chooses its own routing (see Jobs).
 
 Seat `model` is an OpenCode catalog id (`provider/model`). Changing a bot seat rewrites `.opencode/agents/<id>.md`.
 
@@ -183,7 +183,59 @@ Plugin tool: `roster_inbox`.
 
 `wake: true` starts (or continues) the recipient’s OpenCode session when the harness is up.
 
-`POST /api/v1/messages` and `POST /api/v1/bus/send` also accept optional `blocks` (Roster Block Kit array). `text` may be omitted when `blocks` is present.
+`POST /api/v1/messages` and `POST /api/v1/bus/send` also accept optional `blocks` (Roster Block Kit array). `text` may be omitted when `blocks` is present. `jobId` on `POST /api/v1/bus/send` is stored on the bus row and the room message.
+
+## Jobs
+
+Persistent work a caller hands to a seat or a team. Same bearer auth as the rest of the API: `read` can list, get, and wait; `write` can submit, complete, and cancel. Session logins are not scope-limited.
+
+`fileRefs` store paths only (at most 32). File bytes are not accepted. `budget` is stored and not enforced. Both are seams for a later file store and for per-caller budgets.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/jobs` | Submit a job, wake the resolved seat, post it in the room |
+| GET | `/api/v1/jobs` | List, newest first. Optional `?status=&target=&assignee=` |
+| GET | `/api/v1/jobs/:id` | One job |
+| GET | `/api/v1/jobs/:id/wait` | Long-poll. `?timeout=` ms (0–60000, default 25000). `?since=` ISO `updatedAt` returns on any newer write; otherwise returns when status is `needs_human`, `done`, `failed`, or `cancelled` |
+| POST | `/api/v1/jobs/:id/complete` | Seat result. `{ result, status?: done\|failed\|needs_human, cost?, tokens?, from?, announce? }` |
+| POST | `/api/v1/jobs/:id/cancel` | Cancel a non-terminal job. `{ reason? }` |
+
+`POST /api/v1/jobs`:
+
+```json
+{
+  "target": "team:eng",
+  "routing": "supervisor",
+  "brief": "Implement webhook idempotency.",
+  "fileRefs": [{ "path": "billing/webhook.ts", "name": "webhook.ts" }],
+  "channel": "ship",
+  "callbackUrl": "https://harness.example/hooks/roster",
+  "budget": { "tokens": 20000, "cost": 1.5 },
+  "runId": "run-optional"
+}
+```
+
+`target` is a seat id or `team:<id>`. Team `routing` is `supervisor` (default; same seat the bus wakes today), `round_robin` (generic, then specialists, skipping humans and the Supervisor), or `specialist` with `specialist` set to a bot seat id on that team. `round-robin` is accepted as an alias. Routing on a seat target is `400`.
+
+Submit writes a `kind: "job"` bus row and a room message (default `#ship`), then wakes `assignee`. Harness offline, paused, or killed runs stay `queued` and record `wake`. A prompted session moves the job to `running`. A human assignee moves it to `needs_human`.
+
+Status: `queued`, `running`, `needs_human`, `done`, `failed`, `cancelled`. Terminal jobs reject another complete or cancel with **409**.
+
+`tokens` is a number (stored as `{ "total": n }`) or `{ "input", "output", "total" }`. `cost` is a non-negative number. Omit either when the seat does not know usage.
+
+`GET /api/v1/jobs/:id/wait` returns `{ "job", "timedOut" }`.
+
+On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set:
+
+```json
+{ "event": "job.status", "job": { "id": "job-…", "status": "done", "result": "…" } }
+```
+
+The attempt is stored on `job.callback` (`ok`, `status`, `error`). A failed callback does not change the job status. `announce: false` skips the room and bus note (the seat tool uses this when it is already posting the ask).
+
+A seat finishes with `roster_report` `jobId` (optional `status`, `cost`, `tokens`). `roster_ask_human` `jobId` sets `needs_human` and still parks the question on `reports_to`.
+
+`GET /api/v1/state` includes `jobs`.
 
 ## Roster Block Kit
 

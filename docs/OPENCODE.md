@@ -26,8 +26,8 @@ Package: `packages/roster-flow-opencode`
 | `roster_list_seats` | Who is on the chart |
 | `roster_send_message` | Peer or channel mail |
 | `roster_handoff` | Close my phase, open yours |
-| `roster_report` | Structured result to the originating thread |
-| `roster_ask_human` | Park on `reports_to` (never `#general`) |
+| `roster_report` | Structured result to the originating thread. `jobId` completes that job (`done`, `failed`, or `needs_human`) |
+| `roster_ask_human` | Park on `reports_to` (never `#general`). `jobId` sets that job to `needs_human` |
 | `roster_propose_org` | Architect OrgPlan (does not apply) |
 
 Hooks:
@@ -59,7 +59,7 @@ Provider contract:
 - Built-in-style ids: `anthropic`, `openai`, `xai`, `google`, plus **Other / Custom** (npm `@ai-sdk/openai-compatible`, `baseURL`, model list, optional headers).
 - API key as `{env:VAR}` in `opencode.json` when possible; literal keys only in `.roster-flow/auth.json` (gitignored).
 - Per-seat model is a Roster-flow field stored as `provider/model`. Hire/patch writes `.opencode/agents/<seatId>.md` (frontmatter `model`, `mode`, `permissions`; body = persona + instructions) and the matching `agents` block in `opencode.json`. Attach/wake send `{ providerID, modelID }` plus that agent id.
-- Team Supervisor agents are `mode: primary`. Generic and specialists are `mode: all`. Mail to `team:<id>` wakes the Supervisor.
+- Team Supervisor agents are `mode: primary`. Generic and specialists are `mode: all`. Mail to `team:<id>` wakes the Supervisor. Jobs use an explicit routing mode (`supervisor`, `round_robin`, or a named specialist) instead of always waking the Supervisor.
 - Each staffed team also writes an OpenCode alias agent (`eng`, `services`, …) so harness `@eng` works. The Channel conductor is agent `channel` (`@channel`).
 - Model pickers read the live `opencode serve` catalog when the harness is up, otherwise workspace + `~/.config/opencode`. Seats have default + fallback; teams can use `random`, `round_robin`, or `fuse`.
 

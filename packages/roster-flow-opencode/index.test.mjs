@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTools, wikiflowApi, wikiflowConfig } from "./index.js";
+import { buildTools, rosterAuthHeaders, wikiflowApi, wikiflowConfig } from "./index.js";
 
 function fakeTool(def) {
   return def;
@@ -67,6 +67,31 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
 
   await tools.roster_inbox.execute({}, { agent: "build" });
   assert.ok(calls.some((c) => c.path === "/api/v1/seats/build/inbox"));
+
+  await tools.roster_report.execute(
+    { text: "PR opened", jobId: "job-1", cost: "0.2", tokens: '{"input":3,"output":1}' },
+    { agent: "build" },
+  );
+  const completed = calls.find((c) => c.path === "/api/v1/jobs/job-1/complete");
+  const completedBody = JSON.parse(completed.init.body);
+  assert.equal(completedBody.status, "done");
+  assert.equal(completedBody.result, "PR opened");
+  assert.equal(completedBody.cost, 0.2);
+  assert.deepEqual(completedBody.tokens, { input: 3, output: 1 });
+  assert.equal(completedBody.from, "build");
+
+  await tools.roster_ask_human.execute({ text: "approve?", jobId: "job-1" }, { agent: "build" });
+  const parked = calls.filter((c) => c.path === "/api/v1/jobs/job-1/complete").at(-1);
+  assert.equal(JSON.parse(parked.init.body).status, "needs_human");
+  assert.equal(JSON.parse(parked.init.body).announce, false);
+  const askJob = calls.filter((c) => c.path === "/api/v1/bus/send").at(-1);
+  assert.equal(JSON.parse(askJob.init.body).jobId, "job-1");
+  assert.equal(JSON.parse(askJob.init.body).kind, "ask_human");
+});
+
+test("plugin sends ROSTER_API_TOKEN when the harness has one", () => {
+  assert.deepEqual(rosterAuthHeaders({}), {});
+  assert.deepEqual(rosterAuthHeaders({ ROSTER_API_TOKEN: "rf_seat" }), { authorization: "Bearer rf_seat" });
 });
 
 test("wikiflow tools hit the documented wiki-flow paths", async () => {

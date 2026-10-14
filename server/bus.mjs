@@ -28,7 +28,7 @@ function sessionMap(state, seat) {
   return { key, sessions: state[key] || {} };
 }
 
-export function postBus({ from, to, kind = "send_message", text, runId, wake = false, channel }) {
+export function postBus({ from, to, kind = "send_message", text, runId, wake = false, channel, jobId }) {
   const entry = {
     id: uid("bus"),
     from,
@@ -39,6 +39,7 @@ export function postBus({ from, to, kind = "send_message", text, runId, wake = f
     runId: runId || null,
     time: new Date().toISOString(),
     clock: clock(),
+    ...(jobId ? { jobId } : {}),
   };
   mutate((s) => {
     s.bus = [...(s.bus || []), entry];
@@ -90,6 +91,9 @@ export function promptBody(seat, to, text, meta, model) {
           seat.instructions ? `Instructions:\n${seat.instructions}` : "",
           `Allow: ${(seat.tools || []).join(", ")}. Deny: ${(seat.deny || []).join(", ") || "—"}.`,
           meta.via ? `This mail was addressed to ${meta.via}.` : "",
+          meta.jobId
+            ? `Job ${meta.jobId}. Finish with roster_report jobId=${meta.jobId}. Park with roster_ask_human jobId=${meta.jobId}.`
+            : "",
           `Message from ${meta.from || "bus"} (${meta.kind || "send_message"}):`,
           text,
           "Use roster_send_message / roster_handoff / roster_report to talk to peers. Do not impersonate them.",

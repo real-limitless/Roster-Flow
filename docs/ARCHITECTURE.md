@@ -53,6 +53,7 @@ Faithful behaviors we implement (not UI-only):
 
 - **Autonomous work** — a run wakes each seat in order (or in parallel when the graph says so). Each bot has its own OpenCode session when the harness is up.
 - **Inter-bot mail** — `send_message` / `handoff` / `report` / `ask_human` on an audited bus (Oh My OpenAgent team mailbox pattern: fire-and-forget, inbox, wake idle recipient).
+- **Jobs** — persistent work (`queued` through `done` / `failed` / `cancelled`) addressed to a seat or a team. Submit wakes the resolved seat on that bus and posts the brief in the room. `roster_report` with a job id completes it.
 - **Chief of staff** — Channel routes; specialists execute; humans confirm deploy/merge.
 - **Group thread** — the Room channel is the shared log (Grok Bot group chat).
 
