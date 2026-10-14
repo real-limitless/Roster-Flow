@@ -116,6 +116,22 @@ curl -s http://127.0.0.1:5173/app
 
 Local owner after `/setup`. Playwright sets `ROSTER_SKIP_ONBOARDING=1`; then `Authorization: Bearer roster-demo` is still accepted. Do not invent other tokens.
 
+## Headless bootstrap (no setup screen)
+
+For unattended deploys, set the owner in env and CORE creates it on first boot, finishes onboarding (empty org by default), and closes `/setup`:
+
+```
+ROSTER_OWNER_EMAIL=ops@example.com
+ROSTER_OWNER_PASSWORD=...            # or ROSTER_OWNER_PASSWORD_HASH=scrypt$<salt>$<hash>
+ROSTER_OWNER_NAME=Ops                # optional
+ROSTER_OWNER_TEMPLATE=empty          # or starter
+```
+
+Generate a hash so the plaintext never sits in env: `ROSTER_OWNER_PASSWORD=... node scripts/create-owner.mjs --hash`.
+CLI alternative (writes to `ROSTER_DATA_DIR`, run before CORE starts): `ROSTER_OWNER_PASSWORD=... node scripts/create-owner.mjs --email ops@example.com`.
+
+If you keep the interactive flow on a reachable host, set `ROSTER_BOOTSTRAP_TOKEN`. `POST /api/v1/setup/first-user` then requires it (header `x-roster-bootstrap-token`, or the Bootstrap token field on `/setup`). Once an owner exists, `first-user` returns 409 regardless.
+
 ## Seed / demo data
 
 On first API boot **with skip** (or after the welcome step picks **starter company**), `server/seed.mjs` writes `.roster-flow/state.json` from the same starter company as `src/data.ts`. Welcome can also pick an **empty org** (You + Channel + Architect, `#general` only). Existing data dirs without an `onboarding` field migrate as already complete. The starter roster:

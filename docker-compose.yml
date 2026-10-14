@@ -15,6 +15,13 @@ services:
       ROSTER_API: "http://127.0.0.1:8787"
       ROSTER_PUBLIC_URL: "http://127.0.0.1:${ROSTER_HTTP_PORT:-5173}"
       ROSTER_DATA_DIR: /data
+      # Headless bootstrap (docs/STANDUP.md). Unset = interactive /setup.
+      ROSTER_BOOTSTRAP_TOKEN: ${ROSTER_BOOTSTRAP_TOKEN:-}
+      ROSTER_OWNER_EMAIL: ${ROSTER_OWNER_EMAIL:-}
+      ROSTER_OWNER_PASSWORD: ${ROSTER_OWNER_PASSWORD:-}
+      ROSTER_OWNER_PASSWORD_HASH: ${ROSTER_OWNER_PASSWORD_HASH:-}
+      ROSTER_OWNER_NAME: ${ROSTER_OWNER_NAME:-}
+      ROSTER_OWNER_TEMPLATE: ${ROSTER_OWNER_TEMPLATE:-empty}
       ROSTER_OPENCODE_DIR: /data/opencode
       ROSTER_STATIC_DIR: /app/dist
       OPENCODE_BIN: /usr/local/bin/opencode
