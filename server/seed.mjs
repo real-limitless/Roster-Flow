@@ -250,6 +250,7 @@ export function holdOrgSeed(state) {
 export function migrateOnboarding(state) {
   if (!Array.isArray(state.users)) state.users = [];
   if (!Array.isArray(state.authSessions)) state.authSessions = [];
+  if (!Array.isArray(state.apiTokens)) state.apiTokens = [];
   if (!state.onboarding || typeof state.onboarding !== "object") {
     state.onboarding = { ...defaultOnboarding };
     return state;
@@ -404,6 +405,7 @@ function baseFields() {
     defaultModel: "",
     users: [],
     authSessions: [],
+    apiTokens: [],
     goals: [],
     approvals: [],
     inboxCursors: {},

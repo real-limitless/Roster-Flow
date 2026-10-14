@@ -1,11 +1,12 @@
 import { skipOnboarding } from "./flags.mjs";
+import { bootstrapToken } from "./bootstrap.mjs";
 import { unreadBySeat } from "./inbox.mjs";
 import { publicRoutine } from "./routines.mjs";
 import { emptyOrgState, migrateState, starterState } from "./seed.mjs";
 
 export function publicState(state) {
   if (!state || typeof state !== "object") return state;
-  const { users, authSessions, ...rest } = state;
+  const { users, authSessions, apiTokens, ...rest } = state;
   return {
     ...rest,
     routines: (rest.routines || []).map(publicRoutine),
@@ -32,6 +33,7 @@ export function setupStatus(state, { user = null, binary = null, providerKeys = 
     hasUser,
     authenticated: Boolean(user) || skip,
     harnessReady: Boolean(binary),
+    bootstrapTokenRequired: Boolean(bootstrapToken()) && !hasUser,
     complete,
     step,
     checks: {
@@ -63,6 +65,7 @@ export function markHarnessStep(state, { skipped = false } = {}) {
 export function applyOrgTemplate(state, template, ownerName = "You") {
   const users = state.users || [];
   const authSessions = state.authSessions || [];
+  const apiTokens = state.apiTokens || [];
   const prev = state.onboarding || {};
   const kind = template === "empty" ? "empty" : "starter";
   const base = kind === "empty" ? emptyOrgState(ownerName) : starterState();
@@ -72,6 +75,7 @@ export function applyOrgTemplate(state, template, ownerName = "You") {
     ...base,
     users,
     authSessions,
+    apiTokens,
     onboarding: {
       ...base.onboarding,
       complete: true,

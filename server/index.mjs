@@ -4,6 +4,8 @@ import { normalizeSeat, normalizeModelId } from "./seed.mjs";
 import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
+import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
+import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
@@ -103,6 +105,23 @@ function isPublicPath(method, pathname) {
   return false;
 }
 
+try {
+  const seeded = await seedOwnerFromEnv(getState());
+  if (seeded.seeded) {
+    mutate(() => seeded.state);
+    console.log(`Owner ${seeded.user.email} seeded from env; setup is closed.`);
+  }
+  const tok = seedApiTokenFromEnv(getState());
+  if (tok.seeded) {
+    save();
+    console.log(`API token "${tok.record.name}" registered from ROSTER_API_TOKEN.`);
+  } else if (tok.reason === "no owner") {
+    console.log("ROSTER_API_TOKEN is set but no owner exists yet; it will register on the next boot after setup.");
+  }
+} catch (err) {
+  console.error(`Owner seed from env failed: ${err.message}`);
+  process.exit(1);
+}
 save();
 try {
   syncBotAgents(getState().seats, getState().teams);
@@ -126,10 +145,48 @@ const server = createServer(async (req, res) => {
     const method = req.method || "GET";
     if (tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
-    const user = userFromToken(getState(), token);
+    const apiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
+    const user = apiToken ? apiToken.user : userFromToken(getState(), token);
 
+    if (isApiToken(token) && !apiToken) {
+      json(res, 401, { error: "invalid, expired, or revoked API token" });
+      return;
+    }
     if (!skipOnboarding() && !isPublicPath(method, pathname) && !user) {
       json(res, 401, { error: "authentication required" });
+      return;
+    }
+    if (apiToken && !tokenAllows(apiToken.token, method, pathname)) {
+      json(res, 403, { error: "token scope does not allow this request" });
+      return;
+    }
+
+    if (pathname === "/api/v1/tokens" && method === "GET") {
+      json(res, 200, listApiTokens(getState()));
+      return;
+    }
+    if (pathname === "/api/v1/tokens" && method === "POST") {
+      const body = await readBody(req);
+      let out = null;
+      mutate((s) => {
+        out = createApiToken(s, {
+          name: body.name,
+          scopes: body.scopes,
+          expiresAt: body.expiresAt,
+          expiresInDays: body.expiresInDays,
+          userId: user?.id,
+        });
+      });
+      json(res, 201, out);
+      return;
+    }
+    const tokenOne = pathname.match(/^\/api\/v1\/tokens\/([^/]+)$/);
+    if (tokenOne && method === "DELETE") {
+      let out = null;
+      mutate((s) => {
+        out = revokeApiToken(s, decodeURIComponent(tokenOne[1]));
+      });
+      json(res, 200, out);
       return;
     }
 
@@ -162,6 +219,11 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/setup/first-user" && method === "POST") {
       const body = await readBody(req);
+      if (setupClosed(getState())) {
+        json(res, 409, { error: "setup is closed: an owner already exists" });
+        return;
+      }
+      requireBootstrapToken(req, body);
       const created = await addFirstUser(getState(), body);
       save();
       json(res, 201, { user: publicUser(created) });
@@ -956,6 +1018,6 @@ function startRoutineTicker() {
 server.listen(PORT, HOST, () => {
   const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
-  console.log(`Setup: ${publicUrl()}/setup`);
+  if (!setupClosed(getState())) console.log(`Setup: ${publicUrl()}/setup`);
   startRoutineTicker();
 });

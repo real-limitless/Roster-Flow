@@ -6,12 +6,24 @@ export type SetupStatus = {
   hasUser: boolean;
   authenticated: boolean;
   harnessReady: boolean;
+  bootstrapTokenRequired?: boolean;
   complete: boolean;
   step: "install" | "first_user" | "login" | "harness" | "welcome" | "done";
   checks: { api: boolean; opencode: boolean; providerKeys: boolean; dataDir: boolean };
   binary: string | null;
   email?: string | null;
   name?: string | null;
+};
+
+export type ApiToken = {
+  id: string;
+  name: string;
+  scopes: string[];
+  prefix: string;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
 };
 
 export type AuthUser = { id: string; name: string; email: string; role: string; seatId: string };
@@ -260,7 +272,7 @@ export const api = {
   },
   setupStatus: () => req<SetupStatus>("/api/v1/setup/status"),
   setupInstall: () => req<SetupStatus>("/api/v1/setup/install", { method: "POST", body: "{}" }),
-  setupFirstUser: (body: { name: string; email: string; password: string }) =>
+  setupFirstUser: (body: { name: string; email: string; password: string; bootstrapToken?: string }) =>
     req<{ user: AuthUser }>("/api/v1/setup/first-user", { method: "POST", body: JSON.stringify(body) }),
   setupHarness: (skipped = false) =>
     req<SetupStatus>("/api/v1/setup/harness", { method: "POST", body: JSON.stringify({ skipped }) }),
@@ -287,6 +299,10 @@ export const api = {
         channel: string | null;
       }>;
     }>("/api/v1/harness/sessions"),
+  listTokens: () => req<ApiToken[]>("/api/v1/tokens"),
+  createToken: (body: { name: string; scopes: string[]; expiresInDays?: number }) =>
+    req<{ token: string; record: ApiToken }>("/api/v1/tokens", { method: "POST", body: JSON.stringify(body) }),
+  revokeToken: (id: string) => req<ApiToken>(`/api/v1/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
   familyStatus: () =>
     req<{
       mcpFlow: { url: string; ok: boolean; status?: number; error?: string; admin: boolean };

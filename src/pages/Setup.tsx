@@ -29,6 +29,7 @@ export function Setup() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
   const [providerId, setProviderId] = useState("xai");
   const [providerName, setProviderName] = useState("xAI");
   const [baseURL, setBaseURL] = useState("https://api.x.ai/v1");
@@ -129,7 +130,7 @@ export function Setup() {
               onSubmit={(e: FormEvent) => {
                 e.preventDefault();
                 void wrap(async () => {
-                  await api.setupFirstUser({ name, email, password });
+                  await api.setupFirstUser({ name, email, password, ...(bootstrapToken ? { bootstrapToken } : {}) });
                 });
               }}
             >
@@ -160,6 +161,19 @@ export function Setup() {
                   required
                 />
               </label>
+              {status?.bootstrapTokenRequired && (
+                <label>
+                  Bootstrap token
+                  <input
+                    data-testid="setup-bootstrap-token"
+                    type="password"
+                    value={bootstrapToken}
+                    onChange={(e) => setBootstrapToken(e.target.value)}
+                    autoComplete="off"
+                    required
+                  />
+                </label>
+              )}
               <button className="pill-btn primary" data-testid="setup-create-owner" type="submit" disabled={busy}>
                 Create owner
               </button>

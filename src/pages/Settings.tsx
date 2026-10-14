@@ -8,6 +8,7 @@ import { FamilyPanel } from "./settings/FamilyPanel";
 import { HarnessPanel } from "./settings/HarnessPanel";
 import { ProvidersPanel } from "./settings/ProvidersPanel";
 import { RoutinesPanel } from "./settings/RoutinesPanel";
+import { TokensPanel } from "./settings/TokensPanel";
 import type { HarnessStatus, Provider, SettingsPane } from "./settings/types";
 
 const PANES: Array<[SettingsPane, string]> = [
@@ -16,6 +17,7 @@ const PANES: Array<[SettingsPane, string]> = [
   ["agents", "Agents"],
   ["routines", "Routines"],
   ["family", "Family"],
+  ["tokens", "API tokens"],
 ];
 
 export function Settings() {
@@ -115,6 +117,7 @@ export function Settings() {
           {pane === "agents" && <AgentsPanel seats={seats} />}
           {pane === "routines" && <RoutinesPanel seats={seats} onError={setErr} />}
           {pane === "family" && <FamilyPanel />}
+          {pane === "tokens" && <TokensPanel onError={setErr} />}
         </main>
       </div>
     </div>

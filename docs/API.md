@@ -246,3 +246,14 @@ Literal keys go to `.roster-flow/auth.json` (gitignored) and `{env:VAR}` is pref
 ## Errors
 
 `4xx/5xx` JSON: `{ "error": "string", "detail": "…" }`. `409` if ensure is called and the CLI is missing.
+
+
+## API tokens
+
+`Authorization: Bearer rf_...` is accepted on every route. Scopes: `read` (GET/HEAD), `write` (other methods), `admin` (`/api/v1/tokens*`, `/api/v1/setup/*`). Session logins are not scope-limited.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/tokens` | List (no hashes or plaintext) |
+| POST | `/api/v1/tokens` | `{name, scopes: ["read","write","admin"], expiresAt? \| expiresInDays?}` → `{token, record}`; `token` is shown once |
+| DELETE | `/api/v1/tokens/:id` | Revoke; the token then gets 401 |
