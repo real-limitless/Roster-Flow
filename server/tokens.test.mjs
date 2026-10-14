@@ -67,7 +67,7 @@ test("ROSTER_API_TOKEN seeds once an owner exists, idempotently", async () => {
   const state = await withOwner();
   assert.equal(seedApiTokenFromEnv(state, env).seeded, true);
   assert.equal(seedApiTokenFromEnv(state, env).seeded, false);
-  assert.deepEqual(state.apiTokens[0].scopes, ["read", "write", "admin"]);
+  assert.deepEqual(state.apiTokens[0].scopes, ["read", "write"]);
   assert.ok(resolveApiToken(state, env.ROSTER_API_TOKEN));
 });
 
@@ -77,6 +77,7 @@ test("headless CORE: setup-wiki-team runs with only a token; revoked token gets 
     ROSTER_OWNER_EMAIL: "ops@example.com",
     ROSTER_OWNER_PASSWORD: "password1",
     ROSTER_API_TOKEN: TOKEN,
+    ROSTER_API_TOKEN_SCOPES: "read,write,admin",
   });
   const auth = (t) => ({ authorization: `Bearer ${t}`, "content-type": "application/json" });
   try {
@@ -100,6 +101,39 @@ test("headless CORE: setup-wiki-team runs with only a token; revoked token gets 
     const del = await fetch(`${core.base}/api/v1/tokens/${record.id}`, { method: "DELETE", headers: auth(TOKEN) });
     assert.equal(del.status, 200);
     assert.equal((await fetch(`${core.base}/api/v1/seats`, { headers: auth(ro) })).status, 401);
+  } finally {
+    await core.stop();
+  }
+});
+
+test("env-seeded ROSTER_API_TOKEN defaults to read+write, not admin; SCOPES env overrides", async () => {
+  const state = await withOwner();
+  seedApiTokenFromEnv(state, { ROSTER_API_TOKEN: "rf_default_scope_token_0123456789" });
+  const rec = state.apiTokens[0];
+  assert.deepEqual(rec.scopes, ["read", "write"]);
+  assert.equal(tokenAllows(rec, "POST", "/api/v1/teams"), true);
+  assert.equal(tokenAllows(rec, "POST", "/api/v1/tokens"), false);
+  const s2 = await withOwner();
+  seedApiTokenFromEnv(s2, { ROSTER_API_TOKEN: "rf_admin_scope_token_0123456789ab", ROSTER_API_TOKEN_SCOPES: "read,write,admin" });
+  assert.deepEqual(s2.apiTokens[0].scopes, ["read", "write", "admin"]);
+});
+
+test("headless CORE: default env token runs setup-wiki-team but cannot mint tokens", async () => {
+  const TOKEN = "rf_default_rw_bootstrap_0123456789ab";
+  const core = await bootCore({
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+  });
+  try {
+    const out = await setupWikiTeam({ env: { ROSTER_API: core.base, ROSTER_API_TOKEN: TOKEN }, log() {} });
+    assert.equal(out.teamCreated, true);
+    const res = await fetch(`${core.base}/api/v1/tokens`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "x", scopes: ["read"] }),
+    });
+    assert.equal(res.status, 403);
   } finally {
     await core.stop();
   }

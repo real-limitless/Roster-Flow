@@ -7,6 +7,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
  */
 export const TOKEN_PREFIX = "rf_";
 export const SCOPES = ["read", "write", "admin"];
+/** Scopes for the env-seeded ROSTER_API_TOKEN unless ROSTER_API_TOKEN_SCOPES is set. */
+export const DEFAULT_ENV_TOKEN_SCOPES = ["read", "write"];
 
 function fail(status, message) {
   const err = new Error(message);
@@ -109,14 +111,14 @@ export function tokenAllows(tokenRec, method, pathname) {
   return have.has(need);
 }
 
-/** Headless: register ROSTER_API_TOKEN (all scopes) once an owner exists. Idempotent. */
+/** Headless: register ROSTER_API_TOKEN (read,write by default; override with ROSTER_API_TOKEN_SCOPES) once an owner exists. Idempotent. */
 export function seedApiTokenFromEnv(state, env = process.env) {
   const token = String(env.ROSTER_API_TOKEN || "").trim();
   if (!token) return { seeded: false };
   if (!(state.users || []).length) return { seeded: false, reason: "no owner" };
   const hash = hashToken(token);
   if ((state.apiTokens || []).some((t) => t.hash === hash)) return { seeded: false, reason: "exists" };
-  const scopes = env.ROSTER_API_TOKEN_SCOPES ? env.ROSTER_API_TOKEN_SCOPES : SCOPES;
+  const scopes = env.ROSTER_API_TOKEN_SCOPES ? env.ROSTER_API_TOKEN_SCOPES : DEFAULT_ENV_TOKEN_SCOPES;
   const out = createApiToken(state, { name: env.ROSTER_API_TOKEN_NAME || "bootstrap", scopes, token });
   return { seeded: true, record: out.record };
 }
