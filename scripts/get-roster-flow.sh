@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/real-limitless/roster-flow.git}"
 BRANCH="${BRANCH:-DEVELOPMENT}"
 CLONE_DIR="${CLONE_DIR:-$HOME/src/roster-flow}"
-PORT="${ROSTER_HTTP_PORT:-5173}"
+PORT="${ROSTER_WEB_PORT:-5175}"
 
 fail() { echo "$*" >&2; exit 1; }
 

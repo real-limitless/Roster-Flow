@@ -1,0 +1,100 @@
+# Dokploy (development). Joins the external dokploy-network so wiki-flow can
+# reach Roster at http://roster-flow:8790 (alias roster-flow, also roster).
+# OpenCode stays on 127.0.0.1 inside the container; nothing is published on the host.
+# 8787 is mcp-flow. Override ROSTER_API_PORT / ROSTER_WEB_PORT if those defaults move.
+services:
+  roster-flow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: roster-flow:dokploy
+    init: true
+    expose:
+      - "${ROSTER_API_PORT:-8790}"
+    environment:
+      ROSTER_API_HOST: "0.0.0.0"
+      ROSTER_API_PORT: ${ROSTER_API_PORT:-8790}
+      ROSTER_API: http://127.0.0.1:${ROSTER_API_PORT:-8790}
+      ROSTER_WEB_PORT: ${ROSTER_WEB_PORT:-5175}
+      ROSTER_PUBLIC_URL: ${ROSTER_PUBLIC_URL:-http://127.0.0.1:8790}
+      ROSTER_DATA_DIR: /data
+      ROSTER_BOOTSTRAP_TOKEN: ${ROSTER_BOOTSTRAP_TOKEN:-}
+      ROSTER_OWNER_EMAIL: ${ROSTER_OWNER_EMAIL:-}
+      ROSTER_OWNER_PASSWORD: ${ROSTER_OWNER_PASSWORD:-}
+      ROSTER_OWNER_PASSWORD_HASH: ${ROSTER_OWNER_PASSWORD_HASH:-}
+      ROSTER_OWNER_NAME: ${ROSTER_OWNER_NAME:-}
+      ROSTER_OWNER_TEMPLATE: ${ROSTER_OWNER_TEMPLATE:-empty}
+      ROSTER_API_TOKEN: ${ROSTER_API_TOKEN:-}
+      ROSTER_API_TOKEN_SCOPES: ${ROSTER_API_TOKEN_SCOPES:-}
+      ROSTER_API_TOKEN_NAME: ${ROSTER_API_TOKEN_NAME:-}
+      ROSTER_HARNESS_AUTOSTART: ${ROSTER_HARNESS_AUTOSTART:-auto}
+      ROSTER_PROVIDER_ID: ${ROSTER_PROVIDER_ID:-}
+      ROSTER_PROVIDER_NAME: ${ROSTER_PROVIDER_NAME:-}
+      ROSTER_PROVIDER_NPM: ${ROSTER_PROVIDER_NPM:-}
+      ROSTER_PROVIDER_BASE_URL: ${ROSTER_PROVIDER_BASE_URL:-}
+      ROSTER_PROVIDER_API_KEY_ENV: ${ROSTER_PROVIDER_API_KEY_ENV:-}
+      ROSTER_PROVIDER_MODELS: ${ROSTER_PROVIDER_MODELS:-}
+      ROSTER_OPENCODE_DIR: /data/opencode
+      ROSTER_STATIC_DIR: /app/dist
+      OPENCODE_BIN: /usr/local/bin/opencode
+      OPENCODE_HOSTNAME: 127.0.0.1
+      HOME: /data/home
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      WIKIFLOW_URL: ${WIKIFLOW_URL:-http://wiki-flow:8788}
+      WIKIFLOW_TOKEN: ${WIKIFLOW_TOKEN:-}
+    volumes:
+      - roster-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:${ROSTER_API_PORT:-8790}/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+    networks:
+      default: {}
+      dokploy-network:
+        aliases:
+          - roster-flow
+          - roster
+  roster-setup:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM node:22-alpine
+        WORKDIR /s
+        COPY scripts/setup-wiki-team.mjs ./
+    command:
+      - sh
+      - -c
+      - |
+        if [ -z "$$ROSTER_API_TOKEN" ]; then
+          echo "ROSTER_API_TOKEN unset; skipping wiki team setup"
+          exit 0
+        fi
+        exec node /s/setup-wiki-team.mjs
+    environment:
+      ROSTER_API: http://roster-flow:${ROSTER_API_PORT:-8790}
+      ROSTER_API_TOKEN: ${ROSTER_API_TOKEN:-}
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      WIKI_MODEL: ${WIKI_MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct}
+      WIKI_PROJECT_ID: ${WIKI_PROJECT_ID:-wiki-flow-docs}
+    restart: "no"
+    depends_on:
+      roster-flow:
+        condition: service_healthy
+networks:
+  dokploy-network:
+    external: true
+volumes:
+  roster-data:

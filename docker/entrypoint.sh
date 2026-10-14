@@ -6,7 +6,7 @@ OC="${ROSTER_OPENCODE_DIR:-$DATA/opencode}"
 HOME_DIR="${HOME:-$DATA/home}"
 
 mkdir -p "$DATA/workspace" "$DATA/system" "$HOME_DIR" "$OC/agents"
-API_PORT="${ROSTER_API_PORT:-8787}"
+API_PORT="${ROSTER_API_PORT:-8790}"
 export HOME="$HOME_DIR"
 export ROSTER_DATA_DIR="$DATA"
 export ROSTER_OPENCODE_DIR="$OC"

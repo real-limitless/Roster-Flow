@@ -1,6 +1,6 @@
 # CORE API — chatbots, teams, bus, harness
 
-Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` serves the UI and API on **5173** (same origin as `/setup` and `/app`) and also publishes the API on **8790** so it does not collide with mcp-flow on 8787.
+Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` publishes the UI on **5175** (`ROSTER_WEB_PORT`; same origin for `/setup`, `/app`, and `/api`) and the API on **8790** (`ROSTER_API_PORT`). 8787 is mcp-flow.
 
 Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`.
 
@@ -14,7 +14,7 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/setup/status` | Wizard resume (`step`: install / first_user / login / harness / welcome / done) |
+| GET | `/api/v1/setup/status` | Public callers get booleans only (`hasOwner`, `setupClosed`, `complete`, `authenticated`, `installSeen`, …). No owner email or name. A session may also receive `step` (install / first_user / login / harness / welcome / done) and that caller's own name and email. |
 | POST | `/api/v1/setup/install` | Mark the installation checklist seen |
 | POST | `/api/v1/setup/first-user` | Create the owner `{ name, email, password }` — **409** if a user exists |
 | POST | `/api/v1/setup/harness` | `{ skipped?: true }` — mark harness step done |

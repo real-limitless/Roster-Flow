@@ -15,24 +15,66 @@ docker compose up --build
 
 | Process | URL | Role |
 |---|---|---|
-| Product (static UI + CORE) | http://127.0.0.1:5173 | Marketing, `/setup`, `/app`; `/api` on the same origin |
-| CORE API (host / family port) | http://127.0.0.1:8790/api/v1/health | Same API published beside mcp-flow's 8787 |
-| CORE API (same process) | http://127.0.0.1:5173/api/v1/health | Teams, bots, bus, setup/auth, harness wrapper |
+| Product inside the container | `http://127.0.0.1:${ROSTER_API_PORT:-8790}` | Static UI + CORE on one port. Exposed on the compose network, not published on the host. |
+| Web UI port | `ROSTER_WEB_PORT`, default `5175` | `ROSTER_PUBLIC_URL` follows this. 8787 is mcp-flow, not Roster. |
 | Company OpenCode | inside the container (`127.0.0.1:14180`) | Product-bot sessions |
 | System OpenCode | inside the container (`127.0.0.1:14181`) | Architect / Channel |
 
 The image is production-ish: `vite build` plus `node server/index.mjs` serving `dist/`. OpenCode is installed in the image; CORE still starts in harness-offline mode if the binary is missing. State, auth sidecar, workspaces, harness logs, and `.opencode` live in the **`roster-data`** volume at `/data` (`ROSTER_DATA_DIR`). `compose down` / `up` keeps `/setup` completion.
 
-Health:
+Health (from a host port only if you publish one, or from inside the network at `roster-flow:8790`):
 
 ```bash
-curl -s http://127.0.0.1:5173/api/v1/health
-curl -s http://127.0.0.1:5173/setup
+curl -s http://127.0.0.1:8790/api/v1/health
+curl -s http://127.0.0.1:8790/setup
 ```
 
-First run: http://127.0.0.1:5173/setup. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`.
+First run is `/setup` on that origin. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`. `GET /api/v1/setup/status` without a session returns booleans (`hasOwner`, `setupClosed`, and the checklist flags) and does not include the owner's email or name.
 
-If 5173 is busy: `ROSTER_HTTP_PORT=8080 docker compose up --build`. Family API port is 8790 (mcp-flow keeps 8787).
+Family API port is **8790**. **8787 belongs to mcp-flow** and is not Roster's port. The web UI port in Compose is **5175**. Both are overridable:
+
+```bash
+ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
+```
+
+`ROSTER_API` inside the container follows `ROSTER_API_PORT`. `ROSTER_PUBLIC_URL` follows `ROSTER_WEB_PORT` (`http://127.0.0.1:$ROSTER_WEB_PORT`). Compose publishes host `ROSTER_WEB_PORT` (default 5175) and host `ROSTER_API_PORT` (default 8790) onto the container API port, so `/setup` and `/api` share the UI origin and the family can still call `:8790`. `npm run dev` uses the same `ROSTER_WEB_PORT`. If that API port is already taken, CORE prints `ROSTER_API_PORT <port> is already in use` and exits.
+
+### Compose environment
+
+`docker-compose.yml` forwards these from the shell or `.env`. Empty means unset.
+
+| Variable | Compose default | Purpose |
+|---|---|---|
+| `ROSTER_API_PORT` | `8790` | Port CORE listens on. Also the exposed port and the healthcheck. |
+| `ROSTER_WEB_PORT` | `5175` | Web UI port. Drives `ROSTER_PUBLIC_URL`. |
+| `ROSTER_BOOTSTRAP_TOKEN` | unset | When set, `POST /api/v1/setup/first-user` requires it. |
+| `ROSTER_OWNER_EMAIL` | unset | Seed the owner on first boot. |
+| `ROSTER_OWNER_PASSWORD` | unset | Plaintext password for that owner. |
+| `ROSTER_OWNER_PASSWORD_HASH` | unset | `scrypt$<salt>$<hash>` from `scripts/create-owner.mjs --hash`. Use this or the plaintext password. |
+| `ROSTER_OWNER_NAME` | email local-part | Display name. |
+| `ROSTER_OWNER_TEMPLATE` | `empty` | `empty` or `starter`. |
+| `ROSTER_API_TOKEN` | unset | Register this `rf_…` token once an owner exists. |
+| `ROSTER_API_TOKEN_SCOPES` | all scopes | Comma-separated `read`, `write`, `admin`. |
+| `ROSTER_API_TOKEN_NAME` | `bootstrap` | Label stored on the token. |
+| `ROSTER_HARNESS_AUTOSTART` | `auto` | `auto`, `1` (always try), or `0` (never). Forwarded for harness auto-start. |
+| `ROSTER_PROVIDER_ID` | unset | Provider id to seed, for example `featherless`. |
+| `ROSTER_PROVIDER_NAME` | the id | Display name. |
+| `ROSTER_PROVIDER_NPM` | unset | Optional provider package. |
+| `ROSTER_PROVIDER_BASE_URL` | unset | OpenAI-compatible base URL. |
+| `ROSTER_PROVIDER_API_KEY_ENV` | unset | **Name** of the env var that holds the key. The key is not written into config. |
+| `ROSTER_PROVIDER_MODELS` | unset | Comma-separated model ids. |
+
+`ROSTER_OWNER_*`, `ROSTER_BOOTSTRAP_TOKEN`, and `ROSTER_API_TOKEN` / `ROSTER_API_TOKEN_SCOPES` are applied on boot. See [Headless bootstrap](#headless-bootstrap-no-setup-screen) below.
+
+### Dokploy
+
+```bash
+docker compose -f docker-compose.dokploy.yml up --build
+```
+
+The file joins the external network `dokploy-network` and registers aliases `roster-flow` and `roster`. wiki-flow should call Roster at `http://roster-flow:8790` (or whatever `ROSTER_API_PORT` is). `ROSTER_PUBLIC_URL` defaults to `http://127.0.0.1:8790` on this file because CORE serves the UI on the API port; override it with the public hostname.
+
+`roster-setup` is a one-shot that runs `scripts/setup-wiki-team.mjs` after CORE is healthy. It uses `ROSTER_API_TOKEN` (needs `write`) against `http://roster-flow:$ROSTER_API_PORT`. Set the same token on the app service so boot registers it, and set `ROSTER_OWNER_*` so an owner exists before the one-shot runs. If `ROSTER_API_TOKEN` is unset, the one-shot skips. `WIKI_MODEL` and `WIKI_PROJECT_ID` are optional (`Qwen/Qwen2.5-Coder-32B-Instruct`, `wiki-flow-docs`).
 
 Optional bind mount instead of the named volume (Fedora/Podman SELinux: add `:Z`):
 
@@ -61,7 +103,7 @@ npm run start:static   # http://127.0.0.1:8790/setup
 - Optional: [OpenCode CLI](https://opencode.ai) on `PATH`, or `OPENCODE_BIN=/path/to/opencode`
 - Optional provider keys in the environment (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …)
 
-First run: open http://127.0.0.1:5173/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds.
+First run: open http://127.0.0.1:5175/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds.
 
 ## Host install
 
@@ -83,34 +125,34 @@ This starts:
 | Process | URL | Role |
 |---|---|---|
 | CORE API | http://127.0.0.1:8790 | Teams, bots, bus, harness wrapper |
-| Vite | http://127.0.0.1:5173 | Marketing + `/setup` + `/app` workspace |
+| Vite | http://127.0.0.1:5175 | Marketing + `/setup` + `/app` workspace |
 
 Or separately:
 
 ```bash
 npm run api          # :8790
-npm run dev          # :5173, proxies /api → :8790
+npm run dev          # :5175, proxies /api → :8790
 ```
 
 Health check:
 
 ```bash
 curl -s http://127.0.0.1:8790/api/v1/health
-curl -s http://127.0.0.1:5173/app
+curl -s http://127.0.0.1:5175/app
 ```
 
 ## URLs an agent should use
 
 | URL | What to test |
 |---|---|
-| http://127.0.0.1:5173/ | Marketing home |
-| http://127.0.0.1:5173/setup | First-run wizard (skipped when `ROSTER_SKIP_ONBOARDING=1`) |
-| http://127.0.0.1:5173/login | Owner sign-in after setup |
-| http://127.0.0.1:5173/app | Live workspace (Room default) |
-| http://127.0.0.1:5173/app?mode=chart | Org chart |
-| http://127.0.0.1:5173/app/settings | Providers / models |
-| http://127.0.0.1:5173/org | Marketing org page + mock |
-| http://127.0.0.1:5173/access | Access form |
+| http://127.0.0.1:5175/ | Marketing home |
+| http://127.0.0.1:5175/setup | First-run wizard (skipped when `ROSTER_SKIP_ONBOARDING=1`) |
+| http://127.0.0.1:5175/login | Owner sign-in after setup |
+| http://127.0.0.1:5175/app | Live workspace (Room default) |
+| http://127.0.0.1:5175/app?mode=chart | Org chart |
+| http://127.0.0.1:5175/app/settings | Providers / models |
+| http://127.0.0.1:5175/org | Marketing org page + mock |
+| http://127.0.0.1:5175/access | Access form |
 
 ## Auth
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { addFirstUser } from "./auth.mjs";
-import { applyOrgTemplate, completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
+import { applyOrgTemplate, completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus } from "./setup.mjs";
 import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
 
 test("migrate-as-complete when onboarding is missing", () => {
@@ -64,6 +64,38 @@ test("completeSetup applies starter or empty and strips secrets from publicState
   assert.equal(bare.onboarding.template, "empty");
   assert.ok(!bare.projects.some((p) => p.id === "billing"));
   assert.ok(bare.messages.some((m) => m.channel === "general"));
+});
+
+test("unauthenticated setup status is booleans only and hides owner identity", async () => {
+  const state = pendingState();
+  const user = await addFirstUser(state, { name: "Chen", email: "chen@example.com", password: "password1" });
+  const anon = publicSetupStatus(setupStatus(state, {}));
+  assert.equal(anon.hasOwner, true);
+  assert.equal(anon.setupClosed, true);
+  assert.equal(anon.hasUser, true);
+  assert.equal(anon.complete, false);
+  assert.equal(anon.authenticated, false);
+  for (const key of ["email", "name", "step", "binary"]) {
+    assert.equal(Object.hasOwn(anon, key), false, key);
+  }
+  const blob = JSON.stringify(anon);
+  assert.equal(blob.includes("chen@example.com"), false);
+  assert.equal(blob.includes("Chen"), false);
+  for (const value of Object.values(anon)) {
+    if (value && typeof value === "object") {
+      for (const inner of Object.values(value)) assert.equal(typeof inner, "boolean");
+    } else {
+      assert.equal(typeof value, "boolean");
+    }
+  }
+
+  const authed = setupStatus(state, { user });
+  assert.equal(authed.email, "chen@example.com");
+  assert.equal(authed.name, "Chen");
+  assert.equal(authed.step, "install");
+  const redacted = publicSetupStatus(authed);
+  assert.equal(Object.hasOwn(redacted, "email"), false);
+  assert.equal(JSON.stringify(redacted).includes("chen@example.com"), false);
 });
 
 test("completeSetup is 409 after it already finished", async () => {

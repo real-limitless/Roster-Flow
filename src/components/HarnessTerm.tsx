@@ -13,9 +13,6 @@ function harnessPtyUrl() {
     const u = new URL(env, window.location.origin);
     return `${u.protocol === "https:" ? "wss" : "ws"}://${u.host}/api/v1/harness/pty`;
   }
-  if (import.meta.env.DEV) {
-    return `ws://${window.location.hostname}:8787/api/v1/harness/pty`;
-  }
   return `${proto}://${window.location.host}/api/v1/harness/pty`;
 }
 
