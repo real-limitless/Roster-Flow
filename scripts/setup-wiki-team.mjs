@@ -1,0 +1,117 @@
+#!/usr/bin/env node
+/**
+ * Stand up the wiki-flow docs team on a running Roster-flow CORE.
+ *
+ *   FEATHERLESS_API_KEY=... node scripts/setup-wiki-team.mjs
+ *
+ * 1. PUT  /api/v1/providers  Featherless (OpenAI-compatible). The key is
+ *    referenced as {env:FEATHERLESS_API_KEY}; it is never written here.
+ * 2. POST /api/v1/projects   wiki-flow docs project (409 = already there).
+ * 3. POST /api/v1/teams      @wiki with architect/scribe/diagrammer/editor.
+ *    On 409, any missing specialist seats are hired via POST /api/v1/seats.
+ *
+ * Env: ROSTER_API (default http://127.0.0.1:8790), WIKI_PROJECT_ID (wiki-flow-docs),
+ *      WIKI_MODEL (default Featherless model id), ROSTER_API_TOKEN (optional Bearer).
+ */
+
+export const FEATHERLESS = {
+  id: "featherless",
+  name: "Featherless",
+  baseURL: "https://api.featherless.ai/v1",
+  apiKeyEnv: "FEATHERLESS_API_KEY",
+  models: [
+    { id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen2.5 Coder 32B" },
+    { id: "meta-llama/Meta-Llama-3.1-70B-Instruct", name: "Llama 3.1 70B" },
+    { id: "deepseek-ai/DeepSeek-V3-0324", name: "DeepSeek V3" },
+  ],
+};
+
+export function wikiSpecialists(model) {
+  const m = `featherless/${model}`;
+  return [
+    { id: "wiki-architect", name: "Wiki Architect", role: "Information architecture", model: m, job: "Plan page tree and slugs from wiki-flow sources." },
+    { id: "wiki-scribe", name: "Wiki Scribe", role: "Writer", model: m, job: "Draft pages from sources and publish with wikiflow_put_page." },
+    { id: "wiki-diagrammer", name: "Wiki Diagrammer", role: "Diagrams", model: m, job: "Add Mermaid diagrams grounded in sources." },
+    { id: "wiki-editor", name: "Wiki Editor", role: "Editor", model: m, job: "Review pages for accuracy, citations, and tone." },
+  ].map((s) => ({ ...s, tools: ["read", "bus"], deny: ["deploy", "bash"] }));
+}
+
+function client(base, token, fetchImpl) {
+  return async (path, init = {}) => {
+    const headers = { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) };
+    const res = await fetchImpl(`${base}${path}`, { ...init, headers });
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    return { status: res.status, ok: res.ok, data };
+  };
+}
+
+export async function setupWikiTeam({
+  env = process.env,
+  fetchImpl = fetch,
+  log = console.log,
+} = {}) {
+  const base = (env.ROSTER_API || "http://127.0.0.1:8790").replace(/\/+$/, "");
+  const call = client(base, env.ROSTER_API_TOKEN, fetchImpl);
+  const projectId = env.WIKI_PROJECT_ID || "wiki-flow-docs";
+  const model = env.WIKI_MODEL || FEATHERLESS.models[0].id;
+  if (!env.FEATHERLESS_API_KEY) log("warn: FEATHERLESS_API_KEY is not set; seats will be configured but cannot run until it is.");
+
+  const prov = await call("/api/v1/providers", { method: "PUT", body: JSON.stringify(FEATHERLESS) });
+  if (!prov.ok) throw new Error(`provider: ${prov.status} ${prov.data?.error || ""}`);
+  log("provider featherless: ok");
+
+  const proj = await call("/api/v1/projects", {
+    method: "POST",
+    body: JSON.stringify({ id: projectId, name: "wiki-flow docs", brief: "Docs-build integration with wiki-flow." }),
+  });
+  if (!proj.ok && proj.status !== 409) throw new Error(`project: ${proj.status} ${proj.data?.error || ""}`);
+  log(`project ${projectId}: ${proj.status === 409 ? "exists" : "created"}`);
+
+  const specialists = wikiSpecialists(model);
+  const team = await call("/api/v1/teams", {
+    method: "POST",
+    body: JSON.stringify({
+      id: "wiki",
+      name: "@wiki",
+      role: "Docs",
+      description: "Builds the project wiki from wiki-flow sources.",
+      defaultModel: `featherless/${model}`,
+      projectId,
+      specialists,
+    }),
+  });
+  const hired = [];
+  if (team.status === 409) {
+    log("team wiki: exists; checking specialists");
+    const seats = await call("/api/v1/seats");
+    const have = new Set((seats.data || []).map((s) => s.id));
+    for (const spec of specialists) {
+      if (have.has(spec.id)) continue;
+      const r = await call("/api/v1/seats", {
+        method: "POST",
+        body: JSON.stringify({ ...spec, kind: "bot", seatType: "specialist", team: "wiki", reportsTo: "wiki-supervisor", projectId }),
+      });
+      if (!r.ok && r.status !== 409) throw new Error(`seat ${spec.id}: ${r.status} ${r.data?.error || ""}`);
+      hired.push(spec.id);
+    }
+  } else if (!team.ok) {
+    throw new Error(`team: ${team.status} ${team.data?.error || ""}`);
+  } else {
+    log("team wiki: created");
+  }
+  if (hired.length) log(`hired: ${hired.join(", ")}`);
+  return { projectId, model, teamCreated: team.ok, hired };
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  setupWikiTeam().catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });
+}

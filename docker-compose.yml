@@ -24,6 +24,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      WIKIFLOW_URL: ${WIKIFLOW_URL:-}
+      WIKIFLOW_TOKEN: ${WIKIFLOW_TOKEN:-}
     volumes:
       - roster-data:/data
     restart: unless-stopped

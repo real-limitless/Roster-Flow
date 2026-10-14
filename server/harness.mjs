@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { serveChildEnv, readOpenCodeConfig, readGlobalOpenCodeConfig, ensureAuthProviders } from "./providers.mjs";
+import { normalizeOpenCodeConfig, serveChildEnv, readOpenCodeConfig, readGlobalOpenCodeConfig, ensureAuthProviders } from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
 import { opencodeHostname, rosterApiUrl } from "./config.mjs";
@@ -125,7 +125,7 @@ function writeCompanyConfig() {
   }
   cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}) };
   cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}) };
-  writeFileSync(dest, JSON.stringify(cfg, null, 2));
+  writeFileSync(dest, JSON.stringify(normalizeOpenCodeConfig(cfg), null, 2));
 }
 
 function writeSystemConfig() {
@@ -139,8 +139,7 @@ function writeSystemConfig() {
     $schema: "https://opencode.ai/config.json",
     plugin: ["roster-flow-opencode"],
     provider: {},
-    providers: {},
-    agents: {},
+    agent: {},
   };
   if (existsSync(dest)) {
     try {
@@ -152,7 +151,7 @@ function writeSystemConfig() {
   cfg.plugin = ["roster-flow-opencode"];
   cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}), ...(company.provider || {}) };
   cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}), ...(company.providers || {}) };
-  writeFileSync(dest, JSON.stringify(cfg, null, 2));
+  writeFileSync(dest, JSON.stringify(normalizeOpenCodeConfig(cfg), null, 2));
 }
 
 export function status(kind = COMPANY) {

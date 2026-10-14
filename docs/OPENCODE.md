@@ -75,4 +75,32 @@ ROSTER_DATA_DIR=.roster-flow
 ROSTER_OPENCODE_DIR=.opencode
 ROSTER_WORKSPACE=.roster-flow/workspace
 ROSTER_STATIC_DIR=          # set to dist/ so CORE serves the UI
+WIKIFLOW_URL=               # wiki-flow base URL (wikiflow_* tools)
+WIKIFLOW_TOKEN=             # wiki-flow Bearer token; never commit it
+FEATHERLESS_API_KEY=        # used by scripts/setup-wiki-team.mjs seats via {env:...}
 ```
+
+## OpenCode config schema
+
+Roster writes `opencode.json` using OpenCode's documented keys only ([config schema](https://opencode.ai/config.json)):
+`provider` (blocks with `npm`, `name`, `options.{baseURL,apiKey}`, `models`), `agent` (entries with `prompt`, `mode`, `model`, `permission`),
+and agent Markdown frontmatter `permission:` (`edit: deny`, `bash: deny`, or a pattern map like `"deploy *": deny`).
+Older configs with `providers` / `agents` / `settings` / `package` / `system` / `permissions` are folded into that shape on the next write (`normalizeOpenCodeConfig` in `server/providers.mjs`).
+
+## wiki-flow tools
+
+The `roster-flow-opencode` plugin adds three tools that call wiki-flow with `Authorization: Bearer $WIKIFLOW_TOKEN` against `$WIKIFLOW_URL`:
+
+| Tool | Request |
+| --- | --- |
+| `wikiflow_read_source {owner, repo, paths?}` | `GET /api/v1/repos/:owner/:repo/sources[?paths=a,b]` → `{sources:[{path,language,bytes}]}` (content added for `paths`) |
+| `wikiflow_search {owner, repo, q}` | `GET /api/v1/repos/:owner/:repo/sources/search?q=` → `{results:[{path,line,snippet}]}` |
+| `wikiflow_put_page {owner, repo, slug, runId, title, markdown, sources, agent}` | `PUT /api/v1/repos/:owner/:repo/pages/:slug` with body `{runId, title, markdown, sources, agent}` |
+
+`runId` must name an existing wiki-flow run (404 if unknown, 409 if the run is complete). `WIKIFLOW_TOKEN` is the wiki-flow service token (`WIKIFLOW_API_TOKEN` on the wiki-flow side). `sources` is a JSON array of `{path, startLine?, endLine?}` (1-based lines, `endLine >= startLine`); other shapes or extra keys are rejected before the request; `agent` defaults to the calling OpenCode agent. If `WIKIFLOW_TOKEN` or `WIKIFLOW_URL` is missing, the tool fails with a message naming the variable. Non-2xx responses surface as `wiki-flow <status>: <error>`.
+
+Both variables are passed to `opencode serve` by `serveChildEnv` (`server/providers.mjs`) and to the container by `docker-compose.yml` (`WIKIFLOW_URL`, `WIKIFLOW_TOKEN` from the host env).
+
+### Wiki team
+
+`FEATHERLESS_API_KEY=... npm run setup:wiki` (CORE must be running) registers the Featherless provider (`https://api.featherless.ai/v1`, key by `{env:FEATHERLESS_API_KEY}`), creates the `wiki-flow-docs` project, and staffs `@wiki` with `wiki-architect`, `wiki-scribe`, `wiki-diagrammer`, and `wiki-editor` on `featherless/<model>` (override with `WIKI_MODEL`). Re-running is safe: existing project/team return 409 and only missing specialists are hired.
