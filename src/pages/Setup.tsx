@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { Logo } from "../components/Logo";
-import { api } from "../lib/api";
+import { api, deriveSetupStep } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { LoginForm } from "./Login";
 import { PRESET_PROVIDERS } from "./settings/types";
@@ -44,7 +44,7 @@ export function Setup() {
   if (status?.skip || (status?.complete && status.authenticated)) return <Navigate to="/app" replace />;
   if (status?.complete) return <Navigate to="/login" replace />;
 
-  const step = status?.step || "install";
+  const step = deriveSetupStep(status);
 
   async function wrap(fn: () => Promise<void>) {
     setErr("");
@@ -99,7 +99,7 @@ export function Setup() {
             <CheckRow
               ok={Boolean(status?.checks.opencode)}
               warn={!status?.checks.opencode}
-              label={status?.binary ? `OpenCode CLI · ${status.binary}` : "OpenCode CLI (set OPENCODE_BIN or install from opencode.ai)"}
+              label={status?.checks.opencode ? "OpenCode CLI" : "OpenCode CLI (set OPENCODE_BIN or install from opencode.ai)"}
               testId="setup-check-opencode"
             />
             <CheckRow
@@ -185,11 +185,7 @@ export function Setup() {
           <section data-testid="setup-step-login">
             <h2>First sign in</h2>
             <p className="micro">Use the owner you just created.</p>
-            <LoginForm
-              emailDefault={status?.email || email}
-              testId="setup-login-form"
-              onSignedIn={() => void refresh()}
-            />
+            <LoginForm emailDefault={email} testId="setup-login-form" onSignedIn={() => void refresh()} />
           </section>
         )}
 
@@ -200,7 +196,13 @@ export function Setup() {
             <CheckRow
               ok={Boolean(status?.harnessReady)}
               warn={!status?.harnessReady}
-              label={status?.binary ? `CLI found · ${status.binary}` : "OpenCode CLI missing"}
+              label={
+                status?.binary
+                  ? `CLI found · ${status.binary}`
+                  : status?.checks.opencode
+                    ? "OpenCode CLI"
+                    : "OpenCode CLI missing"
+              }
               testId="setup-check-harness"
             />
             <div className="setup-actions">

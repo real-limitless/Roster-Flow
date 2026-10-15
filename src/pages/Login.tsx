@@ -83,7 +83,7 @@ export function Login() {
           Sign in
         </h1>
         <p className="lede">Local owner account. This is not SSO.</p>
-        <LoginForm emailDefault={status?.email || ""} />
+        <LoginForm />
         <p className="micro">
           Need to start over? <Link to="/setup">Open setup</Link>
         </p>

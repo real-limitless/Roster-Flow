@@ -6,7 +6,7 @@ import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mer
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
-import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
+import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
@@ -39,6 +39,16 @@ function json(res, code, body) {
     "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
   res.end(data);
+}
+
+function setupPayload(state, user) {
+  const full = setupStatus(state, {
+    user,
+    binary: whichOpenCode(),
+    providerKeys: hasProviderKey(),
+    dataWritable: isDataWritable(),
+  });
+  return user ? full : publicSetupStatus(full);
 }
 
 function fail(res, err) {
@@ -191,30 +201,12 @@ const server = createServer(async (req, res) => {
     }
 
     if (pathname === "/api/v1/setup/status" && method === "GET") {
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/install" && method === "POST") {
       mutate((s) => markInstallSeen(s));
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/first-user" && method === "POST") {
@@ -232,16 +224,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/setup/harness" && method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       mutate((s) => markHarnessStep(s, { skipped: Boolean(body.skipped) }));
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/complete" && method === "POST") {
@@ -256,7 +239,7 @@ const server = createServer(async (req, res) => {
       } catch {
         /* agent files are best-effort */
       }
-      json(res, 200, { ...setupStatus(next, { user, binary: whichOpenCode(), providerKeys: hasProviderKey(), dataWritable: isDataWritable() }), state: publicState(next) });
+      json(res, 200, { ...setupPayload(next, user), state: publicState(next) });
       return;
     }
     if (pathname === "/api/v1/auth/login" && method === "POST") {
@@ -1015,6 +998,16 @@ function startRoutineTicker() {
     }
   }, ROUTINE_TICK_MS);
 }
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      `ROSTER_API_PORT ${PORT} is already in use on ${HOST}. Stop the other process or set a different ROSTER_API_PORT.`,
+    );
+  } else {
+    console.error(err);
+  }
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);

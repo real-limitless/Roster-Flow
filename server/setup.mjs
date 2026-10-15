@@ -28,13 +28,18 @@ export function setupStatus(state, { user = null, binary = null, providerKeys = 
     else if (!onboarding.harnessSeen && !onboarding.harnessSkipped) step = "harness";
     else step = "welcome";
   }
-  return {
+  const body = {
     skip,
     hasUser,
+    hasOwner: hasUser,
+    setupClosed: hasUser,
     authenticated: Boolean(user) || skip,
     harnessReady: Boolean(binary),
     bootstrapTokenRequired: Boolean(bootstrapToken()) && !hasUser,
     complete,
+    installSeen: Boolean(onboarding.installSeen) || complete,
+    harnessSeen: Boolean(onboarding.harnessSeen) || complete,
+    harnessSkipped: Boolean(onboarding.harnessSkipped),
     step,
     checks: {
       api: true,
@@ -43,8 +48,34 @@ export function setupStatus(state, { user = null, binary = null, providerKeys = 
       dataDir: Boolean(dataWritable),
     },
     binary: binary || null,
-    email: hasUser ? users[0].email : null,
-    name: hasUser ? users[0].name : null,
+  };
+  if (user) {
+    body.email = user.email || null;
+    body.name = user.name || null;
+  }
+  return body;
+}
+
+/** Unauthenticated setup status: booleans only. No owner email, name, or other identity. */
+export function publicSetupStatus(status) {
+  return {
+    skip: Boolean(status.skip),
+    hasOwner: Boolean(status.hasOwner ?? status.hasUser),
+    hasUser: Boolean(status.hasUser),
+    setupClosed: Boolean(status.setupClosed),
+    authenticated: Boolean(status.authenticated),
+    complete: Boolean(status.complete),
+    bootstrapTokenRequired: Boolean(status.bootstrapTokenRequired),
+    harnessReady: Boolean(status.harnessReady),
+    installSeen: Boolean(status.installSeen),
+    harnessSeen: Boolean(status.harnessSeen),
+    harnessSkipped: Boolean(status.harnessSkipped),
+    checks: {
+      api: Boolean(status.checks?.api),
+      opencode: Boolean(status.checks?.opencode),
+      providerKeys: Boolean(status.checks?.providerKeys),
+      dataDir: Boolean(status.checks?.dataDir),
+    },
   };
 }
 
