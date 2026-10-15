@@ -200,6 +200,8 @@ Persistent work a caller hands to a seat or a team. Same bearer auth as the rest
 | GET | `/api/v1/jobs/:id/wait` | Long-poll. `?timeout=` ms (0–60000, default 25000). `?since=` ISO `updatedAt` returns on any newer write; otherwise returns when status is `needs_human`, `done`, `failed`, or `cancelled` |
 | POST | `/api/v1/jobs/:id/complete` | Seat result. `{ result, status?: done\|failed\|needs_human, cost?, tokens?, from?, announce? }` |
 | POST | `/api/v1/jobs/:id/cancel` | Cancel a non-terminal job. `{ reason? }` |
+| GET | `/api/v1/jobs/callback-secret` | `admin`. The callback signing secret, header names, and signing string |
+| POST | `/api/v1/jobs/callback-secret/rotate` | `admin`. Replace the secret. **409** when `ROSTER_CALLBACK_SECRET` is set |
 
 `POST /api/v1/jobs`:
 
@@ -226,12 +228,61 @@ Status: `queued`, `running`, `needs_human`, `done`, `failed`, `cancelled`. Termi
 
 `GET /api/v1/jobs/:id/wait` returns `{ "job", "timedOut" }`.
 
-`callbackUrl` must be `http` or `https`. After DNS resolution, loopback, private, link-local (including `169.254.169.254`), and other non-public addresses are **400**. Set `ROSTER_CALLBACK_ALLOWLIST` to a comma-separated host list to allow a specific host. Redirects are not followed.
+#### callbackUrl rules
 
-On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set:
+`callbackUrl` must be `http` or `https` and must not carry credentials (`https://user:pass@…` is **400**). Job responses never include credentials in `callbackUrl`.
+
+CORE resolves the host once, checks every address it returns, and connects only to one of those addresses. The `Host` header and TLS SNI stay the original hostname, so certificates are still checked against it. A DNS answer that changes between the check and the connect cannot move the request. This runs at submit (a bad URL is **400**) and again at every delivery. Redirects are not followed.
+
+Blocked addresses (**400**):
+
+- IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`.
+- IPv6: `::/96` (unspecified, loopback, IPv4-compatible `::a.b.c.d`), `64:ff9b::/96`, `64:ff9b:1::/48`, `2001::/32` (Teredo), `2001:db8::/32`, `2002::/16` (6to4), `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`.
+- IPv4-mapped `::ffff:a.b.c.d` is judged by the IPv4 inside it. For every form that embeds IPv4 (mapped, compatible, NAT64, 6to4, Teredo server and client), the embedded address is checked too.
+- Link-local and cloud metadata: `169.254.0.0/16` (includes `169.254.169.254` and `169.254.170.2`), `fe80::/10`, `fd00:ec2::254`, `100.100.100.200`, `168.63.129.16`, and any IPv6 form that embeds one of them.
+
+`ROSTER_CALLBACK_ALLOWLIST` lets named hosts resolve to otherwise blocked addresses, for example a harness on a private network. It never allows link-local or metadata addresses.
+
+- Comma-separated `host` or `host:port`. IPv6 literals are `[addr]` or `[addr]:port`.
+- Matching is exact and case-insensitive. There are no wildcards and no subdomain matching. A bare `host` matches any port; `host:port` matches only that port (`80` and `443` are the defaults for `http` and `https`).
+- Entries must be ASCII. Write internationalized names in punycode (`xn--bcher-kva.example`, not `bücher.example`). URL parsing punycodes the callback host, so a non-ASCII entry would never match; CORE ignores it.
+
+#### Callback delivery and signatures
+
+On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set. That includes a job that lands in `needs_human` at submit because its assignee is a human seat.
 
 ```json
 { "event": "job.status", "job": { "id": "job-…", "status": "done", "result": "…" } }
+```
+
+Every callback is signed with HMAC-SHA256 using the org's callback secret. CORE runs one org per instance, so there is one secret per instance. It is generated on first use and stored in state. `ROSTER_CALLBACK_SECRET` overrides it. Read it with `GET /api/v1/jobs/callback-secret` (`admin`) and rotate it with `POST /api/v1/jobs/callback-secret/rotate`. `GET /api/v1/state` never includes it.
+
+| Header | Value |
+|---|---|
+| `X-Roster-Timestamp` | Unix time in seconds when the request was signed |
+| `X-Roster-Job-Id` | The job id. Same as `job.id` in the body |
+| `X-Roster-Signature` | `v1=` followed by the lower-case hex HMAC-SHA256 of the signing string |
+
+Signing string: `<timestamp>.<jobId>.<body>`. `<timestamp>` and `<jobId>` are the header values, and `<body>` is the raw request body exactly as received, before any JSON parsing.
+
+To verify:
+
+1. Read the raw body bytes. Do not re-serialize parsed JSON.
+2. Reject if `X-Roster-Timestamp` is more than 300 seconds from your clock. This limits replay.
+3. Compute `HMAC-SHA256(secret, timestamp + "." + jobId + "." + body)` as hex, prefix `v1=`, and compare it to `X-Roster-Signature` with a constant-time compare.
+4. Check that `X-Roster-Job-Id` equals `job.id` in the body.
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verifyRosterCallback(secret, headers, rawBody) {
+  const ts = headers["x-roster-timestamp"];
+  const jobId = headers["x-roster-job-id"];
+  const sig = Buffer.from(headers["x-roster-signature"] || "");
+  if (!/^\d+$/.test(ts || "") || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
+  const want = Buffer.from("v1=" + createHmac("sha256", secret).update(`${ts}.${jobId}.${rawBody}`).digest("hex"));
+  return sig.length === want.length && timingSafeEqual(sig, want) && JSON.parse(rawBody).job?.id === jobId;
+}
 ```
 
 The attempt is stored on `job.callback` (`ok`, `status`, `error`). A failed callback does not change the job status. `announce: false` skips the room and bus note (the seat tool uses this when it is already posting the ask).
@@ -305,7 +356,7 @@ Literal keys go to `.roster-flow/auth.json` (gitignored) and `{env:VAR}` is pref
 
 ## API tokens
 
-`Authorization: Bearer rf_...` is accepted on every route. Scopes: `read` (GET/HEAD), `write` (other methods), `admin` (`/api/v1/tokens*`, `/api/v1/setup/*`). Session logins are not scope-limited.
+`Authorization: Bearer rf_...` is accepted on every route. Scopes: `read` (GET/HEAD), `write` (other methods), `admin` (`/api/v1/tokens*`, `/api/v1/setup/*`, `/api/v1/jobs/callback-secret*`). Session logins are not scope-limited.
 
 | Method | Path | Notes |
 | --- | --- | --- |
