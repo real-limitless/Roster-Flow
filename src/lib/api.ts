@@ -16,7 +16,7 @@ export type SetupStatus = {
   harnessSeen?: boolean;
   harnessSkipped?: boolean;
   step?: SetupStep;
-  checks: { api: boolean; opencode: boolean; providerKeys: boolean; dataDir: boolean };
+  checks: { api: boolean; opencode: boolean; harness?: boolean; providerKeys: boolean; dataDir: boolean };
   binary?: string | null;
   email?: string | null;
   name?: string | null;

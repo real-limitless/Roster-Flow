@@ -1,7 +1,21 @@
 import { createServer } from "node:http";
 import { getState, mutate, save, resetState, uid } from "./store.mjs";
 import { normalizeSeat, normalizeModelId } from "./seed.mjs";
-import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
+import {
+  ensure,
+  status as harnessStatus,
+  combinedStatus,
+  liveCombinedStatus,
+  listBoundSessions,
+  createSession,
+  promptSession,
+  listLiveModels,
+  harnessKindForSeat,
+  sessionKeyForKind,
+  whichOpenCode,
+  describeOpenCodeError,
+  restartForProviderChange,
+} from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
@@ -51,10 +65,12 @@ function json(res, code, body) {
   res.end(data);
 }
 
-function setupPayload(state, user) {
+async function setupPayload(state, user) {
+  const live = await liveCombinedStatus();
   const full = setupStatus(state, {
     user,
     binary: whichOpenCode(),
+    harness: live.harness,
     providerKeys: hasProviderKey(),
     dataWritable: isDataWritable(),
   });
@@ -227,12 +243,12 @@ const server = createServer(async (req, res) => {
     }
 
     if (pathname === "/api/v1/setup/status" && method === "GET") {
-      json(res, 200, setupPayload(getState(), user));
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/install" && method === "POST") {
       mutate((s) => markInstallSeen(s));
-      json(res, 200, setupPayload(getState(), user));
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/first-user" && method === "POST") {
@@ -250,7 +266,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/setup/harness" && method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       mutate((s) => markHarnessStep(s, { skipped: Boolean(body.skipped) }));
-      json(res, 200, setupPayload(getState(), user));
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/complete" && method === "POST") {
@@ -265,7 +281,7 @@ const server = createServer(async (req, res) => {
       } catch {
         /* agent files are best-effort */
       }
-      json(res, 200, { ...setupPayload(next, user), state: publicState(next) });
+      json(res, 200, { ...(await setupPayload(next, user)), state: publicState(next) });
       return;
     }
     if (pathname === "/api/v1/setup/start-over" && method === "POST") {
@@ -294,7 +310,7 @@ const server = createServer(async (req, res) => {
         }
         return next;
       });
-      json(res, 200, setupPayload(next, null));
+      json(res, 200, await setupPayload(next, null));
       return;
     }
     if (pathname === "/api/v1/auth/login" && method === "POST") {
@@ -317,7 +333,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/health" && method === "GET") {
       json(res, 200, {
         ok: true,
-        ...combinedStatus(),
+        ...(await liveCombinedStatus()),
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
       });
@@ -1001,7 +1017,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/harness" && method === "GET") {
-      json(res, 200, combinedStatus());
+      json(res, 200, await liveCombinedStatus());
       return;
     }
     if (pathname === "/api/v1/harness/ensure" && method === "POST") {
@@ -1045,7 +1061,14 @@ const server = createServer(async (req, res) => {
     const promptPath = pathname.match(/^\/api\/v1\/harness\/sessions\/([^/]+)\/prompt$/);
     if (promptPath && method === "POST") {
       const body = await readBody(req);
-      json(res, 200, await promptSession(decodeURIComponent(promptPath[1]), body));
+      try {
+        json(res, 200, await promptSession(decodeURIComponent(promptPath[1]), body));
+      } catch (err) {
+        if (!err.status || err.status === 404) throw err;
+        const model = body.model?.providerID ? `${body.model.providerID}/${body.model.modelID || ""}` : "";
+        const d = describeOpenCodeError(err, { model });
+        json(res, d.status, { error: d.message, code: d.code });
+      }
       return;
     }
     if (pathname === "/api/v1/providers" && method === "GET") {
@@ -1053,18 +1076,24 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/providers" && method === "PUT") {
-      json(res, 200, upsertProvider(await readBody(req)));
+      const out = upsertProvider(await readBody(req));
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     const authP = pathname.match(/^\/api\/v1\/providers\/([^/]+)\/auth$/);
     if (authP && method === "POST") {
       const body = await readBody(req);
-      json(res, 200, setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key));
+      const out = setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key);
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     const delP = pathname.match(/^\/api\/v1\/providers\/([^/]+)$/);
     if (delP && method === "DELETE") {
-      json(res, 200, removeProvider(decodeURIComponent(delP[1])));
+      const out = removeProvider(decodeURIComponent(delP[1]));
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     if (pathname === "/api/v1/models" && method === "GET") {

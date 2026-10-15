@@ -197,11 +197,13 @@ export function Setup() {
               ok={Boolean(status?.harnessReady)}
               warn={!status?.harnessReady}
               label={
-                status?.binary
-                  ? `CLI found · ${status.binary}`
-                  : status?.checks.opencode
-                    ? "OpenCode CLI"
-                    : "OpenCode CLI missing"
+                status?.harnessReady
+                  ? `Company harness up${status.binary ? ` · ${status.binary}` : ""}`
+                  : status?.binary
+                    ? `CLI found · ${status.binary} · harness offline`
+                    : status?.checks.opencode
+                      ? "OpenCode CLI found · harness offline"
+                      : "OpenCode CLI missing"
               }
               testId="setup-check-harness"
             />
