@@ -8,7 +8,16 @@ import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiTo
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
-import { deliverCallback, getJob, listJobs, publishNewJob, settleJob, waitForJob } from "./jobs.mjs";
+import {
+  callbackSecretInfo,
+  deliverCallback,
+  getJob,
+  listJobs,
+  publishNewJob,
+  rotateCallbackSecret,
+  settleJob,
+  waitForJob,
+} from "./jobs.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
@@ -894,6 +903,22 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const { job } = await publishNewJob(body, requestCaller(user, apiToken), jobDeps());
       json(res, 201, job);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret" && method === "GET") {
+      let info;
+      mutate((s) => {
+        info = callbackSecretInfo(s);
+      });
+      json(res, 200, info);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret/rotate" && method === "POST") {
+      let info;
+      mutate((s) => {
+        info = rotateCallbackSecret(s);
+      });
+      json(res, 200, info);
       return;
     }
     const jobWait = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/wait$/);
