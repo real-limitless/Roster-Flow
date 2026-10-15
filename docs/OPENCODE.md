@@ -37,6 +37,10 @@ Hooks:
 
 Configured in `.opencode/opencode.json` (company) and `.roster-flow/system/.opencode/opencode.json` (System) as `"plugin": ["roster-flow-opencode"]`. The System serve sets `NODE_PATH` at the repo `node_modules` so the plugin still resolves.
 
+Each serve is spawned with `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` pointing at its config: `ROSTER_OPENCODE_DIR/opencode.json` for company (`/data/opencode` in Compose) and `.roster-flow/system/.opencode/` for System. OpenCode only discovers `.opencode/` by walking up from cwd, so without this a `ROSTER_OPENCODE_DIR` outside the repo would be ignored and only the built-in `opencode` provider would load. A non-empty `OPENCODE_CONFIG` in CORE's env is loaded first by the company serve; the `ROSTER_OPENCODE_DIR` file still applies on top. Every `{env:VAR}` a provider block references is passed through to the serve.
+
+Provider writes (`PUT /api/v1/providers`, key, delete) restart a running serve so it reloads. Before a wake, CORE reads `GET /config/providers` from the serve and only sends a model OpenCode loaded; the fallback model and the `Waking <seat> (<model>)…` line use the same list. A provider that is missing, or a turn the provider rejects (for example 401), is posted to the room as a System line instead of an opaque 500 or a silent no-reply. `harness`, `loadedProviders`, and setup `harnessReady` all come from a live health check.
+
 ## Settings (`/app/settings`)
 
 [OpenChamber](https://docs.openchamber.dev/providers/) is a Settings UI over OpenCode config + auth — not a parallel provider store. Roster-flow Settings is the same write-through, plus the Flow-family join point. It does not reimplement Skills, MCP, or integrations.

@@ -41,6 +41,8 @@ services:
       ROSTER_OPENCODE_DIR: /data/opencode
       ROSTER_STATIC_DIR: /app/dist
       OPENCODE_BIN: /usr/local/bin/opencode
+      # Optional extra OpenCode config for the company serve. Empty = ROSTER_OPENCODE_DIR/opencode.json only.
+      OPENCODE_CONFIG: ${OPENCODE_CONFIG:-}
       OPENCODE_HOSTNAME: 127.0.0.1
       HOME: /data/home
       XAI_API_KEY: ${XAI_API_KEY:-}
