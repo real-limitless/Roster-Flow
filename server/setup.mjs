@@ -1,8 +1,9 @@
+import { verifyPassword } from "./auth.mjs";
 import { skipOnboarding } from "./flags.mjs";
-import { bootstrapToken } from "./bootstrap.mjs";
+import { bootstrapToken, requireBootstrapToken, setupClosed } from "./bootstrap.mjs";
 import { unreadBySeat } from "./inbox.mjs";
 import { publicRoutine } from "./routines.mjs";
-import { emptyOrgState, migrateState, starterState } from "./seed.mjs";
+import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
 
 export function publicState(state) {
   if (!state || typeof state !== "object") return state;
@@ -130,4 +131,42 @@ export function completeSetup(state, { template, ownerName } = {}) {
     throw err;
   }
   return applyOrgTemplate(state, template, ownerName || state.users?.[0]?.name || "You");
+}
+
+function fail(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function ownerSession(user, owner) {
+  if (!user || !owner) return false;
+  const id = String(user.id || "");
+  return id.length > 0 && id === owner.id;
+}
+
+/**
+ * Reopen setup. When an owner exists (`setupClosed`), the caller must present
+ * that owner's session or password before the email is compared. Anonymous
+ * callers get 401 whether or not the email matches. A mismatched email is 403
+ * only after that proof succeeds. `ROSTER_BOOTSTRAP_TOKEN`, when set, is
+ * required as well (header `x-roster-bootstrap-token` or `body.bootstrapToken`).
+ */
+export async function startOver(state, { email, confirm, password, user, req, body } = {}) {
+  if (skipOnboarding()) throw fail(409, "onboarding is skipped");
+  if (!confirm) throw fail(400, "confirm required");
+  requireBootstrapToken(req, body ?? {});
+  if (setupClosed(state)) {
+    const owner = state.users[0];
+    // Authenticate before comparing the email. An anonymous caller must get 401
+    // for a wrong email and for the real one, so the status code is not an oracle.
+    const sessionOk = ownerSession(user, owner);
+    const passwordOk = sessionOk ? false : await verifyPassword(password, owner?.passwordSalt, owner?.passwordHash);
+    if (!sessionOk && !passwordOk) throw fail(401, "owner authentication required");
+    const ownerEmail = String(owner?.email || "").trim().toLowerCase();
+    if (String(email || "").trim().toLowerCase() !== ownerEmail) {
+      throw fail(403, "email does not match owner");
+    }
+  }
+  return migrateState(pendingState());
 }

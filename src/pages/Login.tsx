@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
-import { Link, Navigate } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { Logo } from "../components/Logo";
+import { api, setAuthToken } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
 export function LoginForm({
@@ -69,10 +70,35 @@ export function LoginForm({
 }
 
 export function Login() {
-  const { status, loading } = useAuth();
+  const { status, loading, refresh } = useAuth();
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [emailConfirm, setEmailConfirm] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
+  const [wipeErr, setWipeErr] = useState("");
+  const [wipeBusy, setWipeBusy] = useState(false);
   if (loading) return <div className="setup-shell">Loading…</div>;
   if (status?.skip || (status?.complete && status.authenticated)) return <Navigate to="/app" replace />;
   if (status && !status.complete) return <Navigate to="/setup" replace />;
+
+  async function startOver() {
+    setWipeErr("");
+    setWipeBusy(true);
+    try {
+      await api.setupStartOver({
+        email: emailConfirm,
+        confirm: true,
+        password: passwordConfirm,
+        ...(bootstrapToken ? { bootstrapToken } : {}),
+      });
+      setAuthToken("");
+      await refresh();
+    } catch (error) {
+      setWipeErr(error instanceof Error ? error.message : "could not start over");
+    } finally {
+      setWipeBusy(false);
+    }
+  }
 
   return (
     <div className="setup-shell" data-testid="login-page">
@@ -84,9 +110,68 @@ export function Login() {
         </h1>
         <p className="lede">Local owner account. This is not SSO.</p>
         <LoginForm />
-        <p className="micro">
-          Need to start over? <Link to="/setup">Open setup</Link>
-        </p>
+        {!wipeOpen ? (
+          <p className="micro">
+            Need to start over?{" "}
+            <button className="pill-btn" type="button" data-testid="login-start-over" onClick={() => setWipeOpen(true)}>
+              Wipe this company and run setup again
+            </button>
+          </p>
+        ) : (
+          <div className="card" data-testid="start-over-form" style={{ marginTop: 16 }}>
+            <p className="micro">
+              This deletes the local owner and org from this machine. Type the owner email and password to confirm.
+            </p>
+            <label>
+              Owner email
+              <input
+                data-testid="start-over-email"
+                type="email"
+                value={emailConfirm}
+                onChange={(e) => setEmailConfirm(e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </label>
+            <label>
+              Owner password
+              <input
+                data-testid="start-over-password"
+                type="password"
+                value={passwordConfirm}
+                onChange={(e) => setPasswordConfirm(e.target.value)}
+                autoComplete="current-password"
+                minLength={8}
+                required
+              />
+            </label>
+            <label>
+              Bootstrap token
+              <input
+                data-testid="start-over-bootstrap-token"
+                type="password"
+                value={bootstrapToken}
+                onChange={(e) => setBootstrapToken(e.target.value)}
+                autoComplete="off"
+                placeholder="Only if ROSTER_BOOTSTRAP_TOKEN is set"
+              />
+            </label>
+            {wipeErr && (
+              <p className="micro" style={{ color: "var(--deny)" }}>
+                {wipeErr}
+              </p>
+            )}
+            <button
+              className="pill-btn"
+              data-testid="start-over-confirm"
+              type="button"
+              disabled={wipeBusy}
+              onClick={() => void startOver()}
+            >
+              {wipeBusy ? "Wiping…" : "Confirm start over"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
