@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { bootCore } from "./test-helpers.mjs";
 import { loginUser } from "./auth.mjs";
 import {
@@ -13,6 +18,8 @@ import {
 } from "./bootstrap.mjs";
 import { pendingState } from "./seed.mjs";
 import { setupStatus } from "./setup.mjs";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 
 test("bootstrap token: open when unset, 401 when wrong or missing, ok when matched", () => {
@@ -71,9 +78,14 @@ test("fresh CORE with env owner comes up with an owner and no setup screen", asy
   const core = await bootCore({ ROSTER_OWNER_EMAIL: "ops@example.com", ROSTER_OWNER_PASSWORD: "password1" });
   try {
     const status = await (await fetch(`${core.base}/api/v1/setup/status`)).json();
+    assert.equal(status.hasOwner, true);
+    assert.equal(status.setupClosed, true);
     assert.equal(status.hasUser, true);
     assert.equal(status.complete, true);
-    assert.equal(status.step, "done");
+    assert.equal(Object.hasOwn(status, "email"), false);
+    assert.equal(Object.hasOwn(status, "name"), false);
+    assert.equal(Object.hasOwn(status, "step"), false);
+    assert.equal(JSON.stringify(status).includes("ops@example.com"), false);
     const first = await fetch(`${core.base}/api/v1/setup/first-user`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -86,6 +98,49 @@ test("fresh CORE with env owner comes up with an owner and no setup screen", asy
       body: JSON.stringify({ email: "ops@example.com", password: "password1" }),
     });
     assert.equal(login.status, 200);
+    const session = await login.json();
+    const authed = await (
+      await fetch(`${core.base}/api/v1/setup/status`, { headers: { authorization: `Bearer ${session.token}` } })
+    ).json();
+    assert.equal(authed.email, "ops@example.com");
+    assert.equal(authed.hasOwner, true);
+    assert.equal(authed.setupClosed, true);
+  } finally {
+    await core.stop();
+  }
+});
+
+test("GET /api/v1/setup/status hides the owner until the caller is authenticated", async () => {
+  const core = await bootCore({});
+  const body = JSON.stringify({ name: "Ops Owner", email: "ops@example.com", password: "password1" });
+  try {
+    const created = await fetch(`${core.base}/api/v1/setup/first-user`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    assert.equal(created.status, 201);
+    const anon = await (await fetch(`${core.base}/api/v1/setup/status`)).json();
+    assert.equal(anon.hasOwner, true);
+    assert.equal(anon.setupClosed, true);
+    assert.equal(anon.complete, false);
+    assert.equal(anon.authenticated, false);
+    assert.equal(Object.hasOwn(anon, "email"), false);
+    assert.equal(Object.hasOwn(anon, "name"), false);
+    assert.equal(JSON.stringify(anon).includes("ops@example.com"), false);
+    assert.equal(JSON.stringify(anon).includes("Ops Owner"), false);
+    const login = await fetch(`${core.base}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "ops@example.com", password: "password1" }),
+    });
+    const session = await login.json();
+    const authed = await (
+      await fetch(`${core.base}/api/v1/setup/status`, { headers: { authorization: `Bearer ${session.token}` } })
+    ).json();
+    assert.equal(authed.email, "ops@example.com");
+    assert.equal(authed.name, "Ops Owner");
+    assert.equal(typeof authed.step, "string");
   } finally {
     await core.stop();
   }
@@ -113,5 +168,44 @@ test("fresh CORE with ROSTER_BOOTSTRAP_TOKEN requires it to create the owner", a
     assert.equal(closed.status, 409);
   } finally {
     await core.stop();
+  }
+});
+
+test("a taken API port exits with a clear message", async () => {
+  const core = await bootCore({});
+  const port = new URL(core.base).port;
+  const dir = mkdtempSync(join(tmpdir(), "rf-busy-"));
+  const child = spawn(process.execPath, [join(root, "server/index.mjs")], {
+    env: {
+      ...process.env,
+      ROSTER_SKIP_ONBOARDING: "",
+      ROSTER_API_HOST: "127.0.0.1",
+      ROSTER_API_PORT: String(port),
+      ROSTER_DATA_DIR: join(dir, "data"),
+      ROSTER_OPENCODE_DIR: join(dir, "opencode"),
+      ROSTER_WORKSPACE: join(dir, "ws"),
+      ROSTER_DISABLE_ROUTINES: "1",
+      OPENCODE_BIN: "/nonexistent/opencode",
+      HOME: dir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let err = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    err += chunk;
+  });
+  try {
+    const code = await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out waiting for exit; stderr=${err}`)), 8000)),
+    ]);
+    assert.equal(code, 1);
+    assert.match(err, new RegExp(`ROSTER_API_PORT ${port} is already in use on 127\\.0\\.0\\.1`));
+    assert.doesNotMatch(err, /EADDRINUSE/);
+  } finally {
+    if (child.exitCode == null) child.kill("SIGTERM");
+    await core.stop();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

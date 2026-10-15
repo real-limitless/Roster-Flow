@@ -44,7 +44,10 @@ export function requireBootstrapToken(req, body = {}, env = process.env) {
   return true;
 }
 
-/** Once an owner exists, the first-run setup endpoints that create or reset identity are closed. */
+/**
+ * Once an owner exists, first-user is closed.
+ * start-over may reopen setup only after an owner session or the owner's password.
+ */
 export function setupClosed(state) {
   return (state.users || []).length > 0;
 }

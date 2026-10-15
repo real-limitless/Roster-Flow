@@ -1,19 +1,38 @@
 const base = (import.meta.env.VITE_API_URL as string | undefined) || "";
 const TOKEN_KEY = "roster-flow-token";
 
+export type SetupStep = "install" | "first_user" | "login" | "harness" | "welcome" | "done";
+
 export type SetupStatus = {
   skip: boolean;
   hasUser: boolean;
+  hasOwner: boolean;
+  setupClosed: boolean;
   authenticated: boolean;
   harnessReady: boolean;
   bootstrapTokenRequired?: boolean;
   complete: boolean;
-  step: "install" | "first_user" | "login" | "harness" | "welcome" | "done";
+  installSeen?: boolean;
+  harnessSeen?: boolean;
+  harnessSkipped?: boolean;
+  step?: SetupStep;
   checks: { api: boolean; opencode: boolean; providerKeys: boolean; dataDir: boolean };
-  binary: string | null;
+  binary?: string | null;
   email?: string | null;
   name?: string | null;
 };
+
+/** Wizard step from the public boolean payload. Authenticated responses may include `step`. */
+export function deriveSetupStep(status: SetupStatus | null | undefined): SetupStep {
+  if (!status) return "install";
+  if (status.step) return status.step;
+  if (status.skip || status.complete) return "done";
+  if (!status.installSeen) return "install";
+  if (!status.hasOwner && !status.hasUser) return "first_user";
+  if (!status.authenticated) return "login";
+  if (!status.harnessSeen && !status.harnessSkipped) return "harness";
+  return "welcome";
+}
 
 export type ApiToken = {
   id: string;
@@ -281,6 +300,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ template }),
     }),
+  setupStartOver: (body: { email: string; confirm: boolean; password?: string; bootstrapToken?: string }) =>
+    req<SetupStatus>("/api/v1/setup/start-over", { method: "POST", body: JSON.stringify(body) }),
   login: (email: string, password: string) =>
     req<{ token: string; user: AuthUser }>("/api/v1/auth/login", {
       method: "POST",

@@ -84,7 +84,7 @@ FEATHERLESS_API_KEY=        # used by scripts/setup-wiki-team.mjs seats via {env
 
 Roster writes `opencode.json` using OpenCode's documented keys only ([config schema](https://opencode.ai/config.json)):
 `provider` (blocks with `npm`, `name`, `options.{baseURL,apiKey}`, `models`), `agent` (entries with `prompt`, `mode`, `model`, `permission`),
-and agent Markdown frontmatter `permission:` (`edit: deny`, `bash: deny`, or a pattern map like `"deploy *": deny`).
+and agent Markdown frontmatter `permission:` (`edit: deny`, `bash: deny`, or a bash pattern map). OpenCode keeps the last matching bash rule, so `"*": allow` is written before `"deploy *": deny`.
 Older configs with `providers` / `agents` / `settings` / `package` / `system` / `permissions` are folded into that shape on the next write (`normalizeOpenCodeConfig` in `server/providers.mjs`).
 
 ## wiki-flow tools
