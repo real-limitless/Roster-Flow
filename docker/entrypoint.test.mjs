@@ -71,16 +71,34 @@ test("entrypoint without root fails clearly on an unwritable /data/opencode inst
   }
 });
 
-test("entrypoint as root chowns only wrong-owned app paths, without following symlinks out of /data", { skip: !isRoot && "needs root" }, () => {
+test("entrypoint without root fails clearly on an unwritable /data/home/.local", { skip: isRoot && "runs unprivileged" }, () => {
+  const { data, cleanup } = sandbox();
+  const local = join(data, "home", ".local");
+  try {
+    mkdirSync(local, { recursive: true });
+    chmodSync(local, 0o555);
+    const r = run(data);
+    assert.equal(r.status, 1);
+    assert.doesNotMatch(r.stdout, /ran/, "the app must not start");
+    assert.match(r.stderr, /home\/\.local \(owner \d+:\d+\)/);
+  } finally {
+    chmodSync(local, 0o755);
+    cleanup();
+  }
+});
+
+test("entrypoint as root chowns every wrong-owned entry under /data, without following symlinks out of it", { skip: !isRoot && "needs root" }, () => {
   const { base, data, cleanup } = sandbox();
   const oc = join(data, "opencode");
   const outside = join(base, "outside");
   try {
     mkdirSync(oc, { recursive: true });
     mkdirSync(join(data, "lost+found"));
+    mkdirSync(join(data, "workspace", "repo", ".git"), { recursive: true });
     mkdirSync(outside);
     writeFileSync(join(oc, "opencode.json"), "{}");
     writeFileSync(join(data, "state.json"), "{}");
+    writeFileSync(join(data, "workspace", "repo", ".git", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(outside, "secret"), "x");
     symlinkSync(outside, join(oc, "escape"));
     const env = { ROSTER_APP_USER: "nobody" };
@@ -89,18 +107,63 @@ test("entrypoint as root chowns only wrong-owned app paths, without following sy
     const r = run(data, { env });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, new RegExp(`ran uid=${NOBODY} `));
-    assert.match(r.stderr, /fixing ownership under .*opencode/);
-    for (const p of [data, oc, join(oc, "opencode.json"), join(oc, "agents"), join(data, "state.json"), join(data, "home"), join(data, "system/.opencode/agents")]) {
+    assert.match(r.stderr, /fixing ownership under /);
+    for (const p of [
+      data,
+      oc,
+      join(oc, "opencode.json"),
+      join(oc, "agents"),
+      join(data, "state.json"),
+      join(data, "home"),
+      join(data, "system"),
+      join(data, "system/.opencode/agents"),
+      join(data, "workspace/repo/.git/HEAD"),
+      join(data, "lost+found"),
+    ]) {
       assert.equal(owner(p), want, p);
     }
     assert.equal(linkOwner(join(oc, "escape")), want, "the symlink itself is chowned");
     assert.equal(owner(outside), "0:0", "symlink target outside /data is untouched");
     assert.equal(owner(join(outside, "secret")), "0:0", "symlink target outside /data is untouched");
-    assert.equal(owner(join(data, "lost+found")), "0:0", "unrelated top-level dirs are untouched");
 
     const again = run(data, { env });
     assert.equal(again.status, 0, again.stderr);
     assert.doesNotMatch(again.stderr, /fixing ownership/, "second start is a no-op");
+  } finally {
+    cleanup();
+  }
+});
+
+test("entrypoint as root repairs root-owned /data/home/.local so opencode can create its XDG dirs", { skip: !isRoot && "needs root" }, () => {
+  const { data, cleanup } = sandbox();
+  const home = join(data, "home");
+  try {
+    mkdirSync(join(home, ".local", "share", "opencode", "storage"), { recursive: true });
+    writeFileSync(join(home, ".local", "share", "opencode", "storage", "session.json"), "{}");
+    mkdirSync(join(data, "system"), { recursive: true });
+    const env = { ROSTER_APP_USER: "nobody" };
+    const want = `${NOBODY}:${NOBODY}`;
+    const opencodeLike = [
+      "sh",
+      "-c",
+      'mkdir -p "$HOME/.local/state/opencode" "$HOME/.local/share/opencode/log" "$HOME/.config/opencode" "$HOME/.cache/opencode" ' +
+        '&& echo "{}" > "$HOME/.local/share/opencode/storage/session.json" && echo opencode-ok',
+    ];
+
+    const r = run(data, { env, cmd: opencodeLike });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /opencode-ok/);
+    for (const p of [
+      home,
+      join(home, ".local"),
+      join(home, ".local/share/opencode/storage/session.json"),
+      join(home, ".local/state/opencode"),
+      join(data, "system"),
+      join(data, "workspace"),
+      join(data, "opencode"),
+    ]) {
+      assert.equal(owner(p), want, p);
+    }
   } finally {
     cleanup();
   }
@@ -115,7 +178,7 @@ test("entrypoint as root refuses to follow a data subdir symlinked out of /data"
     symlinkSync(outside, join(data, "home"));
     const r = run(data, { env: { ROSTER_APP_USER: "nobody" } });
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /not repairing .*home: it resolves outside/);
+    assert.match(r.stderr, /not creating or repairing .*home: it resolves outside/);
     assert.match(r.stderr, /ownership was repaired as root, but nobody .* still cannot write/);
     assert.equal(owner(outside), "0:0");
   } finally {

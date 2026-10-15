@@ -1,9 +1,10 @@
 #!/bin/sh
 # Container entrypoint (docs/STANDUP.md, "Data volume ownership").
 #
-# As root: chown /data and every subtree the app writes to over to the app
-# user, touching only entries whose owner is wrong and never following
-# symlinks out of /data. Then re-exec this script as the app user, which
+# As root: create /data/{home,system,workspace,opencode} and chown everything
+# under /data to the app user, touching only entries whose owner is wrong and
+# never following symlinks out of /data. Then re-exec this script as the app
+# user, which
 # creates the directories, verifies they are writable, and runs the command
 # (default: node server/index.mjs). Started without root, it only verifies,
 # and exits 1 with a clear message instead of letting the app hit EACCES.
@@ -74,43 +75,46 @@ repair_as_root() {
     die "$DATA is a dangling symlink"
   fi
   mkdir -p "$DATA"
-  if [ "$(owner_of "$DATA_REAL")" != "$APP_UID:$APP_GID" ]; then
-    log "fixing ownership of $DATA_REAL -> $APP_USER ($APP_UID:$APP_GID)"
-    chown "$APP_UID:$APP_GID" "$DATA_REAL" || die "could not chown $DATA_REAL to $APP_USER ($APP_UID:$APP_GID)"
-  fi
-  # state.json, auth.json, and harness logs sit directly in /data. Other
-  # top-level directories (e.g. lost+found) are not ours to touch.
-  fix_owner "$DATA_REAL" -mindepth 1 -maxdepth 1 ! -type d
-
-  for tree in "$WORKSPACE" "$SYSTEM" "$OC" "$HOME_DIR"; do
-    if under_data "$tree"; then
-      fix_owner "$(readlink -m "$tree")"
+  for dir in "$HOME_DIR" "$SYSTEM" "$WORKSPACE" "$OC"; do
+    if under_data "$dir"; then
+      mkdir -p "$(readlink -m "$dir")"
     else
-      case "$tree" in
-        "$DATA"/*) log "not repairing $tree: it resolves outside $DATA through a symlink" ;;
+      case "$dir" in
+        "$DATA"/*) log "not creating or repairing $dir: it resolves outside $DATA through a symlink" ;;
       esac
     fi
   done
+  fix_owner "$DATA_REAL"
 }
 
-# Runs as the app user. Creates the app's directories and reports anything the
-# app could not write: the directories themselves plus the config and state
-# files it rewrites in place.
+# Runs as the app user. Creates the app's directories and reports what the app
+# could not write: those directories, the config and state files it rewrites
+# in place, and anything under /data owned by someone else and not writable.
 prepare_as_app() {
   bad=""
-  for dir in "$DATA" "$WORKSPACE" "$SYSTEM" "$SYSTEM_OC/agents" "$OC/agents" "$HOME_DIR"; do
+  for dir in "$DATA" "$WORKSPACE" "$SYSTEM" "$SYSTEM_OC/agents" "$OC/agents" "$HOME_DIR" \
+    "$HOME_DIR/.local" "$HOME_DIR/.local/share" "$HOME_DIR/.local/state" "$HOME_DIR/.config" "$HOME_DIR/.cache"; do
     mkdir -p "$dir" 2>/dev/null || true
     if [ ! -d "$dir" ] || [ ! -w "$dir" ] || [ ! -x "$dir" ]; then
       bad="$bad
   $dir (owner $(owner_of "$dir"))"
     fi
   done
+  list_unwritable() {
+    find "$@" ! -writable -exec sh -c \
+      'for f; do printf "\n  %s (owner %s)" "$f" "$(stat -c %u:%g "$f")"; done' sh {} + 2>/dev/null
+  }
   for dir in "$DATA" "$OC" "$OC/agents" "$SYSTEM_OC" "$SYSTEM_OC/agents"; do
     [ -d "$dir" ] && [ -x "$dir" ] || continue
-    bad="$bad$(find "$dir" -mindepth 1 -maxdepth 1 -type f ! -writable -exec sh -c \
-      'for f; do printf "\n  %s (owner %s)" "$f" "$(stat -c %u:%g "$f")"; done' sh {} + 2>/dev/null)"
+    bad="$bad$(list_unwritable "$dir" -mindepth 1 -maxdepth 1 -type f)"
   done
+  # Entries we own but made read-only (e.g. git objects) are deliberate.
+  bad="$bad$(list_unwritable "$DATA_REAL" \( -type d -o -type f \) ! -uid "$(id -u)")"
   [ -z "$bad" ] && return 0
+  total="$(printf '%s\n' "$bad" | sed '/^$/d' | sort -u | wc -l)"
+  bad="$(printf '\n%s' "$(printf '%s\n' "$bad" | sed '/^$/d' | sort -u | head -n 25)")"
+  [ "$total" -le 25 ] || bad="$bad
+  ... and $((total - 25)) more"
 
   me="$(id -un 2>/dev/null || id -u) (uid $(id -u))"
   if [ "${ROSTER_ENTRYPOINT_DROPPED:-}" = "1" ]; then
