@@ -53,6 +53,19 @@ function client(base, token, fetchImpl) {
   };
 }
 
+function coreError(step, res) {
+  const error = String(res.data?.error || "");
+  const detail = String(res.data?.detail || "");
+  const msg = `${step}: ${res.status} ${error}`;
+  if (/\bE(ACCES|PERM)\b/.test(`${error} ${detail}`)) {
+    return new Error(
+      `${msg}\nCORE cannot write its data volume. Start roster-flow as root (the image default; no user: override) ` +
+        `so docker/entrypoint.sh repairs /data ownership, then rerun. See docs/STANDUP.md "Data volume ownership".`,
+    );
+  }
+  return new Error(msg);
+}
+
 export async function setupWikiTeam({
   env = process.env,
   fetchImpl = fetch,
@@ -70,14 +83,14 @@ export async function setupWikiTeam({
   if (prov.status === 401 || prov.status === 403) {
     throw new Error(`ROSTER_API_TOKEN rejected (${prov.status}): ${prov.data?.error || "check that it is live and has write scope"}`);
   }
-  if (!prov.ok) throw new Error(`provider: ${prov.status} ${prov.data?.error || ""}`);
+  if (!prov.ok) throw coreError("provider", prov);
   log("provider featherless: ok");
 
   const proj = await call("/api/v1/projects", {
     method: "POST",
     body: JSON.stringify({ id: projectId, name: "wiki-flow docs", brief: "Docs-build integration with wiki-flow." }),
   });
-  if (!proj.ok && proj.status !== 409) throw new Error(`project: ${proj.status} ${proj.data?.error || ""}`);
+  if (!proj.ok && proj.status !== 409) throw coreError("project", proj);
   log(`project ${projectId}: ${proj.status === 409 ? "exists" : "created"}`);
 
   const specialists = wikiSpecialists(model);
@@ -104,11 +117,11 @@ export async function setupWikiTeam({
         method: "POST",
         body: JSON.stringify({ ...spec, kind: "bot", seatType: "specialist", team: "wiki", reportsTo: "wiki-supervisor", projectId }),
       });
-      if (!r.ok && r.status !== 409) throw new Error(`seat ${spec.id}: ${r.status} ${r.data?.error || ""}`);
+      if (!r.ok && r.status !== 409) throw coreError(`seat ${spec.id}`, r);
       hired.push(spec.id);
     }
   } else if (!team.ok) {
-    throw new Error(`team: ${team.status} ${team.data?.error || ""}`);
+    throw coreError("team", team);
   } else {
     log("team wiki: created");
   }

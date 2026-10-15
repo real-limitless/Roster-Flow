@@ -88,6 +88,27 @@ services:
       - ./.roster-flow:/data:Z
 ```
 
+### Data volume ownership
+
+CORE and the OpenCode servers it starts run as the image's `node` user. Volumes created by older images, a root `docker exec`, or a host bind mount can leave root-owned entries anywhere under `/data`, and CORE then fails with `EACCES`. Two examples:
+
+- `EACCES: permission denied, open '/data/opencode/opencode.json'` when `roster-setup` registers a provider.
+- `EACCES` on `mkdir /data/home/.local` when `opencode serve` creates its XDG dirs.
+
+The container starts as root, and on every start `docker/entrypoint.sh` repairs ownership before it drops to `node`:
+
+- It creates `/data/home` (`HOME`), `/data/system`, `/data/workspace` (`ROSTER_WORKSPACE`), and `/data/opencode` (`ROSTER_OPENCODE_DIR`) if they're missing.
+- It walks all of `/data` recursively and chowns only entries whose uid or gid is not `node`'s. That includes `/data` itself, every existing subfolder (for example `home/.local`, `workspace/*/.git`, and `lost+found`), and every file. Starts where everything is already owned by `node` change nothing. They still pay for one stat walk of `/data`.
+- It never follows symlinks below `/data`. A symlink is chowned as a link (`chown -h`) and its target is left alone. If one of the four directories is a symlink that resolves outside `/data`, it is neither created nor repaired. The exception is `ROSTER_DATA_DIR` itself: if it is a symlink, it is resolved, and its target directory and everything under it are repaired as `/data`.
+- It doesn't walk into other mounts inside `/data` (from `/proc/self/mountinfo`, with `find -xdev` as a fallback). A host bind mount at, say, `/data/workspace/repo` is not chowned, not even its mount point, and isn't checked. The exception is when `/data/home`, `/data/system`, `/data/workspace`, or `/data/opencode` is itself a separate mount. Each of those is walked and repaired as its own tree.
+- As `node`, it creates the remaining directories (`system/.opencode/agents`, `opencode/agents`, and `home/.local/{share,state}`, `home/.config`, `home/.cache` for OpenCode). It then checks that those directories are readable and writable. It also checks the config and state files CORE rewrites in place. Anywhere under `/data`, it flags directories it can't read or enter, files it can't read, and entries it can't write that it doesn't own. Only after that check passes does it start `node server/index.mjs`.
+
+If the container is started without root (a `user:` override in Compose or Dokploy), the entrypoint can't repair anything. It only runs the check. If anything fails the check, it exits 1 and lists each path with its owner and mode (at most 25). An unreadable subfolder is one of the reported paths; it doesn't make the script exit silently., and CORE never starts and never hits `EACCES`. The fix is to drop the override, or to `chown -R` the volume to the container uid once from the host. If the check still fails after a root repair (a read-only mount, NFS `root_squash`, or a symlink out of `/data`), the entrypoint exits 1 and says so.
+
+Neither Compose file sets `user:`, so both run the entrypoint as root. `roster-setup` doesn't mount `/data`. It writes through CORE's API, so CORE's entrypoint covers it. If CORE still answers with `EACCES` or `EPERM`, `scripts/setup-wiki-team.mjs` exits 1 and points at this section.
+
+The entrypoint passes any arguments through as the command to run, so one-off commands get the same repair and privilege drop: `docker compose run --rm roster-flow node scripts/create-token.mjs …`. `docker/entrypoint.test.mjs` covers the behavior. Its root cases run only when the test runs as root, for example `sudo node --test docker/entrypoint.test.mjs`.
+
 Do not put secrets in the image or a committed Compose override. Host `npm run standup` below stays supported for development.
 
 Production-like without a container engine (same CORE + `dist/` process the image runs):

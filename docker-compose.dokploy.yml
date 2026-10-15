@@ -9,6 +9,8 @@ services:
       dockerfile: Dockerfile
     image: roster-flow:dokploy
     init: true
+    # No user: override. The entrypoint starts as root, repairs /data ownership,
+    # then drops to node (docs/STANDUP.md, "Data volume ownership").
     # Exposed on the compose / dokploy network only. Not published on the host.
     expose:
       - "${ROSTER_API_PORT:-8790}"
@@ -72,6 +74,8 @@ services:
           - roster-flow
           - roster
   roster-setup:
+    # Mounts no volume; CORE writes /data on its behalf, so CORE's entrypoint
+    # covers ownership. CORE EACCES/EPERM errors exit 1 with a pointer to the docs.
     build:
       context: .
       dockerfile_inline: |

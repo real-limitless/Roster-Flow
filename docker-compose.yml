@@ -9,6 +9,8 @@ services:
       dockerfile: Dockerfile
     image: roster-flow:local
     init: true
+    # No user: override. The entrypoint starts as root, repairs /data ownership,
+    # then drops to node (docs/STANDUP.md, "Data volume ownership").
     # Exposed on the compose network only. Not published on the host.
     expose:
       - "${ROSTER_API_PORT:-8790}"
