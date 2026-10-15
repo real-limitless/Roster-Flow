@@ -56,6 +56,8 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_API_TOKEN` | unset | Register this `rf_…` token once an owner exists. |
 | `ROSTER_API_TOKEN_SCOPES` | all scopes | Comma-separated `read`, `write`, `admin`. |
 | `ROSTER_API_TOKEN_NAME` | `bootstrap` | Label stored on the token. |
+| `ROSTER_CALLBACK_ALLOWLIST` | unset | Job `callbackUrl` hosts allowed to resolve to private or loopback addresses. Comma-separated `host` or `host:port`, exact and case-insensitive, ASCII (punycode) only. Never opens link-local or metadata addresses. See [API.md](API.md#jobs). |
+| `ROSTER_CALLBACK_SECRET` | generated | HMAC key for job callback signatures. Unset: CORE generates one and serves it at `GET /api/v1/jobs/callback-secret`. |
 | `ROSTER_HARNESS_AUTOSTART` | `auto` | `auto`, `1` (always try), or `0` (never). Forwarded for harness auto-start. |
 | `ROSTER_PROVIDER_ID` | unset | Provider id to seed, for example `featherless`. |
 | `ROSTER_PROVIDER_NAME` | the id | Display name. |

@@ -8,6 +8,16 @@ import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiTo
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
+import {
+  callbackSecretInfo,
+  deliverCallback,
+  getJob,
+  listJobs,
+  publishNewJob,
+  rotateCallbackSecret,
+  settleJob,
+  waitForJob,
+} from "./jobs.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
@@ -104,6 +114,19 @@ function messageText(body, extras) {
   if (text) return text;
   if (extras.blocks) return fallbackText(extras.blocks);
   return "";
+}
+
+function requestCaller(user, apiToken) {
+  return {
+    userId: user?.id || null,
+    seatId: user?.seatId || "you",
+    name: user?.name || null,
+    tokenId: apiToken?.token?.id || null,
+  };
+}
+
+function jobDeps() {
+  return { mutate, getState, postMessage, postBus, wakeSeat, deliverCallback };
 }
 
 function isPublicPath(method, pathname) {
@@ -863,8 +886,80 @@ const server = createServer(async (req, res) => {
       postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
+        ...(body.jobId ? { jobId: String(body.jobId) } : {}),
       });
       json(res, 201, postBus({ ...body, text }));
+      return;
+    }
+    if (pathname === "/api/v1/jobs" && method === "GET") {
+      json(res, 200, listJobs(getState(), {
+        status: url.searchParams.get("status") || undefined,
+        target: url.searchParams.get("target") || undefined,
+        assignee: url.searchParams.get("assignee") || undefined,
+      }));
+      return;
+    }
+    if (pathname === "/api/v1/jobs" && method === "POST") {
+      const body = await readBody(req);
+      const { job } = await publishNewJob(body, requestCaller(user, apiToken), jobDeps());
+      json(res, 201, job);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret" && method === "GET") {
+      let info;
+      mutate((s) => {
+        info = callbackSecretInfo(s);
+      });
+      json(res, 200, info);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret/rotate" && method === "POST") {
+      let info;
+      mutate((s) => {
+        info = rotateCallbackSecret(s);
+      });
+      json(res, 200, info);
+      return;
+    }
+    const jobWait = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/wait$/);
+    if (jobWait && method === "GET") {
+      const id = decodeURIComponent(jobWait[1]);
+      const out = await waitForJob(id, {
+        timeout: url.searchParams.get("timeout"),
+        since: url.searchParams.get("since"),
+      }, jobDeps());
+      if (!out) {
+        json(res, 404, { error: "job not found" });
+        return;
+      }
+      json(res, 200, out);
+      return;
+    }
+    const jobCancel = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/cancel$/);
+    if (jobCancel && method === "POST") {
+      const id = decodeURIComponent(jobCancel[1]);
+      const body = await readBody(req).catch(() => ({}));
+      const job = await settleJob(id, "cancel", body, requestCaller(user, apiToken), jobDeps());
+      json(res, 200, job);
+      return;
+    }
+    const jobComplete = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/complete$/);
+    if (jobComplete && method === "POST") {
+      const id = decodeURIComponent(jobComplete[1]);
+      const body = await readBody(req);
+      const job = await settleJob(id, "complete", body, requestCaller(user, apiToken), jobDeps());
+      json(res, 200, job);
+      return;
+    }
+    const jobOne = pathname.match(/^\/api\/v1\/jobs\/([^/]+)$/);
+    if (jobOne && method === "GET") {
+      const id = decodeURIComponent(jobOne[1]);
+      const job = getJob(getState(), id);
+      if (!job) {
+        json(res, 404, { error: "job not found" });
+        return;
+      }
+      json(res, 200, job);
       return;
     }
     if (pathname === "/api/v1/block-actions" && method === "POST") {

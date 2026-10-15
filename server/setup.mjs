@@ -2,14 +2,16 @@ import { verifyPassword } from "./auth.mjs";
 import { skipOnboarding } from "./flags.mjs";
 import { bootstrapToken, requireBootstrapToken, setupClosed } from "./bootstrap.mjs";
 import { unreadBySeat } from "./inbox.mjs";
+import { publicJob } from "./jobs.mjs";
 import { publicRoutine } from "./routines.mjs";
 import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
 
 export function publicState(state) {
   if (!state || typeof state !== "object") return state;
-  const { users, authSessions, apiTokens, ...rest } = state;
+  const { users, authSessions, apiTokens, callbackSecret, ...rest } = state;
   return {
     ...rest,
+    jobs: (rest.jobs || []).map(publicJob),
     routines: (rest.routines || []).map(publicRoutine),
     inboxUnread: unreadBySeat(state),
   };

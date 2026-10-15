@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deps, wakeSeat } from "./bus.mjs";
+import { deps, promptBody, wakeSeat } from "./bus.mjs";
 import { mutate } from "./store.mjs";
+
+test("promptBody tells the seat which job to finish", () => {
+  const text = promptBody(
+    { name: "Eng.Build", role: "Implement", job: "Ship the PR", tools: ["read"], deny: [] },
+    "build",
+    "implement it",
+    { from: "you", kind: "job", jobId: "job-1" },
+    null,
+  ).parts[0].text;
+  assert.match(text, /job-1/);
+  assert.match(text, /roster_report/);
+});
 
 test("wakeSeat records promptAsync on the recipient session", async () => {
   const prompts = [];
