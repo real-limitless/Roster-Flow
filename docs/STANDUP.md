@@ -90,16 +90,19 @@ services:
 
 ### Data volume ownership
 
-CORE runs as the image's `node` user, but volumes created by older images, a root `docker exec`, or a host bind mount can leave root-owned entries under `/data`. CORE then fails with `EACCES`, for example `EACCES: permission denied, open '/data/opencode/opencode.json'` when `roster-setup` registers a provider.
+CORE and the OpenCode servers it starts run as the image's `node` user. Volumes created by older images, a root `docker exec`, or a host bind mount can leave root-owned entries anywhere under `/data`, and CORE then fails with `EACCES`. Two examples:
+
+- `EACCES: permission denied, open '/data/opencode/opencode.json'` when `roster-setup` registers a provider.
+- `EACCES` on `mkdir /data/home/.local` when `opencode serve` creates its XDG dirs.
 
 The container starts as root, and on every start `docker/entrypoint.sh` repairs ownership before it drops to `node`:
 
-- It makes `/data` itself, and the files directly in it (`state.json`, `auth.json`, harness logs), owned by `node`.
-- It walks each tree CORE writes to and chowns only entries whose uid or gid is not `node`'s. The trees are `/data/workspace` (or `ROSTER_WORKSPACE`), `/data/system`, `/data/opencode` (`ROSTER_OPENCODE_DIR`), and `/data/home` (`HOME`). Starts where everything is already owned by `node` change nothing. They still pay for one stat walk of those trees.
-- It never follows symlinks. A symlink is chowned as a link (`chown -h`) and its target is left alone. If one of those trees resolves outside `/data` through a symlink, it is not repaired. Other top-level entries in `/data`, such as `lost+found`, are left alone.
-- As `node`, it creates any missing directories (`workspace`, `system/.opencode/agents`, `opencode/agents`, `home`). It then checks that each directory is writable, along with the config and state files CORE rewrites in place. Only after that check passes does it start `node server/index.mjs`.
+- It creates `/data/home` (`HOME`), `/data/system`, `/data/workspace` (`ROSTER_WORKSPACE`), and `/data/opencode` (`ROSTER_OPENCODE_DIR`) if they're missing.
+- It walks all of `/data` recursively and chowns only entries whose uid or gid is not `node`'s. That includes `/data` itself, every existing subfolder (for example `home/.local`, `workspace/*/.git`, and `lost+found`), and every file. Starts where everything is already owned by `node` change nothing. They still pay for one stat walk of `/data`.
+- It never follows symlinks. A symlink is chowned as a link (`chown -h`) and its target is left alone. If one of the four directories is a symlink that resolves outside `/data`, it is neither created nor repaired.
+- As `node`, it creates the remaining directories (`system/.opencode/agents`, `opencode/agents`, and `home/.local/{share,state}`, `home/.config`, `home/.cache` for OpenCode). It then checks that those directories are writable. It also checks the config and state files CORE rewrites in place, and anything under `/data` that is neither writable nor owned by `node`. Only after that check passes does it start `node server/index.mjs`.
 
-If the container is started without root (a `user:` override in Compose or Dokploy), the entrypoint can't repair anything. It only runs the check. If anything is unwritable, it exits 1 and lists each path with its owner, and CORE never starts and never hits `EACCES`. The fix is to drop the override, or to `chown -R` the volume to the container uid once from the host. If the check still fails after a root repair (a read-only mount, NFS `root_squash`, or a symlink out of `/data`), the entrypoint exits 1 and says so.
+If the container is started without root (a `user:` override in Compose or Dokploy), the entrypoint can't repair anything. It only runs the check. If anything is unwritable, it exits 1 and lists each path with its owner (at most 25), and CORE never starts and never hits `EACCES`. The fix is to drop the override, or to `chown -R` the volume to the container uid once from the host. If the check still fails after a root repair (a read-only mount, NFS `root_squash`, or a symlink out of `/data`), the entrypoint exits 1 and says so.
 
 Neither Compose file sets `user:`, so both run the entrypoint as root. `roster-setup` doesn't mount `/data`. It writes through CORE's API, so CORE's entrypoint covers it. If CORE still answers with `EACCES` or `EPERM`, `scripts/setup-wiki-team.mjs` exits 1 and points at this section.
 
