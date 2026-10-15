@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { addFirstUser } from "./auth.mjs";
 import { setupClosed } from "./bootstrap.mjs";
-import { applyOrgTemplate, completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus, startOver } from "./setup.mjs";
+import { applyOrgTemplate, completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
 import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
 import { bootCore } from "./test-helpers.mjs";
 
@@ -68,6 +68,38 @@ test("completeSetup applies starter or empty and strips secrets from publicState
   assert.ok(bare.messages.some((m) => m.channel === "general"));
 });
 
+test("unauthenticated setup status is booleans only and hides owner identity", async () => {
+  const state = pendingState();
+  const user = await addFirstUser(state, { name: "Chen", email: "chen@example.com", password: "password1" });
+  const anon = publicSetupStatus(setupStatus(state, {}));
+  assert.equal(anon.hasOwner, true);
+  assert.equal(anon.setupClosed, true);
+  assert.equal(anon.hasUser, true);
+  assert.equal(anon.complete, false);
+  assert.equal(anon.authenticated, false);
+  for (const key of ["email", "name", "step", "binary"]) {
+    assert.equal(Object.hasOwn(anon, key), false, key);
+  }
+  const blob = JSON.stringify(anon);
+  assert.equal(blob.includes("chen@example.com"), false);
+  assert.equal(blob.includes("Chen"), false);
+  for (const value of Object.values(anon)) {
+    if (value && typeof value === "object") {
+      for (const inner of Object.values(value)) assert.equal(typeof inner, "boolean");
+    } else {
+      assert.equal(typeof value, "boolean");
+    }
+  }
+
+  const authed = setupStatus(state, { user });
+  assert.equal(authed.email, "chen@example.com");
+  assert.equal(authed.name, "Chen");
+  assert.equal(authed.step, "install");
+  const redacted = publicSetupStatus(authed);
+  assert.equal(Object.hasOwn(redacted, "email"), false);
+  assert.equal(JSON.stringify(redacted).includes("chen@example.com"), false);
+});
+
 test("completeSetup is 409 after it already finished", async () => {
   const state = pendingState();
   await addFirstUser(state, { name: "Chen", email: "chen@example.com", password: "password1" });
@@ -85,7 +117,19 @@ test("startOver wipes the company only for the owner", async () => {
   const done = completeSetup(state, { template: "starter", ownerName: "Chen" });
   assert.equal(setupClosed(done), true);
   await assert.rejects(
+    () => startOver(done, { email: "wrong@example.com", confirm: true }),
+    (err) => err.status === 401,
+  );
+  await assert.rejects(
+    () => startOver(done, { email: "wrong@example.com", confirm: true, password: "not-the-password" }),
+    (err) => err.status === 401,
+  );
+  await assert.rejects(
     () => startOver(done, { email: "wrong@example.com", confirm: true, password: "password1" }),
+    (err) => err.status === 403,
+  );
+  await assert.rejects(
+    () => startOver(done, { email: "wrong@example.com", confirm: true, user: done.users[0] }),
     (err) => err.status === 403,
   );
   await assert.rejects(() => startOver(done, { email: "chen@example.com", confirm: true }), (err) => err.status === 401);
@@ -121,6 +165,11 @@ test("start-over rejects unauthenticated and wrong-password requests and accepts
   });
   const wipe = { email: "ops@example.com", confirm: true };
   try {
+    const anonWrongEmail = await postJson(core.base, "/api/v1/setup/start-over", {
+      email: "not-the-owner@example.com",
+      confirm: true,
+    });
+    assert.equal(anonWrongEmail.status, 401);
     const anon = await postJson(core.base, "/api/v1/setup/start-over", wipe);
     assert.equal(anon.status, 401);
     let status = await (await fetch(`${core.base}/api/v1/setup/status`)).json();

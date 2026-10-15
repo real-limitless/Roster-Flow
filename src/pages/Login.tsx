@@ -109,7 +109,7 @@ export function Login() {
           Sign in
         </h1>
         <p className="lede">Local owner account. This is not SSO.</p>
-        <LoginForm emailDefault={status?.email || ""} />
+        <LoginForm />
         {!wipeOpen ? (
           <p className="micro">
             Need to start over?{" "}

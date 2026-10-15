@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync, existsSync } from "node:fs";
-import { agentMarkdown, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
+import { agentMarkdown, permissionFor, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,7 +25,18 @@ test("agentMarkdown uses provider/model and persona", () => {
   assert.match(md, /mode: all/);
   assert.match(md, /Persona: Terse implementer/);
   assert.match(md, /Instructions: Implement only what Product accepted/);
-  assert.match(md, /permission:\n  bash:\n    "deploy \*": deny\n    "\*": allow/);
+  assert.match(md, /permission:\n  bash:\n    "\*": allow\n    "deploy \*": deny/);
+});
+
+test("deploy deny is the last bash rule so OpenCode does not allow deploy", () => {
+  const bash = permissionFor({ seatType: "specialist", deny: ["deploy"] }).bash;
+  assert.deepEqual(Object.entries(bash), [
+    ["*", "allow"],
+    ["deploy *", "deny"],
+  ]);
+  const wiki = permissionFor({ id: "wiki-scribe", seatType: "specialist", deny: ["deploy"] }).bash;
+  assert.deepEqual(Object.keys(wiki), ["*", "deploy *"]);
+  assert.equal(wiki["deploy *"], "deny");
 });
 
 test("supervisor markdown is primary and denies writes", () => {

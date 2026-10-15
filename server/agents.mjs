@@ -32,7 +32,11 @@ export function permissionFor(seat) {
   const permission = {};
   if (deny.has("edit") || seat.seatType === "supervisor") permission.edit = "deny";
   if (deny.has("bash") || seat.seatType === "supervisor") permission.bash = "deny";
-  else if (deny.has("deploy") || deny.has("skip-confirm")) permission.bash = { "deploy *": "deny", "*": "allow" };
+  else if (deny.has("deploy") || deny.has("skip-confirm")) {
+    // OpenCode uses the last matching bash rule. The catch-all allow must come
+    // before the deploy deny, or `deploy *` is allowed.
+    permission.bash = { "*": "allow", "deploy *": "deny" };
+  }
   return permission;
 }
 

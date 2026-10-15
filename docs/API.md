@@ -1,6 +1,6 @@
 # CORE API — chatbots, teams, bus, harness
 
-Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` serves the UI and API on **5173** (same origin as `/setup` and `/app`) and also publishes the API on **8790** so it does not collide with mcp-flow on 8787.
+Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only and does not publish them on the host. 8787 is mcp-flow.
 
 Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`.
 
@@ -14,12 +14,12 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/setup/status` | Wizard resume (`step`: install / first_user / login / harness / welcome / done) |
+| GET | `/api/v1/setup/status` | Public callers get booleans only (`hasOwner`, `setupClosed`, `complete`, `authenticated`, `installSeen`, …). No owner email or name. A session may also receive `step` (install / first_user / login / harness / welcome / done) and that caller's own name and email. |
 | POST | `/api/v1/setup/install` | Mark the installation checklist seen |
 | POST | `/api/v1/setup/first-user` | Create the owner `{ name, email, password }` — **409** if a user exists |
 | POST | `/api/v1/setup/harness` | `{ skipped?: true }` — mark harness step done |
 | POST | `/api/v1/setup/complete` | `{ template: "starter" \| "empty" }` applies the org and finishes setup |
-| POST | `/api/v1/setup/start-over` | `{ email, confirm: true, password? }`. When an owner exists (`setupClosed`), requires a valid owner session (login bearer, or an admin API token for that owner) **or** the owner's `password`, plus `ROSTER_BOOTSTRAP_TOKEN` when that env is set (`x-roster-bootstrap-token` or `bootstrapToken`). Otherwise **401** (missing or wrong session, password, or bootstrap token) or **403** (email does not match, or the API token is not `admin`). Wipes org + users and reopens `/setup` |
+| POST | `/api/v1/setup/start-over` | `{ email, confirm: true, password? }`. When an owner exists (`setupClosed`), requires a valid owner session (login bearer, or an admin API token for that owner) **or** the owner's `password`, plus `ROSTER_BOOTSTRAP_TOKEN` when that env is set (`x-roster-bootstrap-token` or `bootstrapToken`). Authentication is checked before the email. Anonymous callers always get **401** (missing or wrong session, password, or bootstrap token), whether or not the email matches. **403** is only for an authenticated caller whose email does not match, or an API token that is not `admin`. Wipes org + users and reopens `/setup` |
 | POST | `/api/v1/auth/login` | `{ email, password }` → `{ token, user }` |
 | GET | `/api/v1/auth/me` | Current owner |
 | POST | `/api/v1/auth/logout` | Drop this token |
