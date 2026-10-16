@@ -170,6 +170,8 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
             from,
             channel,
           };
+          if (args.prUrl) body.prUrl = args.prUrl;
+          if (args.branch) body.branch = args.branch;
           if (args.cost != null && args.cost !== "") body.cost = Number(args.cost);
           if (args.tokens) body.tokens = parseTokenArg(args.tokens);
           const job = await fetchApi(`/api/v1/jobs/${encodeURIComponent(args.jobId)}/complete`, {

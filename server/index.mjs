@@ -1177,6 +1177,10 @@ const server = createServer(async (req, res) => {
       const id = decodeURIComponent(jobComplete[1]);
       const body = await readBody(req);
       const job = await settleJob(id, "complete", body, requestCaller(user, apiToken), jobDeps());
+      if (body.prUrl || body.branch) {
+        const msg = [...(getState().messages || [])].reverse().find((m) => m.jobId === id);
+        if (msg) await attachGithubCard(msg, { text: msg.text, prUrl: body.prUrl, branch: body.branch });
+      }
       json(res, 200, job);
       return;
     }

@@ -79,7 +79,7 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
   await tools.roster_task_claim.execute({ taskId: "task-eng-implement" }, { agent: "build" });
   assert.ok(calls.some((c) => c.path === "/api/v1/tasks/task-eng-implement/claim"));
   await tools.roster_report.execute(
-    { text: "PR opened", jobId: "job-1", cost: "0.2", tokens: '{"input":3,"output":1}' },
+    { text: "PR opened", jobId: "job-1", cost: "0.2", tokens: '{"input":3,"output":1}', prUrl: "https://github.com/o/r/pull/7" },
     { agent: "build" },
   );
   const completed = calls.find((c) => c.path === "/api/v1/jobs/job-1/complete");
@@ -89,6 +89,7 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
   assert.equal(completedBody.cost, 0.2);
   assert.deepEqual(completedBody.tokens, { input: 3, output: 1 });
   assert.equal(completedBody.from, "build");
+  assert.equal(completedBody.prUrl, "https://github.com/o/r/pull/7");
 
   await tools.roster_ask_human.execute({ text: "approve?", jobId: "job-1" }, { agent: "build" });
   const parked = calls.filter((c) => c.path === "/api/v1/jobs/job-1/complete").at(-1);

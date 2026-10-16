@@ -247,7 +247,7 @@ Persistent work a caller hands to a seat or a team. Same bearer auth as the rest
 | GET | `/api/v1/jobs` | List, newest first. Optional `?status=&target=&assignee=` |
 | GET | `/api/v1/jobs/:id` | One job |
 | GET | `/api/v1/jobs/:id/wait` | Long-poll. `?timeout=` ms (0–60000, default 25000). `?since=` ISO `updatedAt` returns on any newer write; otherwise returns when status is `needs_human`, `done`, `failed`, or `cancelled` |
-| POST | `/api/v1/jobs/:id/complete` | Seat result. `{ result, status?: done\|failed\|needs_human, cost?, tokens?, from?, announce? }` |
+| POST | `/api/v1/jobs/:id/complete` | Seat result. `{ result, status?: done\|failed\|needs_human, cost?, tokens?, from?, announce?, prUrl?, branch? }`. `prUrl` / `branch` attach a GitHub card to the job's room line |
 | POST | `/api/v1/jobs/:id/cancel` | Cancel a non-terminal job. `{ reason? }` |
 | GET | `/api/v1/jobs/callback-secret` | `admin`. The callback signing secret, header names, and signing string |
 | POST | `/api/v1/jobs/callback-secret/rotate` | `admin`. Replace the secret. **409** when `ROSTER_CALLBACK_SECRET` is set |
