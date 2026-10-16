@@ -93,15 +93,21 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
     state,
   );
   assert.equal(open, null);
+  providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "stub-reply-ok", messageID: "a1" } } },
+    "s1",
+    state,
+  );
   const done = providerTurnVerdict(
     {
       type: "message.updated",
-      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, providerID: "stub", modelID: "stub-model" } },
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop", providerID: "stub", modelID: "stub-model" } },
     },
     "s1",
     state,
   );
   assert.equal(done.reached, true);
+  assert.equal(done.text, "stub-reply-ok");
   const failed = providerTurnVerdict(
     {
       type: "message.updated",

@@ -339,6 +339,7 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
   const seen = new Set();
   const failed = new Set();
   let replies = 0;
+  let settledPolls = 0;
   const missingKey = [...seats].some((id) => {
     const seat = getState().seats.find((s) => s.id === id);
     return !seatModelPlan(seat, deps.knownLoadedModels?.(seat ? harnessKindForSeat(seat) : "company") ?? null).ok;
@@ -383,10 +384,17 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
         });
       }
       if ([...seats].every((id) => failed.has(id))) break;
-      if (replies) continue;
+      if (replies) break;
+      const anyStarting = [...seats].some(
+        (id) => !failed.has(id) && (getState().runs || []).some((r) => r.seatId === id && r.status === "starting"),
+      );
+      if (!anyStarting) {
+        settledPolls += 1;
+        if (settledPolls >= 8) break;
+      }
       await new Promise((r) => setTimeout(r, deps.followDelayMs));
     }
-    const waiting = [...seats].filter((id) => !failed.has(id));
+    const waiting = [...seats].filter((id) => !failed.has(id) && !(getState().runs || []).some((r) => r.seatId === id && r.status === "running"));
     if (!replies && waiting.length) {
       const first = waiting[0];
       const seat = getState().seats.find((s) => s.id === first);
