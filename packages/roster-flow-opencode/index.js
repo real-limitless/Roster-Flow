@@ -81,8 +81,28 @@ function parseSources(raw) {
   });
 }
 
+export const NO_ROOM_ERROR =
+  "This session is not bound to a Roster-flow room. Pass channel (for example channel=ship), or call the tool from a room session.";
+
 export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
   const z = tool.schema;
+  const rooms = new Map();
+  /** The room of the calling session (`GET /api/v1/sessions/:id/room`), or null. */
+  async function roomOf(ctx) {
+    const id = ctx?.sessionID || ctx?.sessionId;
+    if (!id) return null;
+    if (!rooms.has(id)) {
+      const found = await fetchApi(`/api/v1/sessions/${encodeURIComponent(id)}/room`).catch(() => null);
+      rooms.set(id, found?.channelId || null);
+    }
+    return rooms.get(id);
+  }
+  async function roomOrFail(ctx, explicit) {
+    const channel = explicit || (await roomOf(ctx));
+    if (!channel) throw new Error(NO_ROOM_ERROR);
+    return channel;
+  }
+  const sessionOf = (ctx) => ctx?.sessionID || ctx?.sessionId || undefined;
   return {
     roster_list_seats: tool({
       description: "List Roster-flow org-chart seats (humans and OpenCode bots), teams, and projects.",
@@ -116,14 +136,17 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
         to: z.string().describe("Seat id, team:<id>, or channel:<id>"),
         text: z.string().describe("Message body (fallback if blocks are set)"),
         from: z.string().optional().describe("Your seat id if known"),
+        channel: z.string().optional().describe("Room to post in. Defaults to the room of this session"),
         blocks: z.string().optional().describe("Optional Roster Block Kit JSON array"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
         const blocks = parseBlocks(args.blocks);
+        const toRoom = String(args.to || "").startsWith("channel:") ? String(args.to).slice("channel:".length) : null;
+        const channel = await roomOrFail(ctx, args.channel || toRoom);
         const entry = await fetchApi("/api/v1/messages", {
           method: "POST",
-          body: JSON.stringify({ to: args.to, text: args.text, from, wake: true, blocks }),
+          body: JSON.stringify({ to: args.to, text: args.text, from, wake: true, blocks, channel, sessionId: sessionOf(ctx) }),
         });
         return { title: `→ ${args.to}`, output: JSON.stringify(entry) };
       },
@@ -134,12 +157,14 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
         to: z.string(),
         text: z.string(),
         from: z.string().optional(),
+        channel: z.string().optional().describe("Room the handoff is posted in. Defaults to the room of this session"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
+        const channel = await roomOrFail(ctx, args.channel);
         const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
-          body: JSON.stringify({ from, to: args.to, kind: "handoff", text: args.text, wake: true }),
+          body: JSON.stringify({ from, to: args.to, kind: "handoff", text: args.text, wake: true, channel, sessionId: sessionOf(ctx) }),
         });
         return { title: `handoff → ${args.to}`, output: JSON.stringify(entry) };
       },
@@ -149,7 +174,7 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
         "Post a structured result back to the originating Room thread. Pass jobId to complete that job (done, failed, or needs_human). Optional prUrl/branch render a GitHub card. Optional blocks is Roster Block Kit JSON.",
       args: {
         text: z.string(),
-        channel: z.string().optional(),
+        channel: z.string().optional().describe("Room to post in. Defaults to the room of this session"),
         from: z.string().optional(),
         prUrl: z.string().optional().describe("GitHub pull request URL to render as a Room card"),
         branch: z.string().optional().describe("Worktree branch name (local; not a sandbox)"),
@@ -161,14 +186,14 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
-        const channel = args.channel || "ship";
         const blocks = parseBlocks(args.blocks);
         if (args.jobId) {
+          const channel = args.channel || (await roomOf(ctx));
           const body = {
             result: args.text,
             status: args.status || "done",
             from,
-            channel,
+            ...(channel ? { channel } : {}),
           };
           if (args.prUrl) body.prUrl = args.prUrl;
           if (args.branch) body.branch = args.branch;
@@ -180,6 +205,7 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
           });
           return { title: `job ${body.status}`, output: JSON.stringify(job) };
         }
+        const channel = await roomOrFail(ctx, args.channel);
         const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
           body: JSON.stringify({
@@ -192,6 +218,7 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
             blocks,
             prUrl: args.prUrl,
             branch: args.branch,
+            sessionId: sessionOf(ctx),
           }),
         });
         return { title: "report", output: JSON.stringify(entry) };

@@ -113,6 +113,15 @@ test("serveEnv sets OPENCODE_CONFIG and OPENCODE_CONFIG_DIR for both serves", ()
   assert.equal(system.FEATHERLESS_API_KEY, "k");
 });
 
+test("serveEnv gives the plugin CORE's internal token unless ROSTER_API_TOKEN is set", async () => {
+  const { internalPluginToken, isInternalPluginToken } = await import("./internal-token.mjs");
+  const env = harness.serveEnv("company", { PATH: "/bin" });
+  assert.equal(env.ROSTER_API_TOKEN, internalPluginToken());
+  assert.ok(isInternalPluginToken(env.ROSTER_API_TOKEN));
+  assert.equal(harness.serveEnv("system", { PATH: "/bin", ROSTER_API_TOKEN: " " }).ROSTER_API_TOKEN, internalPluginToken());
+  assert.equal(harness.serveEnv("company", { PATH: "/bin", ROSTER_API_TOKEN: "rf_user" }).ROSTER_API_TOKEN, "rf_user");
+});
+
 test("an empty OPENCODE_CONFIG (compose default) keeps ROSTER_OPENCODE_DIR; a set one overrides the company serve only", () => {
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "" }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "  " }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));

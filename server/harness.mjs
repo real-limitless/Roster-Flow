@@ -2,6 +2,7 @@
  * Everflow-style OpenCode wrapper: company serve for product bots,
  * plus a dedicated System serve for Architect / Channel.
  */
+import { internalPluginToken } from "./internal-token.mjs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
@@ -96,6 +97,7 @@ export function serveEnv(kind = COMPANY, base = process.env) {
     OPENCODE_CLIENT: s.client,
     NODE_PATH: [join(root, "node_modules"), base.NODE_PATH].filter(Boolean).join(":"),
     ROSTER_API: rosterApiUrl(),
+    ROSTER_API_TOKEN: String(base.ROSTER_API_TOKEN || "").trim() || internalPluginToken(),
   };
 }
 

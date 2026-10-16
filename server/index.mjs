@@ -40,6 +40,7 @@ import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
 import { channelsForSeat, createChannel, patchChannel, publicChannel } from "./channels.mjs";
 import { sessionRoom } from "./room-sessions.mjs";
+import { INTERNAL_SEAT_FIELDS, internalTokenAllows, isInternalPluginToken } from "./internal-token.mjs";
 import { postMessage, resetChatRuntime, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
@@ -167,6 +168,12 @@ async function postRoomMessage(channel, who, kind, text, extras, hint = {}) {
   return attachGithubCard(msg, { ...hint, text });
 }
 
+/** The room an OpenCode session belongs to, so plugin tools post where the seat was woken. */
+function roomOfSession(sessionId) {
+  if (!sessionId) return null;
+  return sessionRoom(getState(), String(sessionId))?.channelId || null;
+}
+
 function requestCaller(user, apiToken) {
   return {
     userId: user?.id || null,
@@ -260,14 +267,19 @@ const server = createServer(async (req, res) => {
     }
     if (tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
-    const apiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
-    const user = apiToken ? apiToken.user : userFromToken(getState(), token);
+    const internal = isInternalPluginToken(token);
+    const apiToken = !internal && isApiToken(token) ? resolveApiToken(getState(), token) : null;
+    const user = internal ? (getState().users || [])[0] || null : apiToken ? apiToken.user : userFromToken(getState(), token);
 
-    if (isApiToken(token) && !apiToken) {
+    if (internal && !internalTokenAllows(method, pathname)) {
+      json(res, 403, { error: "the internal plugin token does not allow this request" });
+      return;
+    }
+    if (!internal && isApiToken(token) && !apiToken) {
       json(res, 401, { error: "invalid, expired, or revoked API token" });
       return;
     }
-    if (!skipOnboarding() && !isPublicPath(method, pathname) && !user) {
+    if (!internal && !skipOnboarding() && !isPublicPath(method, pathname) && !user) {
       json(res, 401, { error: "authentication required" });
       return;
     }
@@ -1030,7 +1042,8 @@ const server = createServer(async (req, res) => {
     const seatPatch = pathname.match(/^\/api\/v1\/seats\/([^/]+)$/);
     if (seatPatch && method === "PATCH") {
       const id = decodeURIComponent(seatPatch[1]);
-      const body = await readBody(req);
+      const raw = await readBody(req);
+      const body = internal ? Object.fromEntries(INTERNAL_SEAT_FIELDS.filter((k) => k in raw).map((k) => [k, raw[k]])) : raw;
       let updated = null;
       mutate((s) => {
         updated = patchSeat(s, id, body);
@@ -1194,7 +1207,7 @@ const server = createServer(async (req, res) => {
       }
       const msg = await postRoomMessage(id, body.who || "You", body.kind || "human", text, extras, githubHint(body));
       const routed = text
-        ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
+        ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you", messageId: msg?.id || null })
         : { mentions: [], wakes: [], notify: [], pending: Promise.resolve([]) };
       const wakeResults = (await (routed.started || routed.pending) || []).map((row) => ({
         seat: row?.seat || null,
@@ -1249,7 +1262,7 @@ const server = createServer(async (req, res) => {
         json(res, 429, { error: "cycle detector: too many ping-pongs" });
         return;
       }
-      let channel = "ship";
+      let channel = body.channel ? String(body.channel) : roomOfSession(body.sessionId) || "ship";
       if (String(to).startsWith("channel:")) channel = to.slice("channel:".length);
       const fromSeat = getState().seats.find((s) => s.id === from);
       await postRoomMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from }, githubHint(body));
@@ -1283,6 +1296,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const fromSeat = getState().seats.find((s) => s.id === body.from);
+      if (!body.channel && body.sessionId) body.channel = roomOfSession(body.sessionId) || undefined;
       const msg = await postRoomMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
