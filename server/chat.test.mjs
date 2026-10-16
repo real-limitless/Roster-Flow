@@ -549,6 +549,26 @@ test("followChannel ignores assistant messages created before the wake and posts
   }
 });
 
+test("a reply that session sync already posted in the room still answers the wake", async () => {
+  const prev = { ...deps };
+  const channel = `synced-${Date.now()}`;
+  const reply = { id: `msg-synced-${Date.now()}`, text: "Synced first.", created: Date.now() + 5 };
+  mirrorTranscript(channel, "channel", [{ ...reply, role: "assistant" }]);
+  deps.pullAssistant = async () => [reply];
+  deps.pullFailure = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = () => ({ providerID: "x", modelID: "m", configured: true, connected: true, loaded: null });
+  deps.followDelayMs = 0;
+  try {
+    assert.equal(await followChannel(channel, ["channel"], 2, { since: Date.now() }), 1);
+    const room = getState().messages.filter((m) => m.channel === channel);
+    assert.deepEqual(room.map((m) => m.text), ["Synced first."]);
+    assert.equal(await followChannel(`${channel}-other`, ["channel"], 1, { since: 0 }), 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("messages sent while the responder is answering are queued and delivered as one follow-up", async () => {
   const prev = { ...deps };
   let release;

@@ -565,7 +565,14 @@ export async function followChannel(
           if (!p.id || seen.has(p.id)) continue;
           seen.add(p.id);
           if (since && p.created && p.created < since) continue;
-          if (alreadyMirrored(p.id)) continue;
+          if (alreadyMirrored(p.id)) {
+            // Session sync can post the reply before this loop reads it; it still answers this wake.
+            if (mirroredReply(p.id, channelId, seatId)) {
+              posted += 1;
+              replies += 1;
+            }
+            continue;
+          }
           const seat = getState().seats.find((s) => s.id === seatId);
           const msg = postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id, ...threadCaption(seatId, channelId) });
           posted += 1;
@@ -678,6 +685,11 @@ export function routeBotReply(channelId, seatId, msg) {
 /** An OpenCode message id is posted at most once, in whichever room it landed first. */
 function alreadyMirrored(sessionMessageId) {
   return (getState().messages || []).some((m) => m.sessionId === sessionMessageId);
+}
+
+/** The room message for an OpenCode message id when it is this seat's reply in this room, else null. */
+function mirroredReply(sessionMessageId, channelId, seatId) {
+  return (getState().messages || []).find((m) => m.sessionId === sessionMessageId && m.channel === channelId && m.seatId === seatId) || null;
 }
 
 export function mirrorTranscript(channelId, seatId, parts) {
