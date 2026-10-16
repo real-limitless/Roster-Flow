@@ -381,6 +381,14 @@ export type Msg = {
   sessionId?: string;
   slack?: { inbound?: boolean; channel?: string; ts?: string; user?: string };
   thread?: MsgThread;
+  delegation?: MsgDelegation;
+};
+
+export type MsgDelegation = {
+  parentSeatId: string;
+  childSeatId: string;
+  childSessionId: string;
+  tokens: number;
 };
 
 export type MsgThread = {

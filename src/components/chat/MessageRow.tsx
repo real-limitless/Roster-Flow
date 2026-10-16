@@ -93,9 +93,15 @@ function MessageChips({ msg }: { msg: Msg }) {
   const attachments = msg.attachments || [];
   const viaSlack = Boolean(msg.slack?.inbound);
   const budget = threadBudgetLow(msg);
-  if (!skills.length && !files.length && !attachments.length && !viaSlack && !budget) return null;
+  const delegation = msg.delegation;
+  if (!skills.length && !files.length && !attachments.length && !viaSlack && !budget && !delegation) return null;
   return (
     <div className="msg-chips">
+      {delegation && (
+        <span className="chip" data-testid={`msg-delegation-${msg.id}`}>
+          task → {delegation.childSeatId}
+        </span>
+      )}
       {budget && msg.thread && (
         <span className="chip warn" data-testid={`msg-thread-budget-${msg.id}`}>
           thread {msg.thread.botWakes}/{msg.thread.maxBotWakes} bot wakes

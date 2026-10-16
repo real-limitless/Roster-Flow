@@ -1,5 +1,5 @@
 import { getState, mutate, uid } from "./store.mjs";
-import { isPass, meterTurn, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
+import { isPass, meterChildren, meterTurn, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
 import { effectiveRespond, resolveMembers, responderCandidates, roomBudget, roomLimits } from "./channels.mjs";
 import { isOpenCodeAdapter } from "./adapters.mjs";
@@ -34,6 +34,7 @@ export const deps = {
   loadedModels,
   knownLoadedModels,
   meterTurn,
+  meterChildren,
   waitForSessions,
   onSessionIdle,
   eventsConnected,
@@ -583,12 +584,34 @@ function followedSessionIds(seats, follow, state = getState()) {
   return ids;
 }
 
-/** Correct the wake's usage row now and again when OpenCode reports the session idle. */
-function meterSeat(seatId, sessionId, since, runId) {
+/** Correct the wake's usage row and meter its subagent sessions, now and again when OpenCode reports the session idle. */
+function meterSeat(seatId, sessionId, since, runId, channelId) {
   if (!runId || !sessionId || !deps.meterTurn) return;
-  const run = () => Promise.resolve(deps.meterTurn(seatId, { sessionId, since, runId })).catch(() => null);
+  const threadId = seatThreads.get(`${seatId}|${channelId}`)?.threadId || null;
+  const run = async () => {
+    await Promise.resolve(deps.meterTurn(seatId, { sessionId, since, runId })).catch(() => null);
+    const children = await Promise.resolve(deps.meterChildren?.(seatId, { sessionId, since, runId, channelId, threadId })).catch(() => null);
+    postDelegations(channelId, seatId, children || []);
+  };
   void run();
   deps.onSessionIdle?.(sessionId, () => void run());
+}
+
+/** One System line per subagent session a seat's turn ran, posted once. */
+function postDelegations(channelId, parentSeatId, children) {
+  const state = getState();
+  const parent = seatOf(parentSeatId, state)?.name || parentSeatId;
+  for (const c of children) {
+    if (!c.seatId) continue;
+    if ((state.messages || []).some((m) => m.delegation?.childSessionId === c.childSessionId)) continue;
+    const child = seatOf(c.seatId, state)?.name || c.seatId;
+    const task = c.title ? `: "${c.title}"` : "";
+    const paused = c.paused ? ` ${child} is now paused (budget).` : "";
+    postMessage(channelId, "System", "bot", `${parent} delegated to ${child} with task${task} (${c.tokens.toLocaleString("en-US")} tokens).${paused}`, {
+      system: true,
+      delegation: { parentSeatId, childSeatId: c.seatId, childSessionId: c.childSessionId, tokens: c.tokens },
+    });
+  }
 }
 
 /**
@@ -720,7 +743,7 @@ export async function followChannel(
     if (followingSeats.get(channelId) === follow) followingSeats.delete(channelId);
     for (const id of seats) {
       stopThinking(channelId, id);
-      meterSeat(id, follow.sessions[id], since, follow.runs[id]);
+      meterSeat(id, follow.sessions[id], since, follow.runs[id], channelId);
     }
   }
   return replies;
