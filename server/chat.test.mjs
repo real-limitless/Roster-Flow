@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyState } from "./seed.mjs";
-import { getState } from "./store.mjs";
+import { getState, mutate } from "./store.mjs";
 import { assistantText, sessionTranscript, bindSessionMeta } from "./harness.mjs";
 import {
   collectWakeTargets,
@@ -13,6 +13,7 @@ import {
   seatModelPlan,
   deps,
 } from "./chat.mjs";
+import { deps as busDeps } from "./bus.mjs";
 import { emit, listTrace, resetTrace } from "./trace.mjs";
 
 test("implicit targets cover channel, team, project, and DM rooms", () => {
@@ -325,6 +326,49 @@ test("providerHint explains a missing seat key", () => {
     assert.match(hint, /Channel/);
   } finally {
     deps.keyStatus = prev;
+  }
+});
+
+test("an @mention that does not start reports started false and a blocked run", async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  let priorModel;
+  busDeps.harnessStatus = () => ({ harness: "up" });
+  busDeps.createSession = async () => ({ id: "ses_mention" });
+  busDeps.loadedModels = async () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  busDeps.promptSession = async () => {
+    throw new Error("provider should not be called");
+  };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  deps.knownLoadedModels = () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  deps.followTicks = 0;
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) {
+      priorModel = seat.model;
+      seat.model = "featherless/not-loaded-model";
+      seat.status = "idle";
+    }
+  });
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "please @Eng.Build check" });
+    const results = await routed.pending;
+    const build = results.find((row) => row.seat === "build");
+    assert.ok(build);
+    assert.equal(build.started, false);
+    assert.ok(build.runId);
+    const run = (getState().runs || []).find((r) => r.id === build.runId);
+    assert.equal(run?.status, "blocked");
+    assert.notEqual(run?.status, "running");
+  } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      if (seat && priorModel !== undefined) seat.model = priorModel;
+    });
   }
 });
 

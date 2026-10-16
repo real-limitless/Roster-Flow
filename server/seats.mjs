@@ -1,13 +1,15 @@
 import { applyBudgetSideEffects, budgetFieldsFromBody, rolloverSeatBudget, seatOverBudget } from "./budget.mjs";
 import { knownLoadedModels } from "./harness.mjs";
+import { firstConnectedModel, isBuiltinProvider } from "./providers.mjs";
 import { normalizeModelId, normalizeSeat, slugify } from "./seed.mjs";
 import { attachSeatToTeam } from "./teams.mjs";
 import { removeSeatAgent } from "./agents.mjs";
 
-function firstLoadedModel() {
-  const loaded = knownLoadedModels("company");
-  const hit = Array.isArray(loaded) ? loaded.find((m) => m?.providerID && m?.modelID) : null;
-  return hit ? `${hit.providerID}/${hit.modelID}` : undefined;
+/** Connected, configured, non-builtin model the company serve has loaded. */
+export function firstLoadedModel(loaded = knownLoadedModels("company"), models) {
+  const hit = firstConnectedModel(loaded, models);
+  if (!hit?.providerID || !hit.modelID || isBuiltinProvider(hit.providerID)) return undefined;
+  return `${hit.providerID}/${hit.modelID}`;
 }
 
 /** Empty `model` means unassigned. A team default applies only when the field was omitted. */

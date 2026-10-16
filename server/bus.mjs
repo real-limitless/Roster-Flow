@@ -11,7 +11,7 @@ import {
   describeOpenCodeError,
   lastAssistantFailure,
 } from "./harness.mjs";
-import { isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
+import { isBuiltinProvider, isLoadedModel, loadedProviderIds, modelAllowedInConfig, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
@@ -40,6 +40,13 @@ function sessionMap(state, seat) {
 }
 
 const pendingWakes = new WeakMap();
+
+export function blockLatestRun(seatId, reason) {
+  const runs = getState().runs || [];
+  const run = [...runs].reverse().find((r) => r.seatId === seatId && (r.status === "running" || r.status === "starting"));
+  if (run) noteRun(run.id, seatId, "blocked", reason || "did not start");
+  return run?.id || null;
+}
 
 function noteRun(runId, seatId, status, reason) {
   if (!runId) return;
@@ -163,12 +170,22 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
       if (t) t.rrIndex = team.rrIndex;
     });
   }
-  const chain = modelChainForSeat(seat, team);
+  const explicit = String(seat?.model || "").trim();
+  const chain = modelChainForSeat(seat, team).filter((ref) => {
+    const providerID = String(ref || "").split("/")[0];
+    if (isBuiltinProvider(providerID) && String(ref) !== explicit) return false;
+    return true;
+  });
   const loaded = await deps.loadedModels(kind).catch(() => null);
   const resolved = chain.length ? chain.map((m) => resolveUsableModel(seat, m, loaded)) : [resolveUsableModel(seat, undefined, loaded)];
   // Sending a model OpenCode did not load fails inside the serve (prompt_async
   // still returns 204), so the seat would never reply. Stop here instead.
-  const refs = resolved.filter((m) => !m?.providerID || isLoadedModel(loaded, m.providerID, m.modelID) !== false);
+  // The built-in `opencode` provider is not a fallback: it is loaded but unconfigured.
+  const refs = resolved.filter((m) => {
+    if (!m?.providerID || !m?.modelID) return false;
+    if (isBuiltinProvider(m.providerID) && `${m.providerID}/${m.modelID}` !== explicit) return false;
+    return isLoadedModel(loaded, m.providerID, m.modelID) !== false;
+  });
   if (!refs.length) {
     const want = modelRef(resolved[0]) || seat.model || "the seat model";
     const have = loadedProviderIds(loaded);
@@ -182,7 +199,7 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
   let lastErr = null;
   for (const model of refs) {
     const ref = modelRef(model);
-    if (ref) {
+    if (ref && modelAllowedInConfig(ref)) {
       try {
         syncSeatAgent({ ...seat, model: ref });
       } catch {
