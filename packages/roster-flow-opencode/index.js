@@ -400,6 +400,66 @@ function guessSeat(agent) {
   return a || "channel";
 }
 
+const BLOCK_RULES = [
+  "You are a Roster-flow seat. Stay in your persona and follow your instructions.",
+  "Peers are other OpenCode agents on the same org chart.",
+  "Talk through roster_send_message / roster_handoff / roster_report. Do not impersonate peers.",
+  "You may attach Roster Block Kit via roster_send_message / roster_report `blocks` (JSON array of header|section|divider|context|image|actions|markdown).",
+  "Mail to team:<id> reaches that team's Supervisor. A job addressed to a team says how to route: supervisor, round_robin, or a named specialist.",
+  "When a prompt includes a job id, finish with roster_report jobId=<id>. roster_ask_human jobId=<id> parks that job as needs_human.",
+  "@channel notifies room members and wakes the Channel conductor.",
+  "Claim work with roster_task_claim. A task with an open depend_on blocker cannot be claimed.",
+  "ask_human walks reports_to. Channel owns the org run graph. Architect proposes OrgPlan JSON; humans Apply.",
+];
+
+function fullRosterLine(s) {
+  const bits = [
+    `${s.id}: ${s.name} [${s.seatType || "specialist"}]`,
+    s.team ? `team=${s.team}` : null,
+    s.model ? `model=${s.model}` : null,
+    s.persona ? `persona=${s.persona}` : null,
+    `job=${s.job}`,
+    s.instructions ? `instructions=${s.instructions}` : null,
+  ];
+  return bits.filter(Boolean).join(" · ");
+}
+
+function roomLine(c) {
+  return `${c.name} teams=${(c.teamIds || []).join(",") || "—"} seats=${(c.seatIds || []).join(",") || "—"}`;
+}
+
+/**
+ * The org context injected into every turn. A room session (`bound.kind ===
+ * "room"`) gets only that room's members and the caller's team, one line each;
+ * DM and unbound sessions get the whole org.
+ */
+export function systemBlock({ seats = [], teams = [], channels = [], bound = null } = {}) {
+  const room = bound?.kind === "room" ? (channels || []).find((c) => c.id === bound.channelId) : null;
+  if (!room) {
+    const roster = seats.filter((s) => s.kind === "bot").map(fullRosterLine).join("\n");
+    return [
+      ...BLOCK_RULES,
+      `Teams: ${(teams || []).map((t) => t.name).join(", ")}`,
+      `Rooms:\n${(channels || []).map(roomLine).join("\n")}`,
+      `Roster:\n${roster}`,
+    ];
+  }
+  const me = seats.find((s) => s.id === bound.seatId);
+  const teamIds = new Set([...(room.teamIds || []), ...(me?.team ? [me.team] : [])]);
+  const ids = new Set(["channel", ...(room.seatIds || [])]);
+  for (const t of teams || []) {
+    if (teamIds.has(t.id)) for (const id of t.seatIds || []) ids.add(id);
+  }
+  const people = seats.filter((s) => ids.has(s.id) && s.id !== bound.seatId);
+  const line = (s) => `${s.id}: ${s.name}${s.kind === "human" ? " (human)" : ""}${s.team ? ` · team=${s.team}` : ""} — ${s.job || s.role || ""}`.trim();
+  return [
+    ...BLOCK_RULES,
+    `Current room: ${room.name}. Your plain-text replies are posted there.`,
+    `Teams here: ${(teams || []).filter((t) => teamIds.has(t.id)).map((t) => t.name).join(", ") || "—"}`,
+    `Members of ${room.name} and your team:\n${people.map(line).join("\n")}`,
+  ];
+}
+
 /** @type {import('@opencode-ai/plugin').Plugin} */
 export async function RosterFlowPlugin(_input) {
   let tool;
@@ -427,44 +487,16 @@ export async function RosterFlowPlugin(_input) {
         }
       }
     },
-    async "experimental.chat.system.transform"(_input, output) {
+    async "experimental.chat.system.transform"(input, output) {
       try {
-        const [seats, teams, channels] = await Promise.all([
+        const sessionID = input?.sessionID || input?.sessionId || null;
+        const [seats, teams, channels, bound] = await Promise.all([
           api("/api/v1/seats"),
           api("/api/v1/teams"),
           api("/api/v1/channels"),
+          sessionID ? api(`/api/v1/sessions/${encodeURIComponent(sessionID)}/room`).catch(() => null) : null,
         ]);
-        const roster = seats
-          .filter((s) => s.kind === "bot")
-          .map((s) => {
-            const bits = [
-              `${s.id}: ${s.name} [${s.seatType || "specialist"}]`,
-              s.team ? `team=${s.team}` : null,
-              s.model ? `model=${s.model}` : null,
-              s.persona ? `persona=${s.persona}` : null,
-              `job=${s.job}`,
-              s.instructions ? `instructions=${s.instructions}` : null,
-            ];
-            return bits.filter(Boolean).join(" · ");
-          })
-          .join("\n");
-        const rooms = (channels || [])
-          .map((c) => `${c.name} teams=${(c.teamIds || []).join(",") || "—"} seats=${(c.seatIds || []).join(",") || "—"}`)
-          .join("\n");
-        output.system.push(
-          "You are a Roster-flow seat. Stay in your persona and follow your instructions.",
-          "Peers are other OpenCode agents on the same org chart.",
-          "Talk through roster_send_message / roster_handoff / roster_report. Do not impersonate peers.",
-          "You may attach Roster Block Kit via roster_send_message / roster_report `blocks` (JSON array of header|section|divider|context|image|actions|markdown).",
-          "Mail to team:<id> reaches that team's Supervisor. A job addressed to a team says how to route: supervisor, round_robin, or a named specialist.",
-          "When a prompt includes a job id, finish with roster_report jobId=<id>. roster_ask_human jobId=<id> parks that job as needs_human.",
-          "@channel notifies room members and wakes the Channel conductor.",
-          "Claim work with roster_task_claim. A task with an open depend_on blocker cannot be claimed.",
-          "ask_human walks reports_to. Channel owns the org run graph. Architect proposes OrgPlan JSON; humans Apply.",
-          `Teams: ${(teams || []).map((t) => t.name).join(", ")}`,
-          `Rooms:\n${rooms}`,
-          `Roster:\n${roster}`,
-        );
+        output.system.push(...systemBlock({ seats, teams, channels, bound }));
       } catch {
         output.system.push("Roster-flow plugin: CORE API unreachable. Continue with local tools only.");
       }
