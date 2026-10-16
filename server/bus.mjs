@@ -11,8 +11,9 @@ import {
   describeOpenCodeError,
   lastAssistantFailure,
   watchProviderTurn,
+  ensure,
 } from "./harness.mjs";
-import { isBuiltinProvider, isLoadedModel, loadedProviderIds, modelAllowedInConfig, resolveUsableModel } from "./providers.mjs";
+import { isBuiltinProvider, isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
@@ -21,7 +22,7 @@ import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
 import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
 import { estimateTokens, meterWake } from "./budget.mjs";
-import { syncSeatAgent } from "./agents.mjs";
+import { agentNeedsServeRestart, syncSeatAgent } from "./agents.mjs";
 
 export const deps = {
   createSession,
@@ -30,6 +31,7 @@ export const deps = {
   harnessStatus,
   loadedModels,
   watchProviderTurn,
+  ensure,
 };
 
 function modelRef(model) {
@@ -208,7 +210,7 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
   // The built-in `opencode` provider is not a fallback: it is loaded but unconfigured.
   const refs = resolved.filter((m) => {
     if (!m?.providerID || !m?.modelID) return false;
-    if (isBuiltinProvider(m.providerID) && `${m.providerID}/${m.modelID}` !== explicit) return false;
+    if (isBuiltinProvider(m.providerID)) return false;
     return isLoadedModel(loaded, m.providerID, m.modelID) !== false;
   });
   if (!refs.length) {
@@ -221,23 +223,34 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
     err.status = 409;
     throw err;
   }
+  let sid = sessionId;
+  const first = refs[0];
+  const seeded = { ...seat, model: modelRef(first) || seat.model || "" };
+  if (agentNeedsServeRestart(seeded, kind)) {
+    // OpenCode reads agents at process start. A seat hired after boot is invisible
+    // until the serve is restarted, and the prompt never reaches the provider.
+    syncSeatAgent(seeded);
+    await (deps.ensure || ensure)({ kind, forceRestart: true });
+    mutate((s) => {
+      const key = sessionKeyForKind(kind);
+      if (s[key]) delete s[key][to];
+    });
+    sid = await ensureSeatSession(to);
+    if (!sid) {
+      const err = new Error("no session");
+      err.status = 409;
+      throw err;
+    }
+  }
   let lastErr = null;
   for (const model of refs) {
-    const ref = modelRef(model);
-    if (ref && modelAllowedInConfig(ref)) {
-      try {
-        syncSeatAgent({ ...seat, model: ref });
-      } catch {
-        /* the prompt still carries the model if the agent file cannot be written */
-      }
-    }
     const body = promptBody(seat, to, text, meta, {
       providerID: model.providerID,
       modelID: model.modelID,
     });
-    const watch = (deps.watchProviderTurn || watchProviderTurn)(sessionId, kind);
+    const watch = (deps.watchProviderTurn || watchProviderTurn)(sid, kind);
     try {
-      await deps.promptSession(sessionId, body, kind);
+      await deps.promptSession(sid, body, kind);
       const outcome = await watch;
       if (!outcome?.reached || outcome.error) {
         const err = new Error(outcome?.error || "the provider did not respond in time");
@@ -245,14 +258,26 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
         err.status = 502;
         throw err;
       }
+      let providerText = outcome.text || "";
+      for (let attempt = 0; attempt < 15 && !providerText; attempt++) {
+        try {
+          providerText = assistantText(await deps.sessionMessages(sid, kind))
+            .map((m) => m.text)
+            .filter(Boolean)
+            .join("\n");
+        } catch {
+          providerText = "";
+        }
+        if (!providerText) await new Promise((r) => setTimeout(r, 200));
+      }
       emit({
         scope: "chat",
         step: "seat.prompted",
         seat: to,
         channel: meta.channel || null,
-        detail: { sessionId, model, harness: kind },
+        detail: { sessionId: sid, model, harness: kind },
       });
-      return { sessionId, seat: to, model, harness: kind };
+      return { sessionId: sid, seat: to, model, harness: kind, providerText };
     } catch (err) {
       watch.cancel?.();
       if (err.status === 404) throw err;
@@ -289,6 +314,12 @@ async function finishPrompted(to, seat, text, runMeta, result, started) {
     return { ...metered, runId: runMeta.runId, started: false };
   }
   noteRun(runMeta.runId, to, "running", null);
+  if (result?.providerText && runMeta.channel) {
+    const { postMessage } = await import("./chat.mjs");
+    const reply = result.providerText;
+    const already = (getState().messages || []).some((m) => m.channel === runMeta.channel && m.seatId === to && m.text === reply);
+    if (!already) postMessage(runMeta.channel, seat.name, "bot", reply, { seatId: to, mirrored: true });
+  }
   return { ...metered, runId: runMeta.runId, started: true };
 }
 

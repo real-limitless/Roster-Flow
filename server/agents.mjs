@@ -1,8 +1,9 @@
 /** Write Roster-flow bot seats through to OpenCode agent files + opencode.json. */
-import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { normalizeModelId } from "./seed.mjs";
 import { opencodeDir, systemWorkspace } from "./paths.mjs";
+import { serveStartedAt } from "./harness.mjs";
 import { firstConnectedModel, modelAllowedInConfig, normalizeOpenCodeConfig, readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
 
 const agentsDir = join(opencodeDir, "agents");
@@ -126,6 +127,21 @@ function writeSystemOpenCodeConfig(seat) {
   if (seat) clean.agent[seat.id] = agentConfigEntry(seat);
   writeFileSync(systemOcPath, JSON.stringify(clean, null, 2));
   return clean;
+}
+
+function agentFile(seat) {
+  return seat?.system ? join(systemAgentsDir, `${seat.id}.md`) : join(agentsDir, `${seat.id}.md`);
+}
+
+/** True when the running serve started before this seat's agent file, so it has not loaded it. */
+export function agentNeedsServeRestart(seat, kind = "company") {
+  const started = serveStartedAt(kind);
+  if (!started) return false;
+  const file = agentFile(seat);
+  if (!existsSync(file)) return true;
+  const disk = seatForDisk(seat);
+  if (readFileSync(file, "utf8") !== agentMarkdown(disk)) return true;
+  return statSync(file).mtimeMs > started;
 }
 
 export function syncSeatAgent(seat) {
