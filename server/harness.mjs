@@ -633,23 +633,29 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
       const described = describeOpenCodeError(info.error, {
         model: info.providerID ? `${info.providerID}/${info.modelID || ""}` : "",
       });
-      return { reached: false, error: described.message, code: described.code };
+      return { reached: false, error: described.message, code: described.code, done: true };
     }
-    if (info.time?.completed && state.text) return { reached: true, text: state.text };
+    if (info.time?.completed && state.text) return { reached: true, text: state.text, done: true };
     return null;
   }
   if (ev?.type === "message.part.updated") {
     const part = props.part || {};
     if (part.messageID && state.userIds?.has(part.messageID)) return null;
-    if (part.messageID && part.text) {
+    if (part.messageID && part.text && part.type !== "step-start" && part.type !== "step-finish") {
       state.parts = state.parts || new Map();
-      state.parts.set(part.messageID, `${state.parts.get(part.messageID) || ""}${part.text}`);
+      const prev = state.parts.get(part.messageID) || "";
+      const next = String(part.text);
+      // OpenCode sometimes sends the whole part again, and sometimes a delta.
+      const merged = !prev || next.startsWith(prev) ? next : prev.startsWith(next) ? prev : `${prev}${next}`;
+      state.parts.set(part.messageID, merged.length >= prev.length ? merged : prev);
     }
-    const assistant = part.messageID && state.assistantIds?.has(part.messageID);
-    if (assistant && state.parts?.get(part.messageID)) state.text = state.parts.get(part.messageID);
-    if (assistant && state.text) return { reached: true, text: state.text };
+    const knownAssistant = part.messageID && state.assistantIds?.has(part.messageID);
+    if (knownAssistant && state.parts?.get(part.messageID)) state.text = state.parts.get(part.messageID);
+    if (knownAssistant && (state.text || part.type === "step-start" || part.type === "text")) {
+      return { reached: true, text: state.text || "", done: false };
+    }
   }
-  if (state.text && state.assistantIds?.size) return { reached: true, text: state.text };
+  if (state.text && state.assistantIds?.size) return { reached: true, text: state.text, done: false };
   return null;
 }
 
@@ -717,7 +723,7 @@ function eventStream(kind, baseUrl = instances[harnessKind(kind)]?.baseUrl) {
         }
       }
     } catch {
-      /* aborted when the last watcher leaves or the serve restarts */
+      /* aborted when this serve is replaced */
     } finally {
       closeEventStream(entry);
     }
@@ -728,7 +734,8 @@ function eventStream(kind, baseUrl = instances[harnessKind(kind)]?.baseUrl) {
 /**
  * Share the serve's one `GET /event` subscription. `opened` resolves true once
  * the stream is up (false if it fails); `closed` resolves when it ends, for
- * example on a serve restart.
+ * example on a serve restart. Unsubscribing leaves the stream open for other
+ * watchers, as watchProviderTurn does.
  */
 export function subscribeServeEvents(kind, listener, baseUrl) {
   const entry = eventStream(kind, baseUrl);
@@ -739,45 +746,68 @@ export function subscribeServeEvents(kind, listener, baseUrl) {
     closed: entry.closedP,
     unsubscribe() {
       entry.listeners.delete(listener);
-      if (!entry.listeners.size) closeEventStream(entry);
     },
   };
 }
 
 /**
- * Watch `GET /event` until the provider returns or the timeout elapses.
+ * Watch one shared `GET /event` for this serve.
+ * The timer covers only the first assistant part. The stream stays open for
+ * the rest of the turn and for the life of this baseUrl: closing it per wake
+ * makes OpenCode add another SSE listener and eventually print
+ * MaxListenersExceededWarning into opencode-serve.log.
  * When this process is not running a serve, the prompt mock is the signal.
  */
 export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(process.env.ROSTER_PROVIDER_TURN_MS) || 6000) {
   const inst = instances[harnessKind(kind)];
-  if (!inst?.baseUrl || !sessionId) return Object.assign(Promise.resolve({ reached: true, unwatched: true }), { cancel() {} });
+  if (!inst?.baseUrl || !sessionId) {
+    const verdict = { reached: true, unwatched: true, done: true, text: "" };
+    const idle = Promise.resolve(verdict);
+    idle.rest = idle;
+    idle.cancel = () => {};
+    return idle;
+  }
   const entry = eventStream(kind);
   const state = { userIds: new Set(), assistantIds: new Set(), text: "" };
   let timer;
   let listener;
-  let settled = false;
+  let firstSettled = false;
+  let restSettled = false;
+  let resolveFirst;
+  let resolveRest;
   const promise = new Promise((resolve) => {
-    const finish = (verdict) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      entry.listeners.delete(listener);
-      if (!entry.listeners.size) closeEventStream(entry);
-      resolve(verdict);
-    };
-    timer = setTimeout(() => finish({ reached: false, timeout: true }), timeoutMs);
-    listener = (ev) => {
-      const verdict = providerTurnVerdict(ev, sessionId, state);
-      if (verdict) finish(verdict.text ? verdict : { ...verdict, text: state.text || "" });
-    };
-    entry.listeners.add(listener);
+    resolveFirst = resolve;
   });
-  promise.cancel = () => {
-    if (settled) return;
-    settled = true;
+  const rest = new Promise((resolve) => {
+    resolveRest = resolve;
+  });
+  const settleFirst = (verdict) => {
+    if (firstSettled) return;
+    firstSettled = true;
+    clearTimeout(timer);
+    resolveFirst(verdict);
+  };
+  const settleRest = (verdict) => {
+    if (restSettled) return;
+    restSettled = true;
     clearTimeout(timer);
     entry.listeners.delete(listener);
-    if (!entry.listeners.size) closeEventStream(entry);
+    resolveRest({ ...verdict, text: verdict.text || state.text || "" });
+  };
+  timer = setTimeout(() => settleFirst({ reached: false, timeout: true, done: false, text: "" }), timeoutMs);
+  listener = (ev) => {
+    const verdict = providerTurnVerdict(ev, sessionId, state);
+    if (!verdict) return;
+    const full = verdict.text ? verdict : { ...verdict, text: state.text || "" };
+    if (!firstSettled) settleFirst(full);
+    if (full.done || full.error) settleRest(full);
+  };
+  entry.listeners.add(listener);
+  promise.rest = rest;
+  promise.cancel = () => {
+    const cancelled = { reached: false, cancelled: true, done: true, text: state.text || "" };
+    settleFirst(cancelled);
+    settleRest(cancelled);
   };
   return promise;
 }
