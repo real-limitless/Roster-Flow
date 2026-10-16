@@ -314,7 +314,8 @@ async function finishPrompted(to, seat, text, runMeta, result, started) {
     return { ...metered, runId: runMeta.runId, started: false };
   }
   noteRun(runMeta.runId, to, "running", null);
-  if (result?.providerText && runMeta.channel) {
+  // Room wakes from chat.mjs are posted by its follow loop, which dedupes by OpenCode message id.
+  if (result?.providerText && runMeta.channel && !runMeta.followed) {
     const { postMessage } = await import("./chat.mjs");
     const reply = result.providerText;
     const already = (getState().messages || []).some((m) => m.channel === runMeta.channel && m.seatId === to && m.text === reply);

@@ -174,6 +174,30 @@ test("wakeSeat starts a run id and puts it on the prompt", async () => {
   }
 });
 
+test("a followed room wake leaves the reply to the follow loop; an unfollowed one posts it", async () => {
+  const prev = { ...deps };
+  const channel = `posted-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_posted" });
+  deps.promptSession = async () => undefined;
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "Room reply." }), { cancel() {} });
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  const posted = () => getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.").length;
+  try {
+    const followed = await wakeSeat("build", "status?", { from: "you", kind: "mention-seat", channel, followed: true });
+    assert.equal(followed.started, true);
+    assert.equal(posted(), 0);
+    await wakeSeat("build", "status?", { from: "product", kind: "handoff", channel });
+    assert.equal(posted(), 1);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("a wake that cannot start posts the reason in the room", async () => {
   const prev = { ...deps };
   deps.harnessStatus = () => ({ harness: "offline" });

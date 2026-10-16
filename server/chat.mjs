@@ -239,7 +239,7 @@ async function wakeTarget(channelId, text, from, target) {
   const seatId = resolvedSeatId(target.to, state);
   const direct = seatOf(seatId, state);
   rememberSessionRoom(seatId, channelId);
-  const meta = { from, kind: target.reason, channel: channelId, announce: false, ...(target.meta || {}) };
+  const meta = { from, kind: target.reason, channel: channelId, announce: false, followed: true, ...(target.meta || {}) };
   if (direct && direct.kind === "bot" && !direct.mcpGuest && !isOpenCodeAdapter(direct)) {
     emit({ scope: "chat", step: "seat.wake", channel: channelId, seat: seatId, detail: { reason: target.reason, adapter: direct.adapter } });
     return deps.wakeSeat(target.to, text, { ...meta, announce: true });
