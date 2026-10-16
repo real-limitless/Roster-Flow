@@ -3,6 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Staff an org of agents");
+  await expect(page.getByText("SSO ready")).toHaveCount(0);
+  await expect(page.getByText("Local owner account")).toBeVisible();
 });
 
 test("workspace room send and block kit seed", async ({ page, request }) => {
