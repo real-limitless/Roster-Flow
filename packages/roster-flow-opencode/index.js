@@ -6,8 +6,14 @@
 
 const API = process.env.ROSTER_API || "http://127.0.0.1:8790";
 
+/** Seat calls use the scoped token when the harness was started with ROSTER_API_TOKEN. */
+export function rosterAuthHeaders(env = process.env) {
+  const token = String(env.ROSTER_API_TOKEN || "").trim();
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function api(path, init = {}) {
-  const headers = { ...(init.headers || {}) };
+  const headers = { ...rosterAuthHeaders(), ...(init.headers || {}) };
   if (init.body && !headers["content-type"]) headers["content-type"] = "application/json";
   const res = await fetch(`${API}${path}`, { ...init, headers });
   const text = await res.text();
@@ -139,17 +145,41 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
       },
     }),
     roster_report: tool({
-      description: "Post a structured result back to the originating Room thread. Optional blocks is Roster Block Kit JSON.",
+      description:
+        "Post a structured result back to the originating Room thread. Pass jobId to complete that job (done, failed, or needs_human). Optional prUrl/branch render a GitHub card. Optional blocks is Roster Block Kit JSON.",
       args: {
         text: z.string(),
         channel: z.string().optional(),
         from: z.string().optional(),
+        prUrl: z.string().optional().describe("GitHub pull request URL to render as a Room card"),
+        branch: z.string().optional().describe("Worktree branch name (local; not a sandbox)"),
         blocks: z.string().optional().describe("Optional Roster Block Kit JSON array"),
+        jobId: z.string().optional().describe("Job id to complete"),
+        status: z.string().optional().describe("With jobId: done (default), failed, or needs_human"),
+        cost: z.string().optional().describe("Optional cost, a non-negative number"),
+        tokens: z.string().optional().describe("Optional usage: a number or JSON {input, output, total}"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
         const channel = args.channel || "ship";
         const blocks = parseBlocks(args.blocks);
+        if (args.jobId) {
+          const body = {
+            result: args.text,
+            status: args.status || "done",
+            from,
+            channel,
+          };
+          if (args.prUrl) body.prUrl = args.prUrl;
+          if (args.branch) body.branch = args.branch;
+          if (args.cost != null && args.cost !== "") body.cost = Number(args.cost);
+          if (args.tokens) body.tokens = parseTokenArg(args.tokens);
+          const job = await fetchApi(`/api/v1/jobs/${encodeURIComponent(args.jobId)}/complete`, {
+            method: "POST",
+            body: JSON.stringify(body),
+          });
+          return { title: `job ${body.status}`, output: JSON.stringify(job) };
+        }
         const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
           body: JSON.stringify({
@@ -160,27 +190,64 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
             channel,
             wake: false,
             blocks,
+            prUrl: args.prUrl,
+            branch: args.branch,
           }),
         });
         return { title: "report", output: JSON.stringify(entry) };
       },
     }),
     roster_ask_human: tool({
-      description: "Park the run on your reports_to human. Never dump into #general.",
+      description: "Park the run on your reports_to human. Never dump into #general. Pass jobId to mark that job needs_human.",
       args: {
         text: z.string(),
         from: z.string().optional(),
+        jobId: z.string().optional().describe("Job id to park as needs_human"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
         const seats = await fetchApi("/api/v1/seats");
         const me = seats.find((s) => s.id === from);
         const manager = me?.reportsTo || "you";
+        if (args.jobId) {
+          await fetchApi(`/api/v1/jobs/${encodeURIComponent(args.jobId)}/complete`, {
+            method: "POST",
+            body: JSON.stringify({ status: "needs_human", result: args.text, from, announce: false }),
+          });
+        }
         const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
-          body: JSON.stringify({ from, to: manager, kind: "ask_human", text: args.text, wake: false }),
+          body: JSON.stringify({
+            from,
+            to: manager,
+            kind: "ask_human",
+            text: args.text,
+            wake: false,
+            ...(args.jobId ? { jobId: args.jobId } : {}),
+          }),
         });
         return { title: `ask ${manager}`, output: JSON.stringify(entry) };
+      },
+    }),
+    roster_knowledge: tool({
+      description: "Search project-scoped knowledge (constitution, attached git/docs). Only the current seat’s project.",
+      args: {
+        q: z.string().describe("Search query"),
+        projectId: z.string().optional().describe("Project id. Defaults to this seat’s project."),
+        from: z.string().optional(),
+      },
+      async execute(args, ctx) {
+        const from = args.from || guessSeat(ctx.agent);
+        let projectId = args.projectId;
+        if (!projectId) {
+          const seats = await fetchApi("/api/v1/seats");
+          const me = Array.isArray(seats) ? seats.find((s) => s.id === from) : null;
+          projectId = me?.projectId || "billing";
+        }
+        const out = await fetchApi(
+          `/api/v1/projects/${projectId}/knowledge?q=${encodeURIComponent(args.q)}&seatId=${encodeURIComponent(from)}`,
+        );
+        return { title: `knowledge ${projectId}`, output: JSON.stringify(out) };
       },
     }),
     roster_inbox: tool({
@@ -194,6 +261,59 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
         const path = !id || id === "me" ? "/api/v1/seats/me/inbox" : `/api/v1/seats/${id}/inbox`;
         const out = await fetchApi(path);
         return { title: `inbox ${id}`, output: JSON.stringify(out) };
+      },
+    }),
+    roster_task_create: tool({
+      description: "Create a board task on a project/run. Optional depend_on (task id) is a blocker.",
+      args: {
+        title: z.string(),
+        projectId: z.string().optional(),
+        runId: z.string().optional(),
+        depend_on: z.string().optional().describe("Task id that must be done before claim"),
+        path: z.string().optional(),
+      },
+      async execute(args) {
+        const out = await fetchApi("/api/v1/tasks", {
+          method: "POST",
+          body: JSON.stringify({
+            title: args.title,
+            projectId: args.projectId,
+            runId: args.runId,
+            depend_on: args.depend_on,
+            path: args.path,
+          }),
+        });
+        return { title: `task ${out.id}`, output: JSON.stringify(out) };
+      },
+    }),
+    roster_task_claim: tool({
+      description: "Atomically claim a pending task. Fails if another seat already holds it or a blocker is open.",
+      args: {
+        taskId: z.string(),
+        seatId: z.string().optional(),
+      },
+      async execute(args, ctx) {
+        const seatId = args.seatId || guessSeat(ctx.agent);
+        const out = await fetchApi(`/api/v1/tasks/${args.taskId}/claim`, {
+          method: "POST",
+          body: JSON.stringify({ seatId }),
+        });
+        return { title: `claimed ${args.taskId}`, output: JSON.stringify(out) };
+      },
+    }),
+    roster_task_complete: tool({
+      description: "Mark a claimed task done. Unblocks tasks that depend_on it.",
+      args: {
+        taskId: z.string(),
+        seatId: z.string().optional(),
+      },
+      async execute(args, ctx) {
+        const seatId = args.seatId || guessSeat(ctx.agent);
+        const out = await fetchApi(`/api/v1/tasks/${args.taskId}/complete`, {
+          method: "POST",
+          body: JSON.stringify({ seatId }),
+        });
+        return { title: `done ${args.taskId}`, output: JSON.stringify(out) };
       },
     }),
     wikiflow_read_source: tool({
@@ -257,6 +377,15 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
       },
     }),
   };
+}
+
+function parseTokenArg(raw) {
+  const text = String(raw).trim();
+  if (!text) return undefined;
+  if (text.startsWith("{")) return JSON.parse(text);
+  const n = Number(text);
+  if (!Number.isFinite(n)) throw new Error("tokens must be a number or JSON {input, output, total}");
+  return n;
 }
 
 function parseBlocks(raw) {
@@ -327,7 +456,10 @@ export async function RosterFlowPlugin(_input) {
           "Peers are other OpenCode agents on the same org chart.",
           "Talk through roster_send_message / roster_handoff / roster_report. Do not impersonate peers.",
           "You may attach Roster Block Kit via roster_send_message / roster_report `blocks` (JSON array of header|section|divider|context|image|actions|markdown).",
-          "Mail to team:<id> reaches that team's Supervisor. @channel notifies room members and wakes the Channel conductor.",
+          "Mail to team:<id> reaches that team's Supervisor. A job addressed to a team says how to route: supervisor, round_robin, or a named specialist.",
+          "When a prompt includes a job id, finish with roster_report jobId=<id>. roster_ask_human jobId=<id> parks that job as needs_human.",
+          "@channel notifies room members and wakes the Channel conductor.",
+          "Claim work with roster_task_claim. A task with an open depend_on blocker cannot be claimed.",
           "ask_human walks reports_to. Channel owns the org run graph. Architect proposes OrgPlan JSON; humans Apply.",
           `Teams: ${(teams || []).map((t) => t.name).join(", ")}`,
           `Rooms:\n${rooms}`,

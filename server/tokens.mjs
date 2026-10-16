@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 /**
  * Long-lived scoped API tokens (issue #67).
  * Format: rf_<48 hex>. Only a SHA-256 hash is stored; the plaintext is returned once.
- * Scopes: read (GET/HEAD), write (other methods), admin (token management + setup).
+ * Scopes: read (GET/HEAD), write (other methods), admin (token management, setup, job callback secret).
  */
 export const TOKEN_PREFIX = "rf_";
 export const SCOPES = ["read", "write", "admin"];
@@ -97,6 +97,7 @@ export function resolveApiToken(state, token, now = Date.now()) {
 /** Scope needed for a request. Session logins are not scope-limited. */
 export function requiredScope(method, pathname) {
   if (pathname.startsWith("/api/v1/tokens") || pathname.startsWith("/api/v1/setup/")) return "admin";
+  if (pathname.startsWith("/api/v1/jobs/callback-secret")) return "admin";
   return method === "GET" || method === "HEAD" ? "read" : "write";
 }
 

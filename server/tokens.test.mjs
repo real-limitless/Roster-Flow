@@ -50,6 +50,9 @@ test("scopes gate methods and admin paths", async () => {
   assert.equal(requiredScope("GET", "/api/v1/seats"), "read");
   assert.equal(requiredScope("POST", "/api/v1/teams"), "write");
   assert.equal(requiredScope("GET", "/api/v1/tokens"), "admin");
+  assert.equal(requiredScope("GET", "/api/v1/jobs/callback-secret"), "admin");
+  assert.equal(requiredScope("POST", "/api/v1/jobs/callback-secret/rotate"), "admin");
+  assert.equal(requiredScope("GET", "/api/v1/jobs"), "read");
   assert.equal(tokenAllows({ scopes: ["read"] }, "GET", "/api/v1/seats"), true);
   assert.equal(tokenAllows({ scopes: ["read"] }, "POST", "/api/v1/teams"), false);
   assert.equal(tokenAllows({ scopes: ["write"] }, "GET", "/api/v1/seats"), true);

@@ -26,8 +26,9 @@ Package: `packages/roster-flow-opencode`
 | `roster_list_seats` | Who is on the chart |
 | `roster_send_message` | Peer or channel mail |
 | `roster_handoff` | Close my phase, open yours |
-| `roster_report` | Structured result to the originating thread |
-| `roster_ask_human` | Park on `reports_to` (never `#general`) |
+| `roster_report` | Structured result to the originating thread (`prUrl` / `branch` → GitHub card). `jobId` completes that job (`done`, `failed`, or `needs_human`) |
+| `roster_knowledge` | Project-scoped file/snippet search |
+| `roster_ask_human` | Park on `reports_to` (never `#general`). `jobId` sets that job to `needs_human` |
 | `roster_propose_org` | Architect OrgPlan (does not apply) |
 
 Hooks:
@@ -36,6 +37,10 @@ Hooks:
 - `experimental.chat.system.transform` — inject roster + mailbox so the model knows its job and peers.
 
 Configured in `.opencode/opencode.json` (company) and `.roster-flow/system/.opencode/opencode.json` (System) as `"plugin": ["roster-flow-opencode"]`. The System serve sets `NODE_PATH` at the repo `node_modules` so the plugin still resolves.
+
+Each serve is spawned with `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` pointing at its config: `ROSTER_OPENCODE_DIR/opencode.json` for company (`/data/opencode` in Compose) and `.roster-flow/system/.opencode/` for System. OpenCode only discovers `.opencode/` by walking up from cwd, so without this a `ROSTER_OPENCODE_DIR` outside the repo would be ignored and only the built-in `opencode` provider would load. A non-empty `OPENCODE_CONFIG` in CORE's env is loaded first by the company serve; the `ROSTER_OPENCODE_DIR` file still applies on top. Every `{env:VAR}` a provider block references is passed through to the serve.
+
+Provider writes (`PUT /api/v1/providers`, key, delete) restart a running serve so it reloads. Before a wake, CORE reads `GET /config/providers` from the serve and only sends a model OpenCode loaded; the fallback model and the `Waking <seat> (<model>)…` line use the same list. A provider that is missing, or a turn the provider rejects (for example 401), is posted to the room as a System line instead of an opaque 500 or a silent no-reply. `harness`, `loadedProviders`, and setup `harnessReady` all come from a live health check.
 
 ## Settings (`/app/settings`)
 
@@ -51,7 +56,8 @@ Configured in `.opencode/opencode.json` (company) and `.roster-flow/system/.open
 Flow-family map (OpenChamber setting → owner):
 
 - **Skills** — [skill-flow](https://github.com/real-limitless/skill-flow)
-- **MCP** — [mcp-flow](https://github.com/real-limitless/mcp-flow)
+- **MCP tools** — [mcp-flow](https://github.com/real-limitless/mcp-flow)
+- **MCP room** — Roster-Flow CORE `POST /mcp` (guest seat on the chart; not an OpenCode loop). [docs/MCP.md](MCP.md)
 - **Integrations** — [ansible-flow-mcp](https://github.com/real-limitless/ansible-flow-mcp) + [OpenFlow](https://github.com/real-limitless/OpenFlow) catalogs
 
 Provider contract:
@@ -59,7 +65,7 @@ Provider contract:
 - Built-in-style ids: `anthropic`, `openai`, `xai`, `google`, plus **Other / Custom** (npm `@ai-sdk/openai-compatible`, `baseURL`, model list, optional headers).
 - API key as `{env:VAR}` in `opencode.json` when possible; literal keys only in `.roster-flow/auth.json` (gitignored).
 - Per-seat model is a Roster-flow field stored as `provider/model`. Hire/patch writes `.opencode/agents/<seatId>.md` (frontmatter `model`, `mode`, `permissions`; body = persona + instructions) and the matching `agents` block in `opencode.json`. Attach/wake send `{ providerID, modelID }` plus that agent id.
-- Team Supervisor agents are `mode: primary`. Generic and specialists are `mode: all`. Mail to `team:<id>` wakes the Supervisor.
+- Team Supervisor agents are `mode: primary`. Generic and specialists are `mode: all`. Mail to `team:<id>` wakes the Supervisor. Jobs use an explicit routing mode (`supervisor`, `round_robin`, or a named specialist) instead of always waking the Supervisor.
 - Each staffed team also writes an OpenCode alias agent (`eng`, `services`, …) so harness `@eng` works. The Channel conductor is agent `channel` (`@channel`).
 - Model pickers read the live `opencode serve` catalog when the harness is up, otherwise workspace + `~/.config/opencode`. Seats have default + fallback; teams can use `random`, `round_robin`, or `fuse`.
 
@@ -75,6 +81,10 @@ ROSTER_DATA_DIR=.roster-flow
 ROSTER_OPENCODE_DIR=.opencode
 ROSTER_WORKSPACE=.roster-flow/workspace
 ROSTER_STATIC_DIR=          # set to dist/ so CORE serves the UI
+GITHUB_TOKEN=               # optional PAT / GitHub App installation token
+GH_TOKEN=                   # alias
+ROSTER_GITHUB_API=https://api.github.com
+ROSTER_MCP_TOKEN=            # optional dedicated bearer for POST /mcp
 WIKIFLOW_URL=               # wiki-flow base URL (wikiflow_* tools)
 WIKIFLOW_TOKEN=             # wiki-flow Bearer token; never commit it
 FEATHERLESS_API_KEY=        # used by scripts/setup-wiki-team.mjs seats via {env:...}
@@ -84,7 +94,7 @@ FEATHERLESS_API_KEY=        # used by scripts/setup-wiki-team.mjs seats via {env
 
 Roster writes `opencode.json` using OpenCode's documented keys only ([config schema](https://opencode.ai/config.json)):
 `provider` (blocks with `npm`, `name`, `options.{baseURL,apiKey}`, `models`), `agent` (entries with `prompt`, `mode`, `model`, `permission`),
-and agent Markdown frontmatter `permission:` (`edit: deny`, `bash: deny`, or a pattern map like `"deploy *": deny`).
+and agent Markdown frontmatter `permission:` (`edit: deny`, `bash: deny`, or a bash pattern map). OpenCode keeps the last matching bash rule, so `"*": allow` is written before `"deploy *": deny`.
 Older configs with `providers` / `agents` / `settings` / `package` / `system` / `permissions` are folded into that shape on the next write (`normalizeOpenCodeConfig` in `server/providers.mjs`).
 
 ## wiki-flow tools
