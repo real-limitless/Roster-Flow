@@ -1,5 +1,7 @@
 name: roster-flow
 
+# 8787 is mcp-flow. CORE defaults to 8790; the web UI defaults to 5175.
+# Override with ROSTER_API_PORT and ROSTER_WEB_PORT (shell or .env).
 services:
   roster-flow:
     build:
@@ -7,18 +9,44 @@ services:
       dockerfile: Dockerfile
     image: roster-flow:local
     init: true
-    ports:
-      - "${ROSTER_HTTP_PORT:-5173}:8787"
-      - "${ROSTER_API_PUBLISH:-8790}:8787"
+    # No user: override. The entrypoint starts as root, repairs /data ownership,
+    # then drops to node (docs/STANDUP.md, "Data volume ownership").
+    # Exposed on the compose network only. Not published on the host.
+    expose:
+      - "${ROSTER_API_PORT:-8790}"
+      - "${ROSTER_WEB_PORT:-5175}"
     environment:
       ROSTER_API_HOST: "0.0.0.0"
-      ROSTER_API_PORT: "8787"
-      ROSTER_API: "http://127.0.0.1:8787"
-      ROSTER_PUBLIC_URL: "http://127.0.0.1:${ROSTER_HTTP_PORT:-5173}"
+      ROSTER_API_PORT: ${ROSTER_API_PORT:-8790}
+      ROSTER_API: http://127.0.0.1:${ROSTER_API_PORT:-8790}
+      ROSTER_WEB_PORT: ${ROSTER_WEB_PORT:-5175}
+      ROSTER_PUBLIC_URL: http://127.0.0.1:${ROSTER_WEB_PORT:-5175}
       ROSTER_DATA_DIR: /data
+      # Headless bootstrap (docs/STANDUP.md). Unset = interactive /setup.
+      ROSTER_BOOTSTRAP_TOKEN: ${ROSTER_BOOTSTRAP_TOKEN:-}
+      ROSTER_OWNER_EMAIL: ${ROSTER_OWNER_EMAIL:-}
+      ROSTER_OWNER_PASSWORD: ${ROSTER_OWNER_PASSWORD:-}
+      ROSTER_OWNER_PASSWORD_HASH: ${ROSTER_OWNER_PASSWORD_HASH:-}
+      ROSTER_OWNER_NAME: ${ROSTER_OWNER_NAME:-}
+      ROSTER_OWNER_TEMPLATE: ${ROSTER_OWNER_TEMPLATE:-empty}
+      ROSTER_API_TOKEN: ${ROSTER_API_TOKEN:-}
+      ROSTER_API_TOKEN_SCOPES: ${ROSTER_API_TOKEN_SCOPES:-}
+      ROSTER_API_TOKEN_NAME: ${ROSTER_API_TOKEN_NAME:-}
+      ROSTER_CALLBACK_ALLOWLIST: ${ROSTER_CALLBACK_ALLOWLIST:-}
+      ROSTER_CALLBACK_SECRET: ${ROSTER_CALLBACK_SECRET:-}
+      # Harness auto-start + env provider (docs/STANDUP.md).
+      ROSTER_HARNESS_AUTOSTART: ${ROSTER_HARNESS_AUTOSTART:-auto}
+      ROSTER_PROVIDER_ID: ${ROSTER_PROVIDER_ID:-}
+      ROSTER_PROVIDER_NAME: ${ROSTER_PROVIDER_NAME:-}
+      ROSTER_PROVIDER_NPM: ${ROSTER_PROVIDER_NPM:-}
+      ROSTER_PROVIDER_BASE_URL: ${ROSTER_PROVIDER_BASE_URL:-}
+      ROSTER_PROVIDER_API_KEY_ENV: ${ROSTER_PROVIDER_API_KEY_ENV:-}
+      ROSTER_PROVIDER_MODELS: ${ROSTER_PROVIDER_MODELS:-}
       ROSTER_OPENCODE_DIR: /data/opencode
       ROSTER_STATIC_DIR: /app/dist
       OPENCODE_BIN: /usr/local/bin/opencode
+      # Optional extra OpenCode config for the company serve. Empty = ROSTER_OPENCODE_DIR/opencode.json only.
+      OPENCODE_CONFIG: ${OPENCODE_CONFIG:-}
       HOME: /data/home
       XAI_API_KEY: ${XAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -26,6 +54,9 @@ services:
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GH_TOKEN: ${GH_TOKEN:-}
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      WIKIFLOW_URL: ${WIKIFLOW_URL:-}
+      WIKIFLOW_TOKEN: ${WIKIFLOW_TOKEN:-}
     volumes:
       - roster-data:/data
     restart: unless-stopped
@@ -35,7 +66,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:8787/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+          "fetch('http://127.0.0.1:${ROSTER_API_PORT:-8790}/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
         ]
       interval: 10s
       timeout: 5s

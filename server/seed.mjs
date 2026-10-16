@@ -9,6 +9,7 @@ export const seats = [
   { id: "priya", name: "Priya", role: "QA lead", kind: "human", seatType: "human", reportsTo: "you", job: "Owns the QA gate. Signs staging.", tools: ["approve"], deny: ["deploy"], status: "idle" },
   { id: "channel", name: "Channel", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Own @channel. Route via the bus. Do not edit or deploy. Do not wake every bot — only specialists whose job matches.", job: "Compile sentences into runs. Own @channel. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
   { id: "architect", name: "Architect", role: "Org design", kind: "bot", seatType: "specialist", reportsTo: "you", model: "xai/grok-4", persona: "Org architect. Dry, specific. Propose plans. Never ship code.", instructions: "Propose an OrgPlan JSON only: replace_org, create_project, create_team, hire, reparent, fire. Cap 48 ops. Do not apply. Do not edit or deploy.", job: "Staff projects and suggest layoffs. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
+  { id: "mcp-guest", name: "MCP Guest", role: "Guest", kind: "bot", seatType: "harness", reportsTo: "you", mcpGuest: true, origin: "mcp", job: "External agent via CORE /mcp. Not an OpenCode loop.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
   { id: "product", name: "Product", role: "Brief", kind: "bot", seatType: "specialist", reportsTo: "maya", projectId: "billing", model: "xai/grok-4", persona: "Product brief writer. Acceptance over opinions.", instructions: "Turn channel talk into a brief and acceptance list. No edits, no bash write.", knowledge: "Project billing: webhook idempotency. Acceptance over opinions. Confirm on deploy.", skills: ["brief"], job: "Write acceptance. No edits.", tools: ["read", "grep", "webfetch"], deny: ["edit", "bash"], status: "idle" },
   { id: "eng-supervisor", name: "Eng Supervisor", role: "Supervisor", kind: "bot", seatType: "supervisor", reportsTo: "jules", team: "eng", projectId: "billing", model: "xai/grok-4", persona: "Calm dispatcher. You assign work; you do not write code.", instructions: "When mail arrives for @eng, hand Generic undifferentiated work or a specialist whose job matches. Use roster_handoff. Never edit or deploy.", job: "Route @eng work to Generic or a specialist.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
   { id: "eng-generic", name: "Eng Generic", role: "Generic", kind: "bot", seatType: "generic", reportsTo: "eng-supervisor", team: "eng", projectId: "billing", model: "xai/grok-4", persona: "Versatile eng teammate.", instructions: "Do whatever the Supervisor assigned. Stay in the worktree. Do not deploy.", job: "Default @eng worker for undifferentiated tasks.", tools: ["read", "edit", "bash"], deny: ["deploy"], status: "idle" },
@@ -25,7 +26,7 @@ export const seats = [
 ];
 
 export const channels = [
-  { id: "ship", name: "#ship", topic: "Ship train", teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya"] },
+  { id: "ship", name: "#ship", topic: "Ship train", teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya", "mcp-guest"] },
   { id: "incidents", name: "#incidents", topic: "Incidents", teamIds: ["eng", "services"], seatIds: ["channel", "you", "jules", "scout"] },
   { id: "eng-agents", name: "#eng-agents", topic: "Eng agents", teamIds: ["eng"], seatIds: ["channel"] },
   { id: "general", name: "#general", topic: "Everyone", teamIds: [], seatIds: ["channel", "you", "maya", "jules", "priya"] },
@@ -114,6 +115,21 @@ export function normalizeSeat(seat) {
     knowledge: seat.knowledge || undefined,
     skills: Array.isArray(seat.skills) ? seat.skills.map(String).filter(Boolean) : undefined,
     projectId: seat.projectId || undefined,
+    adapter: kind === "human" ? undefined : seat.adapter || undefined,
+    adapterUrl: kind === "human" ? undefined : seat.adapterUrl || undefined,
+    adapterSecret: kind === "human" ? undefined : seat.adapterSecret || undefined,
+    tokenBudget: kind === "bot" && seat.tokenBudget != null && seat.tokenBudget !== "" && Number.isFinite(Number(seat.tokenBudget))
+      ? Math.max(0, Math.floor(Number(seat.tokenBudget)))
+      : undefined,
+    budgetCents: kind === "bot" && seat.budgetCents != null && seat.budgetCents !== "" && Number.isFinite(Number(seat.budgetCents))
+      ? Math.max(0, Math.floor(Number(seat.budgetCents)))
+      : undefined,
+    spent: kind === "bot" ? Math.max(0, Math.floor(Number(seat.spent) || 0)) : undefined,
+    budgetPeriod: kind === "bot" ? seat.budgetPeriod || undefined : undefined,
+    pauseReason: seat.status === "paused" ? seat.pauseReason : undefined,
+    heartbeatMinutes:
+      kind === "bot" && Number(seat.heartbeatMinutes) > 0 ? Math.max(1, Math.floor(Number(seat.heartbeatMinutes))) : undefined,
+    heartbeatLastAt: kind === "bot" ? seat.heartbeatLastAt || undefined : undefined,
   };
 }
 
@@ -250,6 +266,7 @@ export function holdOrgSeed(state) {
 export function migrateOnboarding(state) {
   if (!Array.isArray(state.users)) state.users = [];
   if (!Array.isArray(state.authSessions)) state.authSessions = [];
+  if (!Array.isArray(state.apiTokens)) state.apiTokens = [];
   if (!state.onboarding || typeof state.onboarding !== "object") {
     state.onboarding = { ...defaultOnboarding };
     return state;
@@ -317,6 +334,12 @@ export function migrateCompanyLoop(state) {
   if (!Array.isArray(state.pausedRunIds)) state.pausedRunIds = [];
   if (!Array.isArray(state.routines)) state.routines = [];
   if (!Array.isArray(state.routineRuns)) state.routineRuns = [];
+  if (!Array.isArray(state.usage)) state.usage = [];
+  for (const seat of state.seats || []) {
+    if (seat.kind === "bot" && seat.spent == null) seat.spent = 0;
+  }
+  if (!Array.isArray(state.tasks)) state.tasks = [];
+  if (!Array.isArray(state.accessRequests)) state.accessRequests = [];
   if (holdOrgSeed(state)) return state;
   if (!state.goals.some((g) => g.id === "ship-train")) {
     state.goals.push(structuredClone(goals[0]));
@@ -326,11 +349,35 @@ export function migrateCompanyLoop(state) {
     billing.goalIds = Array.isArray(billing.goalIds) ? billing.goalIds : [];
     if (!billing.goalIds.includes("ship-train")) billing.goalIds.unshift("ship-train");
   }
+  if (!state.tasks.some((t) => t.id === "task-product-brief")) {
+    state.tasks.push({
+      id: "task-product-brief",
+      title: "Write billing webhook acceptance",
+      projectId: "billing",
+      runId: "ship-train",
+      ownerSeatId: "product",
+      status: "pending",
+      dependOn: [],
+      path: "billing/webhook.ts",
+    });
+  }
+  if (!state.tasks.some((t) => t.id === "task-eng-implement")) {
+    state.tasks.push({
+      id: "task-eng-implement",
+      title: "Implement webhook idempotency",
+      projectId: "billing",
+      runId: "ship-train",
+      ownerSeatId: "build",
+      status: "pending",
+      dependOn: ["task-product-brief"],
+      path: "billing/webhook.ts",
+    });
+  }
   return state;
 }
 
 function defaultChannelMembership(id) {
-  if (id === "ship") return { teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya"] };
+  if (id === "ship") return { teamIds: [], seatIds: ["channel", "product", "build", "review", "devops", "qa", "you", "maya", "mcp-guest"] };
   if (id === "eng-agents") return { teamIds: ["eng"], seatIds: ["channel"] };
   if (id === "incidents") return { teamIds: ["eng", "services"], seatIds: ["channel", "you", "jules", "scout"] };
   if (id === "general") return { teamIds: [], seatIds: ["channel", "you", "maya", "jules", "priya"] };
@@ -389,6 +436,15 @@ export function migrateState(state) {
     };
   });
   migrateCompanyLoop(next);
+  if (!holdOrgSeed(next) && !(next.seats || []).some((s) => s.id === "mcp-guest")) {
+    const guest = seats.find((s) => s.id === "mcp-guest");
+    if (guest) next.seats = [...(next.seats || []), structuredClone(guest)];
+  }
+  const ship = (next.channels || []).find((c) => c.id === "ship");
+  if (ship && (next.seats || []).some((s) => s.id === "mcp-guest") && !(ship.seatIds || []).includes("mcp-guest")) {
+    ship.seatIds = [...(ship.seatIds || []), "mcp-guest"];
+  }
+  if (!Array.isArray(next.jobs)) next.jobs = [];
   return next;
 }
 
@@ -404,12 +460,17 @@ function baseFields() {
     defaultModel: "",
     users: [],
     authSessions: [],
+    apiTokens: [],
     goals: [],
     approvals: [],
     inboxCursors: {},
     pausedRunIds: [],
     routines: [],
     routineRuns: [],
+    usage: [],
+    tasks: [],
+    accessRequests: [],
+    jobs: [],
   };
 }
 

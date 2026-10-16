@@ -76,8 +76,10 @@ export function FamilyPanel() {
       <div className="settings-head">
         <h1>Family</h1>
         <p className="micro">
-          Roster owns the org and OpenCode write-through. Skills install through skill-flow. MCP backends
-          register on mcp-flow. GitHub PR cards use GITHUB_TOKEN or GH_TOKEN on the API — never state.json.
+          Roster owns the org, the room, and OpenCode write-through. Skills install through skill-flow.
+          Workspace MCP backends register on mcp-flow. Roster-Flow also serves a room MCP at CORE{" "}
+          <code>/mcp</code>. Set MCP_FLOW_URL, SKILL_FLOW_URL, MCP_FLOW_ADMIN_TOKEN, and optional ROSTER_MCP_TOKEN.
+          GitHub PR cards use GITHUB_TOKEN or GH_TOKEN on the API — never state.json.
         </p>
       </div>
       <div className="settings-grid">
@@ -89,7 +91,7 @@ export function FamilyPanel() {
             <p className="micro">{item.replaces}</p>
             <p>{item.role}</p>
             {item.id === "mcp-flow" && status?.mcpFlow && (
-              <p className="micro">
+              <p className="micro" data-testid="family-mcp-status">
                 {status.mcpFlow.url} · {status.mcpFlow.ok ? "up" : status.mcpFlow.error || "down"}
                 {status.mcpFlow.admin ? " · admin token set" : " · no admin token"}
               </p>
@@ -189,6 +191,31 @@ export function FamilyPanel() {
             List
           </button>
         </div>
+      </div>
+      <div className="card" style={{ marginTop: 16 }} data-testid="roster-mcp-snippet">
+        <h3>Roster-Flow room MCP</h3>
+        <p className="micro">
+          mcp-flow is the tool gateway (port 8787). CORE <code>/mcp</code> is the room: seats, channels, and the
+          bus. Point Claude Code or Cursor at both. Guest seats are not an OpenCode loop.
+        </p>
+        <pre className="micro" data-testid="roster-mcp-url">
+          {`{
+  "mcpServers": {
+    "mcp-flow": { "url": "http://127.0.0.1:8787/mcp" },
+    "roster-flow": {
+      "url": "http://127.0.0.1:8790/mcp",
+      "headers": { "Authorization": "Bearer <ROSTER_MCP_TOKEN or CORE login>" }
+    }
+  }
+}`}
+        </pre>
+        <p className="micro">
+          stdio: <code>ROSTER_API=http://127.0.0.1:8790 node scripts/roster-flow-mcp.mjs</code>
+        </p>
+        <p className="micro">
+          Recipe in docs/MCP.md: Claude uses the Anthropic sub; tools go through mcp-flow; the room is
+          Roster-Flow; OpenCode bots stay in the same channel.
+        </p>
       </div>
       {note && <pre className="micro">{note}</pre>}
     </section>
