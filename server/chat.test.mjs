@@ -720,6 +720,33 @@ test("a bot reply that @mentions a room member wakes it at hop 1 and captions it
   }
 });
 
+test("a reply session sync posted before the follow read it still routes its @mentions once", async () => {
+  const prev = { ...deps };
+  const stamp = Date.now();
+  const replies = {
+    product: [{ id: `p-sync-${stamp}`, text: "@build is the deploy done?", created: stamp + 1000 }],
+    build: [{ id: `b-sync-${stamp}`, text: "Done.", created: stamp + 1000 }],
+  };
+  const calls = [];
+  stubAwake({
+    pullAssistant: async (seat) => replies[seat] || [],
+    wakeSeat: async (to, text, meta) => {
+      calls.push({ to, text, meta });
+      if (to === "product") mirrorTranscript("ship", "product", [{ ...replies.product[0], role: "assistant" }]);
+      return { sessionId: `ses-${to}`, seat: to, runId: `run-sync-${calls.length}`, started: true };
+    },
+  });
+  try {
+    await routeChannelMessage({ channelId: "ship", text: "@product deploy?", messageId: `root-sync-${stamp}` }).pending;
+    await until(() => getState().messages.find((m) => m.sessionId === `b-sync-${stamp}`));
+    assert.deepEqual(calls.map((c) => c.to), ["product", "build"]);
+    assert.equal(calls[1].meta.thread.from, "product");
+    assert.equal(getState().messages.filter((m) => m.sessionId === `p-sync-${stamp}`).length, 1);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("a bot reply past the room's hop limit posts a stop line instead of waking", async () => {
   const prev = { ...deps };
   const restore = withChannelPatch("ship", { limits: { maxHops: 1 } });

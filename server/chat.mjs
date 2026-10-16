@@ -359,6 +359,7 @@ export function resetChatRuntime() {
   implicitStarts.clear();
   followingSeats.clear();
   seatThreads.clear();
+  routedReplies.clear();
   resetThreads();
 }
 
@@ -567,9 +568,12 @@ export async function followChannel(
           if (since && p.created && p.created < since) continue;
           if (alreadyMirrored(p.id)) {
             // Session sync can post the reply before this loop reads it; it still answers this wake.
-            if (mirroredReply(p.id, channelId, seatId)) {
+            const prior = mirroredReply(p.id, channelId, seatId);
+            if (prior) {
               posted += 1;
               replies += 1;
+              answered.add(seatId);
+              routeOnce(channelId, seatId, prior);
             }
             continue;
           }
@@ -578,7 +582,7 @@ export async function followChannel(
           posted += 1;
           replies += 1;
           answered.add(seatId);
-          routeBotReply(channelId, seatId, msg);
+          routeOnce(channelId, seatId, msg);
           emit({
             scope: "chat",
             step: "seat.reply",
@@ -653,6 +657,16 @@ function threadCaption(seatId, channelId) {
  * this process started are routed, so a transcript caught up after a restart
  * never wakes anyone.
  */
+/** A reply can be seen by more than one follow loop; its @mentions are routed once. */
+const routedReplies = new Set();
+function routeOnce(channelId, seatId, msg) {
+  const key = msg?.sessionId || msg?.id;
+  if (!key || routedReplies.has(key)) return null;
+  routedReplies.add(key);
+  if (routedReplies.size > 2000) routedReplies.delete(routedReplies.values().next().value);
+  return routeBotReply(channelId, seatId, msg);
+}
+
 export function routeBotReply(channelId, seatId, msg) {
   const thread = seatThreads.get(`${seatId}|${channelId}`);
   if (!thread || !msg?.text || !String(msg.text).includes("@")) return null;
@@ -709,7 +723,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
       ...(role === "bot" ? threadCaption(seatId, channelId) : {}),
     });
     posted.push(msg);
-    if (role === "bot") routeBotReply(channelId, seatId, msg);
+    if (role === "bot") routeOnce(channelId, seatId, msg);
   }
   if (posted.length) {
     emit({
