@@ -304,3 +304,14 @@ Acceptance on the live app: with a usable model loaded on the System serve, `Any
 - **`chat.test.mjs` seeds the starter company** when the shared test store is empty. Before, it only passed after an e2e run had seeded `.roster-flow/state.json`.
 - **e2e uses a fake OpenCode serve** (`tests/e2e/fake-opencode.ts`). CORE adopts any healthy serve on 14180 or 14181, so wakes run end to end without the binary.
 - **`POST /api/v1/reset` clears queued and in-flight room wakes** (`resetChatRuntime()`), so a later post is not queued behind an answer from before the reset.
+
+### Phase 2
+- **`respond: "team"` is rejected for now** (400). The modes in this phase are `lead`, `conductor`, and `quiet`; Phase 5 adds `team`.
+- **Room settings live in `server/room-config.mjs`**, a small module with no imports, so `seed.mjs` (migration) and `channels.mjs` share the mode and limit rules without a load-order problem.
+- **Channels sent to clients carry `responderSeatId`** (`publicChannel()`), the seat that answers under the current mode before pause and model checks. The header chip, the seat inspector's Rooms list, and the room settings all read it, so the UI does not repeat the fallback order.
+- **Quiet rooms post one System line** ("This room is quiet…") besides the notify rows, so the person who posted can see why nobody answered.
+- **The rate limit counts started implicit wakes only.** Queued follow-ups do not count, and @mentions are never limited. The limit state is in memory and `POST /api/v1/reset` clears it.
+- **Team home rooms are created in `migrateState` and `createStaffedTeam`.** A `team-<id>` record the client drafted earlier (no `respond` field) gets the team added and the Supervisor as lead once; after that, an owner who clears the lead keeps it cleared. Team rooms without a record still wake `team:<id>`.
+- **Project rooms with a record put the PM first** when no lead is set, then the usual order.
+- **The header hides system seats** unless "Show system seats" is on or the seat is the room's responder. The responder's avatar is listed first.
+- **"Leave room" only shows for direct members.** A seat that is in a room through a team leaves by leaving the team or removing the team from the room.
