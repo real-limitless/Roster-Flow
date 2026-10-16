@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from "
 import { dirname, join } from "node:path";
 import { normalizeModelId } from "./seed.mjs";
 import { opencodeDir, systemWorkspace } from "./paths.mjs";
-import { normalizeOpenCodeConfig, readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
+import { firstConnectedModel, modelAllowedInConfig, normalizeOpenCodeConfig, readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
 import { getState } from "./store.mjs";
 
 const agentsDir = join(opencodeDir, "agents");
@@ -94,6 +94,24 @@ function agentModel(seat) {
   return normalizeModelId(seat?.model) || "";
 }
 
+/**
+ * Model string safe to persist. A bad id is dropped, or replaced with a
+ * configured connected model the serve can actually call. Never the built-in
+ * `opencode` provider.
+ */
+export function modelForDisk(seat) {
+  const requested = agentModel(seat);
+  if (requested && modelAllowedInConfig(requested)) return requested;
+  const fallback = firstConnectedModel();
+  const ref = fallback?.providerID && fallback?.modelID ? `${fallback.providerID}/${fallback.modelID}` : "";
+  if (ref && modelAllowedInConfig(ref)) return ref;
+  return "";
+}
+
+function seatForDisk(seat) {
+  return { ...seat, model: modelForDisk(seat) };
+}
+
 export function agentMarkdown(seat, ctx = {}) {
   const mode = seat.seatType === "supervisor" ? "primary" : "all";
   const model = agentModel(seat);
@@ -146,24 +164,26 @@ export function syncSeatAgent(seat) {
   if (!seat || seat.kind !== "bot" || seat.mcpGuest) return null;
   const adapter = String(seat.adapter || "opencode").toLowerCase();
   if (adapter && adapter !== "opencode") return null;
+  const disk = seatForDisk(seat);
   if (seat.system) {
     mkdirSync(systemAgentsDir, { recursive: true });
     const file = join(systemAgentsDir, `${seat.id}.md`);
-    writeFileSync(file, agentMarkdown(seat));
-    writeSystemOpenCodeConfig(seat);
+    writeFileSync(file, agentMarkdown(disk));
+    writeSystemOpenCodeConfig(disk);
     return file;
   }
   mkdirSync(agentsDir, { recursive: true });
   const file = join(agentsDir, `${seat.id}.md`);
-  writeFileSync(file, agentMarkdown(seat));
+  writeFileSync(file, agentMarkdown(disk));
   const cfg = readOpenCodeConfig();
   cfg.agent = { ...(cfg.agents || {}), ...(cfg.agent || {}) };
   delete cfg.agents;
-  cfg.agent[seat.id] = agentConfigEntry(seat);
+  cfg.agent[seat.id] = agentConfigEntry(disk);
   // A hire, fire, or reportsTo change alters some supervisor's task allowlist, so rewrite every supervisor.
   for (const sup of (getState()?.seats || []).filter((s) => s.seatType === "supervisor" && s.id !== seat.id && opencodeSeat(s) && !s.system)) {
-    writeFileSync(join(agentsDir, `${sup.id}.md`), agentMarkdown(sup));
-    cfg.agent[sup.id] = agentConfigEntry(sup);
+    const supDisk = seatForDisk(sup);
+    writeFileSync(join(agentsDir, `${sup.id}.md`), agentMarkdown(supDisk));
+    cfg.agent[sup.id] = agentConfigEntry(supDisk);
   }
   writeOpenCodeConfig(cfg);
   return file;
@@ -180,8 +200,9 @@ export function removeSeatAgent(id) {
   for (const sup of (state?.seats || []).filter((s) => s.seatType === "supervisor" && s.id !== id && opencodeSeat(s) && !s.system)) {
     const reports = delegateReports(sup, state).filter((r) => r !== id);
     if (!existsSync(join(agentsDir, `${sup.id}.md`))) continue;
-    writeFileSync(join(agentsDir, `${sup.id}.md`), agentMarkdown(sup, { reports }));
-    if (cfg.agent) cfg.agent[sup.id] = agentConfigEntry(sup, { reports });
+    const supDisk = seatForDisk(sup);
+    writeFileSync(join(agentsDir, `${sup.id}.md`), agentMarkdown(supDisk, { reports }));
+    if (cfg.agent) cfg.agent[sup.id] = agentConfigEntry(supDisk, { reports });
   }
   writeOpenCodeConfig(cfg);
   if (existsSync(systemOcPath)) {

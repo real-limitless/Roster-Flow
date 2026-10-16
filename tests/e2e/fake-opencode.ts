@@ -14,7 +14,7 @@ type Msg = {
     sessionID?: string;
     role: string;
     agent?: string;
-    time: { created: number };
+    time: { created: number; completed?: number };
     providerID?: string;
     modelID?: string;
     tokens?: Tokens;
@@ -135,12 +135,12 @@ export async function startFakeOpenCode(opts: {
       publish({ type: "session.status", properties: { sessionID: ses.id, status: { type: "busy" } } });
       const delay = typeof opts.delayMs === "function" ? opts.delayMs(prompt) : opts.delayMs ?? 150;
       setTimeout(() => {
-        if (answer) {
-          const used = opts.usage?.(prompt) || null;
-          const info = { id: `msg_a_${++n}`, sessionID: ses.id, role: "assistant", time: { created: Date.now() }, ...(used || {}) };
-          ses.messages.push({ info, parts: [{ type: "text", text: answer }] });
-          publish({ type: "message.updated", properties: { sessionID: ses.id, info } });
-        }
+        // OpenCode reports a completed assistant turn once the provider answers; a null reply is a turn with nothing to post.
+        const now = Date.now();
+        const used = answer ? opts.usage?.(prompt) || null : null;
+        const info = { id: `msg_a_${++n}`, sessionID: ses.id, role: "assistant", time: { created: now, completed: now }, ...(used || {}) };
+        if (answer) ses.messages.push({ info, parts: [{ type: "text", text: answer }] });
+        publish({ type: "message.updated", properties: { sessionID: ses.id, info } });
         publish({ type: "session.idle", properties: { sessionID: ses.id } });
       }, delay);
       res.writeHead(204);
@@ -158,6 +158,7 @@ export async function startFakeOpenCode(opts: {
     sessions,
     close: () =>
       new Promise<void>((resolve) => {
+        for (const res of streams) res.end();
         server.close(() => resolve());
         server.closeAllConnections();
       }),

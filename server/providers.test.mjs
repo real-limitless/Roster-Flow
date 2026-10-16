@@ -53,6 +53,20 @@ test("normalizeOpenCodeConfig folds legacy keys into OpenCode's documented schem
   assert.equal(out.agent.build.permissions, undefined);
 });
 
+test("endpointAccepts rejects a closed port and accepts an open one", async () => {
+  const { createServer } = await import("node:net");
+  const { endpointAccepts } = await import("./providers.mjs");
+  assert.equal(endpointAccepts("http://127.0.0.1:9/v1", 200), false);
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  try {
+    assert.equal(endpointAccepts(`http://127.0.0.1:${port}/v1`, 400), true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("serveChildEnv passes wiki-flow env through to opencode serve", async () => {
   const { serveChildEnv } = await import("./providers.mjs");
   const env = serveChildEnv({ PATH: "/bin", WIKIFLOW_URL: "http://wiki", WIKIFLOW_TOKEN: "tok" });

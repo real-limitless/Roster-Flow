@@ -312,10 +312,14 @@ async function wakeTarget(channelId, text, from, target) {
   if (!plan.ok) {
     stopThinking(channelId, seatId);
     const woke = await deps.wakeSeat(target.to, text, meta);
-    const runId = woke?.runId || null;
-    const reason = woke?.error || plan.hint || "model not loaded";
-    if (runId) blockLatestRun(woke?.seat || seatId, reason);
-    return { ...woke, seat: woke?.seat || seatId, error: reason, nokey: true, runId, started: false };
+    return {
+      ...woke,
+      seat: woke?.seat || seatId,
+      error: woke?.error || plan.hint,
+      nokey: !woke?.started,
+      runId: woke?.runId || null,
+      started: Boolean(woke?.started),
+    };
   }
   emit({
     scope: "chat",
@@ -379,6 +383,7 @@ export function resetChatRuntime() {
   implicitStarts.clear();
   followingSeats.clear();
   seatThreads.clear();
+  routedReplies.clear();
   resetThreads();
   resetThinking();
 }
@@ -662,6 +667,8 @@ export async function followChannel(
   try {
     let ticksLeft = limit;
     let eventWakes = 0;
+    // Open the serve's event stream up front: a wake can return after the turn already finished.
+    for (const k of new Set([...seats].map(kindOf))) deps.ensureEventStream?.(k);
     while (ticksLeft > 0 && epoch === followEpoch) {
       absorbBusSeats(channelId, seats);
       for (const seatId of [...seats]) {
@@ -674,7 +681,18 @@ export async function followChannel(
           if (!p.id || seen.has(p.id)) continue;
           seen.add(p.id);
           if (since && p.created && p.created < since) continue;
-          if (alreadyMirrored(p.id)) continue;
+          if (alreadyMirrored(p.id)) {
+            // Session sync can post the reply before this loop reads it; it still answers this wake.
+            const prior = mirroredReply(p.id, channelId, seatId);
+            if (prior) {
+              stopThinking(channelId, seatId);
+              answered.add(seatId);
+              posted += 1;
+              replies += 1;
+              routeOnce(channelId, seatId, prior);
+            }
+            continue;
+          }
           stopThinking(channelId, seatId);
           answered.add(seatId);
           posted += 1;
@@ -686,7 +704,7 @@ export async function followChannel(
           const seat = getState().seats.find((s) => s.id === seatId);
           const msg = postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id, ...threadCaption(seatId, channelId) });
           replies += 1;
-          routeBotReply(channelId, seatId, msg);
+          routeOnce(channelId, seatId, msg);
           emit({
             scope: "chat",
             step: "seat.reply",
@@ -777,6 +795,16 @@ function threadCaption(seatId, channelId) {
  * this process started are routed, so a transcript caught up after a restart
  * never wakes anyone.
  */
+/** A reply can be seen by more than one follow loop; its @mentions are routed once. */
+const routedReplies = new Set();
+function routeOnce(channelId, seatId, msg) {
+  const key = msg?.sessionId || msg?.id;
+  if (!key || routedReplies.has(key)) return null;
+  routedReplies.add(key);
+  if (routedReplies.size > 2000) routedReplies.delete(routedReplies.values().next().value);
+  return routeBotReply(channelId, seatId, msg);
+}
+
 export function routeBotReply(channelId, seatId, msg) {
   const thread = seatThreads.get(`${seatId}|${channelId}`);
   if (!thread || !msg?.text || !String(msg.text).includes("@")) return null;
@@ -811,6 +839,11 @@ function alreadyMirrored(sessionMessageId) {
   return (getState().messages || []).some((m) => m.sessionId === sessionMessageId);
 }
 
+/** The room message for an OpenCode message id when it is this seat's reply in this room, else null. */
+function mirroredReply(sessionMessageId, channelId, seatId) {
+  return (getState().messages || []).find((m) => m.sessionId === sessionMessageId && m.channel === channelId && m.seatId === seatId) || null;
+}
+
 export function mirrorTranscript(channelId, seatId, parts) {
   const seat = getState().seats.find((s) => s.id === seatId);
   const posted = [];
@@ -829,7 +862,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
       ...(role === "bot" ? threadCaption(seatId, channelId) : {}),
     });
     posted.push(msg);
-    if (role === "bot") routeBotReply(channelId, seatId, msg);
+    if (role === "bot") routeOnce(channelId, seatId, msg);
   }
   if (posted.length) {
     emit({
