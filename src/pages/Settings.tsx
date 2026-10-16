@@ -1,42 +1,59 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Logo } from "../components/Logo";
-import { seats as seedSeats, type Seat } from "../data";
+import { seats as seedSeats, teams as seedTeams, type Seat, type Team } from "../data";
 import { api } from "../lib/api";
+import { AccountPanel } from "./settings/AccountPanel";
+import { AccessPanel } from "./settings/AccessPanel";
 import { AgentsPanel } from "./settings/AgentsPanel";
 import { FamilyPanel } from "./settings/FamilyPanel";
 import { HarnessPanel } from "./settings/HarnessPanel";
 import { ProvidersPanel } from "./settings/ProvidersPanel";
 import { RoutinesPanel } from "./settings/RoutinesPanel";
+import { UsagePanel } from "./settings/UsagePanel";
+import { TokensPanel } from "./settings/TokensPanel";
 import type { HarnessStatus, Provider, SettingsPane } from "./settings/types";
 
 const PANES: Array<[SettingsPane, string]> = [
   ["providers", "Providers"],
   ["harness", "Harness"],
   ["agents", "Agents"],
+  ["usage", "Usage"],
   ["routines", "Routines"],
+  ["access", "Access"],
   ["family", "Family"],
+  ["tokens", "API tokens"],
 ];
 
 export function Settings() {
-  const [pane, setPane] = useState<SettingsPane>("providers");
+  const [pane, setPane] = useState<SettingsPane>(() => {
+    try {
+      const q = new URLSearchParams(window.location.search).get("pane");
+      return q === "usage" ? "usage" : "providers";
+    } catch {
+      return "providers";
+    }
+  });
   const [railOpen, setRailOpen] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [harness, setHarness] = useState<HarnessStatus | null>(null);
   const [seats, setSeats] = useState<Seat[]>(seedSeats);
+  const [teams, setTeams] = useState<Team[]>(seedTeams);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
   async function refresh() {
     try {
-      const [p, h, s] = await Promise.all([
+      const [p, h, s, t] = await Promise.all([
         api.providers(),
         api.harness().catch(() => ({ harness: "offline" as const, systemHarness: { harness: "offline" as const } })),
         api.seats().catch(() => seedSeats),
+        api.teams().catch(() => seedTeams),
       ]);
       setProviders(p);
       setHarness(h);
       if (Array.isArray(s) && s.length) setSeats(s);
+      if (Array.isArray(t) && t.length) setTeams(t);
       setErr("");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "API offline — start npm run standup");
@@ -89,6 +106,19 @@ export function Settings() {
               {label}
             </button>
           ))}
+          <div className="rail-label">You</div>
+          <button
+            type="button"
+            data-testid="settings-nav-account"
+            className={`ch ${pane === "account" ? "on" : ""}`}
+            onClick={() => {
+              setPane("account");
+              setRailOpen(false);
+              setOk("");
+            }}
+          >
+            Account
+          </button>
         </aside>
         <main className="settings-main">
           {err && (
@@ -113,8 +143,14 @@ export function Settings() {
             />
           )}
           {pane === "agents" && <AgentsPanel seats={seats} />}
+          {pane === "usage" && (
+            <UsagePanel seats={seats} teams={teams} harness={company} onError={setErr} />
+          )}
           {pane === "routines" && <RoutinesPanel seats={seats} onError={setErr} />}
+          {pane === "access" && <AccessPanel onError={setErr} />}
           {pane === "family" && <FamilyPanel />}
+          {pane === "account" && <AccountPanel onError={setErr} onOk={setOk} />}
+          {pane === "tokens" && <TokensPanel onError={setErr} />}
         </main>
       </div>
     </div>

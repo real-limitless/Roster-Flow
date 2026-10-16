@@ -1,6 +1,7 @@
 import { PointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Tree, { type CustomNodeElementProps, type TreeLinkDatum } from "react-d3-tree";
-import { type Project, type Seat, type Team } from "../data";
+import { isOpenCodeSeat, seatAdapter, type Project, type Seat, type Team } from "../data";
+import { budgetPaused } from "../lib/budget";
 import { SeatAvatar } from "./SeatAvatar";
 import type { ChartPreview } from "./chart/planPreview";
 import { buildOrgTree, toRawNodeDatum, type OrgTreeNode } from "./chart/orgTreeData";
@@ -53,6 +54,7 @@ export function OrgChart({
   onAttach,
   unreadBySeat = {},
   pathIds = [],
+  claimedSeatIds = [],
 }: {
   roster: Seat[];
   teams?: Team[];
@@ -70,6 +72,7 @@ export function OrgChart({
   onAttach?: (s: Seat) => void;
   unreadBySeat?: Record<string, number>;
   pathIds?: string[];
+  claimedSeatIds?: string[];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const fittingRef = useRef(false);
@@ -295,6 +298,7 @@ export function OrgChart({
           onPath={pathIds.includes(seat.id)}
           fire={Boolean(meta.fire)}
           unread={unreadBySeat[seat.id] || 0}
+          claimed={claimedSeatIds.includes(seat.id)}
           onSelect={onSelect}
           onAttach={onAttach}
         />
@@ -434,6 +438,7 @@ function SeatBtn({
   onPath,
   fire,
   unread = 0,
+  claimed = false,
   onSelect,
   onAttach,
 }: {
@@ -443,20 +448,30 @@ function SeatBtn({
   onPath?: boolean;
   fire?: boolean;
   unread?: number;
+  claimed?: boolean;
   onSelect: (s: Seat) => void;
   onAttach?: (s: Seat) => void;
 }) {
-  const pip = seat.status === "paused" ? "paused" : liveId === seat.id ? "run" : "on";
+  const budget = budgetPaused(seat);
+  const scheduled = !budget && seat.status !== "paused" && Number(seat.heartbeatMinutes) > 0;
+  const pip = budget ? "paused budget" : seat.status === "paused" ? "paused" : claimed ? "claimed" : liveId === seat.id ? "run" : scheduled ? "scheduled" : "on";
   return (
     <button
       type="button"
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
       data-paused={seat.status === "paused" ? "1" : "0"}
+      data-adapter={seatAdapter(seat)}
+      data-mcp-guest={seat.mcpGuest ? "1" : "0"}
+      data-budget-paused={budget ? "1" : "0"}
+      data-heartbeat={scheduled ? "1" : "0"}
+      data-claimed={claimed ? "1" : "0"}
       data-coach-path={onPath ? "1" : "0"}
-      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""} ${onPath ? "coach-path" : ""}`}
+      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""} ${budget ? "budget-paused" : ""} ${scheduled ? "heartbeat" : ""} ${claimed ? "claimed" : ""} ${onPath ? "coach-path" : ""}`}
       onClick={() => onSelect(seat)}
-      onDoubleClick={() => onAttach?.(seat)}
+      onDoubleClick={() => {
+        if (isOpenCodeSeat(seat) && !seat.mcpGuest) onAttach?.(seat);
+      }}
     >
       <SeatAvatar seed={seat.id} kind={seat.kind} size={22} />
       <span className="seat-name-row">
@@ -471,10 +486,13 @@ function SeatBtn({
       <div style={{ color: "var(--muted)", fontSize: 10 }}>
         {seat.role}
         {seat.kind === "human" ? " · human" : ""}
+        {seat.kind === "bot" && !isOpenCodeSeat(seat) ? ` · ${seatAdapter(seat)}` : ""}
+        {seat.mcpGuest ? " · mcp" : ""}
         {seat.system ? " · system" : ""}
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}
-        {seat.status === "paused" ? " · paused" : ""}
+        {budget ? " · budget" : seat.status === "paused" ? " · paused" : scheduled ? " · beat" : ""}
+        {claimed ? " · claim" : ""}
       </div>
     </button>
   );
