@@ -119,11 +119,12 @@ test("routeChannelMessage falls back to a connected OpenCode model", async () =>
   try {
     const routed = routeChannelMessage({ channelId: "ship", text: "hi from fallback test" });
     assert.equal(routed.wakes, 1);
-    await routed.pending;
-    assert.equal(woke, "channel");
+    const results = await routed.pending;
+    assert.equal(woke, null);
+    assert.equal(results[0].started, false);
     const added = getState().messages.slice(before);
-    assert.ok(added.some((m) => /Using infiniterouter-dev\/big-pickle/.test(m.text) && m.system));
-    assert.ok(added.some((m) => m.text === "Fallback supervisor is awake."));
+    assert.ok(added.some((m) => /not in Settings/.test(m.text) && m.system));
+    assert.ok(!added.some((m) => m.text === "Fallback supervisor is awake."));
   } finally {
     Object.assign(deps, prev);
   }
@@ -163,16 +164,22 @@ test("seatModelPlan falls back only to a model the serve loaded, and labels it",
     assert.equal(unknown.model, seat.model);
 
     const loaded = [...BUILTIN_ONLY, { providerID: "infiniterouter-dev", modelID: "big-pickle" }];
-    const fb = seatModelPlan(seat, loaded);
-    assert.equal(fb.ok, true);
-    assert.equal(fb.fallback, true);
-    assert.equal(fb.model, "infiniterouter-dev/big-pickle");
-    assert.match(fb.hint, /which OpenCode did not load\. Using infiniterouter-dev\/big-pickle instead/);
-    assert.deepEqual(fallbackCalls.at(-1), loaded);
+    const assigned = seatModelPlan(seat, loaded);
+    assert.equal(assigned.ok, false);
+    assert.equal(assigned.fallback, false);
+    assert.equal(assigned.model, seat.model);
+    assert.match(assigned.hint, /featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct is not loaded by the harness \(loaded: opencode, infiniterouter-dev\)/);
+    assert.equal(fallbackCalls.length, 0);
+
+    const open = seatModelPlan({ name: "Channel", model: "" }, loaded);
+    assert.equal(open.ok, true);
+    assert.equal(open.fallback, true);
+    assert.equal(open.model, "infiniterouter-dev/big-pickle");
+    assert.match(open.hint, /no model assigned\. Using infiniterouter-dev\/big-pickle/);
 
     const none = seatModelPlan(seat, BUILTIN_ONLY);
     assert.equal(none.ok, false);
-    assert.match(none.hint, /featherless is in Settings, but the OpenCode harness did not load it \(loaded: opencode\)/);
+    assert.match(none.hint, /is not loaded by the harness \(loaded: opencode\)/);
   } finally {
     Object.assign(deps, prev);
   }
@@ -201,11 +208,10 @@ test("routeChannelMessage labels the Channel seat with the loaded fallback and w
   try {
     const routed = routeChannelMessage({ channelId: channel, text: "hi loaded" });
     await routed.pending;
-    assert.equal(woke, "channel");
+    assert.equal(woke, null);
     const added = getState().messages.filter((m) => m.channel === channel);
-    assert.ok(added.some((m) => m.system && /^Waking Channel \(infiniterouter-dev\/big-pickle\)/.test(m.text)));
-    assert.ok(!added.some((m) => m.system && /Waking Channel \(featherless/.test(m.text)));
-    assert.ok(added.some((m) => m.text === "Loaded fallback reply."));
+    assert.ok(added.some((m) => m.system && /is not loaded by the harness \(loaded: opencode, infiniterouter-dev\)/.test(m.text)));
+    assert.ok(!added.some((m) => m.text === "Loaded fallback reply."));
   } finally {
     Object.assign(deps, prev);
   }
@@ -230,7 +236,7 @@ test("routeChannelMessage does not wake a seat whose provider OpenCode did not l
     const results = await routed.pending;
     assert.equal(results[0].nokey, true);
     const added = getState().messages.filter((m) => m.channel === channel);
-    assert.ok(added.some((m) => m.system && /did not load it \(loaded: opencode\)/.test(m.text)));
+    assert.ok(added.some((m) => m.system && /is not loaded by the harness \(loaded: opencode\)/.test(m.text)));
     assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.nokey"));
   } finally {
     Object.assign(deps, prev);

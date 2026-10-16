@@ -198,6 +198,10 @@ test("fallback and seat resolution only pick models OpenCode loaded", () => {
 
   const seat = { model: "xai/grok-4" };
   assert.deepEqual(providers.resolveUsableModel(seat, undefined, withFeatherless), {
+    providerID: "xai",
+    modelID: "grok-4",
+  });
+  assert.deepEqual(providers.resolveUsableModel({ model: "" }, undefined, withFeatherless), {
     providerID: "featherless",
     modelID: "Qwen/Qwen2.5-Coder-32B-Instruct",
   });

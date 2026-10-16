@@ -187,7 +187,7 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 | POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
 | PATCH | `/api/v1/channels/:id` | Add/remove teams and seats |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
-| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake |
+| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken |
 | GET | `/api/v1/threads` | Thread index |
 | GET | `/api/v1/threads/:id` | One thread |
 
