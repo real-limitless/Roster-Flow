@@ -63,6 +63,7 @@ test("tryServeStatic writes SPA HTML when enabled", () => {
     assert.equal(tryServeStatic({ method: "HEAD" }, headRes, "/app"), true);
     assert.equal(headRes.code, 200);
     assert.match(headRes.headers["content-type"], /text\/html/);
+    assert.equal(tryServeStatic({ method: "GET" }, headRes, "/mcp"), false);
   } finally {
     if (prev === undefined) delete process.env.ROSTER_STATIC_DIR;
     else process.env.ROSTER_STATIC_DIR = prev;
