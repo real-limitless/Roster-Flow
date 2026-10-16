@@ -4,6 +4,7 @@ import test from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { syncSeatAgent } from "./agents.mjs";
+import { readOpenCodeConfig } from "./providers.mjs";
 import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
 import { getState, mutate } from "./store.mjs";
 
@@ -228,6 +229,59 @@ function restoreBuild(model) {
     if (s.sessions) delete s.sessions.build;
   });
 }
+
+test("a bad model is not written into the shared config and does not stop another seat", async () => {
+  const prev = { ...deps };
+  const prompts = [];
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_iso" });
+  deps.loadedModels = async () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  deps.promptSession = async (_id, body) => {
+    prompts.push(body.model);
+  };
+  let priorModel;
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) {
+      priorModel = seat.model;
+      seat.model = "featherless/not-loaded-model";
+      seat.fallbackModel = "";
+      seat.status = "idle";
+    }
+    if (s.sessions) delete s.sessions.build;
+    if (s.sessions) delete s.sessions.qa;
+  });
+  const before = JSON.stringify(readOpenCodeConfig());
+  try {
+    const bad = await wakeSeat("build", "nope", { from: "you", channel: "ship" });
+    assert.equal(bad.started, false);
+    assert.equal(prompts.length, 0);
+    const badRun = (getState().runs || []).find((r) => r.id === bad.runId);
+    assert.equal(badRun?.status, "blocked");
+    assert.equal(JSON.stringify(readOpenCodeConfig()), before);
+    const added = getState().messages.filter((m) => m.channel === "ship" && m.system && String(m.text).includes(bad.runId));
+    assert.ok(added.length);
+
+    deps.loadedModels = async () => [{ providerID: "demo-llm", modelID: "demo-small" }];
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "qa");
+      if (seat) {
+        seat.model = "";
+        seat.fallbackModel = "";
+        seat.status = "idle";
+      }
+    });
+    const good = await wakeSeat("qa", "still works", { from: "you" });
+    assert.notEqual(good.seat, "build");
+    assert.equal(prompts.some((m) => m?.providerID === "opencode"), false);
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      if (seat && priorModel !== undefined) seat.model = priorModel;
+    });
+  }
+});
 
 test("an explicitly assigned model is not swapped for a loaded one", async () => {
   const prev = { ...deps };

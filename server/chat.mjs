@@ -1,5 +1,5 @@
 import { getState, mutate, uid } from "./store.mjs";
-import { postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
+import { blockLatestRun, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
 import { resolveMembers, responderCandidates, roomLimits } from "./channels.mjs";
 import { normalizeRespond } from "./room-config.mjs";
@@ -289,7 +289,10 @@ async function wakeTarget(channelId, text, from, target) {
   }
   if (!plan.ok) {
     const woke = await deps.wakeSeat(target.to, text, meta);
-    return { ...woke, seat: woke?.seat || seatId, error: woke?.error || plan.hint, nokey: true, runId: woke?.runId || null, started: false };
+    const runId = woke?.runId || null;
+    const reason = woke?.error || plan.hint || "model not loaded";
+    if (runId) blockLatestRun(woke?.seat || seatId, reason);
+    return { ...woke, seat: woke?.seat || seatId, error: reason, nokey: true, runId, started: false };
   }
   emit({
     scope: "chat",
@@ -593,6 +596,7 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
         seat: first,
         detail: { hint: hint || "noreply" },
       });
+      if (ticks > 0) blockLatestRun(first, hint || "did not reply");
     }
   } finally {
     if (followingSeats.get(channelId) === follow) followingSeats.delete(channelId);
