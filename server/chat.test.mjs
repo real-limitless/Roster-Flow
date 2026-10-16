@@ -11,6 +11,7 @@ import {
   providerHint,
   quietRoom,
   resetChatRuntime,
+  roomThinking,
   routeBotReply,
   routeChannelMessage,
   seatModelPlan,
@@ -102,7 +103,7 @@ test("routeChannelMessage posts a key warning and does not wait for a model", as
     const routed = routeChannelMessage({ channelId: "general", text: "need a reply from Channel" });
     assert.equal(routed.wakes, 1);
     const immediate = getState().messages.slice(before);
-    assert.ok(immediate.some((m) => /Waking Channel/.test(m.text) && m.system));
+    assert.ok(!immediate.some((m) => /Waking Channel/.test(m.text)));
     assert.ok(immediate.some((m) => /No API key for xai/.test(m.text) && m.system));
     await routed.pending;
     const added = getState().messages.slice(before);
@@ -668,6 +669,169 @@ test("a mirrored reply with no recorded wake never routes its @mentions", () => 
   try {
     assert.equal(routeBotReply("ship", "product", { text: "@build hi" }), null);
     assert.equal(calls.length, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("team mode asks up to fanout awake members, lead first, and does not post PASS", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { respond: "team", leadSeatId: "build", limits: { fanout: 2 } });
+  const stamp = Date.now();
+  const replies = {
+    build: [{ id: `t-build-${stamp}`, text: "Build: the deploy is blocked on review.", created: stamp + 1000 }],
+    product: [{ id: `t-product-${stamp}`, text: "PASS", created: stamp + 1000 }],
+  };
+  const calls = stubAwake({ pullAssistant: async (seat) => replies[seat] || [] });
+  const before = getState().messages.length;
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "what is blocking the deploy?" });
+    await routed.pending;
+    assert.deepEqual(calls.map((c) => c.to), ["build", "product"]);
+    assert.ok(calls.every((c) => c.meta.teamMode === true && c.meta.kind === "implicit"));
+    const ship = getState().messages.slice(before).filter((m) => m.channel === "ship");
+    assert.ok(ship.some((m) => m.sessionId === `t-build-${stamp}`));
+    assert.ok(!ship.some((m) => m.sessionId === `t-product-${stamp}`));
+    assert.ok(!ship.some((m) => /did not reply/.test(m.text) && m.text.startsWith("Product")));
+  } finally {
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("when every team-mode member passes the room gets one line", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { respond: "team", limits: { fanout: 2 } });
+  const stamp = Date.now();
+  stubAwake({ pullAssistant: async (seat) => [{ id: `pass-${seat}-${stamp}`, text: "pass.", created: stamp + 1000 }] });
+  try {
+    await routeChannelMessage({ channelId: "ship", text: "anything new?" }).pending;
+    const last = getState().messages.filter((m) => m.channel === "ship").slice(-1)[0];
+    assert.match(last.text, /^Nobody had anything to add \(Product, DevOps[^)]* passed\)\.$/);
+  } finally {
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("a room over its daily token budget is quiet for un-mentioned messages until UTC midnight", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { limits: { tokensPerDay: 100 } });
+  const usage = getState().usage || [];
+  const row = { id: `use-budget-${Date.now()}`, seatId: "product", channelId: "ship", tokens: 150, time: new Date().toISOString() };
+  mutate((s) => {
+    s.usage = [...(s.usage || []), row];
+  });
+  const calls = stubAwake({ pullAssistant: async () => [], followTicks: 0 });
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "status please", from: "maya" });
+    assert.equal(routed.quiet, true);
+    assert.equal(calls.length, 0);
+    const last = getState().messages.filter((m) => m.channel === "ship").slice(-1)[0];
+    assert.match(last.text, /^This room used its daily budget \(\d+ of 100 tokens\)\. Un-mentioned messages wake nobody until 00:00 UTC/);
+    const mentioned = routeChannelMessage({ channelId: "ship", text: "@build status?", from: "maya" });
+    await mentioned.pending;
+    assert.deepEqual(calls.map((c) => c.to), ["build"]);
+  } finally {
+    mutate((s) => {
+      s.usage = usage;
+    });
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("a woken seat shows as thinking until its reply lands, with no Waking line", async () => {
+  const prev = { ...deps };
+  const stamp = Date.now();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  let polls = 0;
+  stubAwake({
+    followTicks: 5,
+    pullAssistant: async () => {
+      polls += 1;
+      if (polls === 1) await gate;
+      return polls > 1 ? [{ id: `think-${stamp}`, text: "On it.", created: stamp + 1000 }] : [];
+    },
+  });
+  const before = getState().messages.length;
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "@review look at PR 12" });
+    await routed.started;
+    assert.deepEqual(roomThinking("ship").map((t) => [t.seatId, t.name]), [["review", "Eng.Review"]]);
+    release();
+    await routed.pending;
+    assert.deepEqual(roomThinking("ship"), []);
+    assert.ok(!getState().messages.slice(before).some((m) => /^Waking /.test(m.text)));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("with the event stream up a follow tick waits longer and an event re-polls without using a tick", async () => {
+  const prev = { ...deps };
+  const stamp = Date.now();
+  const waits = [];
+  let polls = 0;
+  const metered = [];
+  let firstWait = true;
+  stubAwake({
+    followTicks: 4,
+    followDelayMs: 10,
+    eventsConnected: () => true,
+    ensureEventStream: () => null,
+    waitForSessions: async (ids, ms) => {
+      waits.push({ ids, ms });
+      const why = firstWait ? "event" : "timeout";
+      firstWait = false;
+      return why;
+    },
+    meterTurn: async (seat, opts) => metered.push({ seat, ...opts }),
+    onSessionIdle: () => undefined,
+    pullAssistant: async (seat) => {
+      if (seat !== "review") return [];
+      polls += 1;
+      return polls >= 2 ? [{ id: `sse-${stamp}`, text: "Reviewed.", created: stamp + 1000 }] : [];
+    },
+  });
+  try {
+    await routeChannelMessage({ channelId: "ship", text: "@review again" }).pending;
+    assert.equal(polls, 2);
+    assert.equal(waits[0].ms, 40);
+    assert.ok(waits[0].ids.includes("ses-review"));
+    assert.ok(getState().messages.some((m) => m.sessionId === `sse-${stamp}`));
+    const review = metered.filter((m) => m.seat === "review");
+    assert.equal(review.length, 1);
+    assert.equal(review[0].sessionId, "ses-review");
+    assert.match(review[0].runId, /^run-/);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a reset stops follow loops that started before it", async () => {
+  const prev = { ...deps };
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const stamp = Date.now();
+  let polls = 0;
+  stubAwake({
+    followTicks: 5,
+    pullAssistant: async () => {
+      polls += 1;
+      if (polls === 1) await gate;
+      return [{ id: `stale-${stamp}`, text: "From before the reset.", created: stamp + 1000 }];
+    },
+  });
+  try {
+    const follow = followChannel("ship", ["review"], 5, { since: stamp });
+    await new Promise((r) => setTimeout(r, 5));
+    resetChatRuntime();
+    release();
+    await follow;
+    assert.equal(polls, 1);
+    assert.ok(!getState().messages.some((m) => m.sessionId === `stale-${stamp}`));
   } finally {
     Object.assign(deps, prev);
   }
