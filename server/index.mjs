@@ -1551,6 +1551,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/providers" && method === "PUT") {
       const out = upsertProvider(await readBody(req));
       restartForProviderChange();
+      syncBotAgents(getState().seats, getState().teams);
       json(res, 200, out);
       return;
     }
@@ -1559,6 +1560,7 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const out = setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key);
       restartForProviderChange();
+      syncBotAgents(getState().seats, getState().teams);
       json(res, 200, out);
       return;
     }
@@ -1566,6 +1568,7 @@ const server = createServer(async (req, res) => {
     if (delP && method === "DELETE") {
       const out = removeProvider(decodeURIComponent(delP[1]));
       restartForProviderChange();
+      syncBotAgents(getState().seats, getState().teams);
       json(res, 200, out);
       return;
     }

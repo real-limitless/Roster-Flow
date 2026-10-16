@@ -293,10 +293,14 @@ async function wakeTarget(channelId, text, from, target) {
   }
   if (!plan.ok) {
     const woke = await deps.wakeSeat(target.to, text, meta);
-    const runId = woke?.runId || null;
-    const reason = woke?.error || plan.hint || "model not loaded";
-    if (runId) blockLatestRun(woke?.seat || seatId, reason);
-    return { ...woke, seat: woke?.seat || seatId, error: reason, nokey: true, runId, started: false };
+    return {
+      ...woke,
+      seat: woke?.seat || seatId,
+      error: woke?.error || plan.hint,
+      nokey: !woke?.started,
+      runId: woke?.runId || null,
+      started: Boolean(woke?.started),
+    };
   }
   emit({
     scope: "chat",
