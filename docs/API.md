@@ -186,7 +186,7 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 |---|---|---|
 | GET | `/api/v1/channels` | Channels plus membership, `leadSeatId`, `respond`, `limits`, and `responderSeatId` (who answers un-mentioned messages now, before pause and model checks; `null` in a quiet room) |
 | POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
-| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`); set `respond` (`lead`, `conductor`, or `quiet`); set `limits.implicitPerMinute` (1–1000, `null` restores the default of 4). Bad input is a 400 and changes nothing |
+| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`); set `respond` (`lead`, `conductor`, or `quiet`); set `limits.implicitPerMinute`, `limits.maxHops`, or `limits.maxBotWakesPerThread` (1–1000; `null` restores the default of 4, 4, or 8). Bad input is a 400 and changes nothing |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
 | POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken. It returns once the wakes have started, not when the reply arrives. `queued: true` means the room's responder is still answering and the message will follow. `rateLimited: true` means the room hit `limits.implicitPerMinute`; `quiet: true` means the room is quiet and only people were notified |
 | GET | `/api/v1/threads` | Thread index |
@@ -213,6 +213,8 @@ The room's `respond` mode changes this. `lead` (the default) uses the order abov
 
 Each seat has one OpenCode session per room it is woken in (`roster:<seat>:<room>`), separate from its DM session (`roster:<seat>`), which bus mail, heartbeats, its own DM, and Harness attach use. A room wake carries the room messages posted since the seat's last turn there (up to 20 lines, about 2k tokens, oldest first, without System lines or its own posts), and replies are read from that session only. Room sessions idle for 14 days are deleted and reopened on the next wake.
 
+A bot reply posted into a room is routed too. `@build` in Product's reply wakes Eng.Build in that room, one hop further along the thread the human post started (hop 0). Bots cannot use `@channel` or `@here` and never wake themselves. A mentioned human, MCP guest, or seat that is not in the room gets a notify row instead of a wake. A thread stops waking bots past `limits.maxHops` (default 4), past `limits.maxBotWakesPerThread` bot-triggered wakes (default 8), or once the same two seats have woken each other 4 times. The room then gets one `Stopped: …` line, and the seat that would have been woken gets a notify row. Only replies to wakes this CORE process started are routed, so transcripts caught up after a restart wake nobody. Room messages from a thread carry `thread: { threadId, hop, from, maxHops, botWakes, maxBotWakes }`.
+
 Every staffed team has a `team-<id>` room record with the team as a member and the Supervisor as lead. Created teams get one, and existing teams get one on load. Team and project rooms that have a record follow the same rules, with the Supervisor or PM answering first. Without a record, team rooms wake the Supervisor and project rooms the PM. DMs wake the bot.
 
 ## Bot / team messaging
@@ -229,7 +231,7 @@ Every staffed team has a `team-<id>` room record with the team as a member and t
 { "to": "build", "text": "Acceptance is ready. Implement webhook idempotency.", "from": "product" }
 ```
 
-`to` may be a seat id, `team:eng`, or `channel:ship`.
+`to` may be a seat id, `team:eng`, or `channel:ship`. The room message is posted in `channel` when set, else the room of `sessionId` (an OpenCode session, see `GET /api/v1/sessions/:id/room`), else `#ship`. `POST /api/v1/bus/send` resolves its room the same way. The roster plugin always sends the session id and fails the tool call when the session has no room and no `channel` was given.
 
 `POST /api/v1/bus/send`:
 
@@ -501,3 +503,5 @@ Streamable HTTP room gateway. mcp-flow is tools; this is seats, channels, and th
 | GET | `/api/v1/tokens` | List (no hashes or plaintext) |
 | POST | `/api/v1/tokens` | `{name, scopes: ["read","write","admin"], expiresAt? \| expiresInDays?, seatId?}` → `{token, record}`; `token` is shown once. `seatId` binds the token to that seat |
 | DELETE | `/api/v1/tokens/:id` | Revoke; the token then gets 401 |
+
+CORE also gives its own OpenCode serves an internal plugin token as `ROSTER_API_TOKEN`, unless the operator set one. It lives in memory, changes on every CORE restart, and acts as the first owner on the routes the plugin calls (seats, teams, projects, rooms and their messages, `sessions/:id/room`, messages, bus, tasks, jobs, Architect chat). Any other route gets 403, and a seat `PATCH` with it only changes `lastSession`.
