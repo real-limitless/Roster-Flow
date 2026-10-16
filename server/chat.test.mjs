@@ -366,6 +366,7 @@ function withChannelPatch(id, patch) {
   const before = { ...ch, seatIds: [...ch.seatIds], teamIds: [...ch.teamIds] };
   Object.assign(ch, patch);
   return () => {
+    for (const key of Object.keys(patch)) if (!(key in before)) delete ch[key];
     Object.assign(ch, before);
     save();
   };
