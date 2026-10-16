@@ -211,3 +211,49 @@ test("a seat keeps one session per room, gets the room's new messages, and repli
     await dropFakeModel(request);
   }
 });
+
+test("a bot @mention wakes another room member at hop 1, and plugin posts land in the session's room", async ({ page, request }) => {
+  await resetApi(request);
+  await useFakeModel(request, ["build", "scout"]);
+  const fake = await startFakeOpenCode({
+    port: COMPANY_PORT,
+    providers: { e2efake: ["m1"] },
+    reply: (p) => {
+      if (p.agent === "build") return "@scout can you grep the logs for 502s?";
+      if (p.agent === "scout") return "Found three 502s, all from billing.";
+      return null;
+    },
+  });
+  try {
+    await page.goto("/app");
+    await page.getByTestId("channel-incidents").click();
+    await page.getByTestId("composer").fill("@build is prod ok?");
+    await page.getByTestId("send-message").click();
+    await expect(page.getByText("Found three 502s, all from billing.").first()).toBeVisible({ timeout: 20_000 });
+
+    const msgs = (await (await request.get(`${API}/api/v1/channels/incidents/messages`)).json()) as Array<
+      Msg & { thread?: { hop: number; from: string; maxHops: number } }
+    >;
+    const scoutReply = msgs.find((m) => m.text === "Found three 502s, all from billing.");
+    expect(scoutReply?.seatId).toBe("scout");
+    expect(scoutReply?.thread).toMatchObject({ hop: 1, from: "build", maxHops: 4 });
+    await expect(page.getByTestId(`msg-thread-caption-${scoutReply!.id}`)).toHaveText("↳ from @build · hop 1/4");
+
+    expect(fake.prompts.map((p) => p.agent)).toEqual(["build", "scout"]);
+    const scoutPrompt = fake.prompts[1];
+    expect(scoutPrompt.title).toBe("roster:scout:incidents");
+    expect(scoutPrompt.text).toContain("@build mentioned you in #incidents (hop 1 of 4)");
+
+    const sent = await request.post(`${API}/api/v1/messages`, {
+      data: { from: "scout", to: "jules", text: "Logs attached for Jules.", sessionId: scoutPrompt.sessionId },
+    });
+    expect(sent.ok()).toBeTruthy();
+    const after = (await (await request.get(`${API}/api/v1/channels/incidents/messages`)).json()) as Msg[];
+    expect(after.some((m) => m.text === "Logs attached for Jules.")).toBeTruthy();
+    const ship = (await (await request.get(`${API}/api/v1/channels/ship/messages`)).json()) as Msg[];
+    expect(ship.some((m) => m.text === "Logs attached for Jules.")).toBeFalsy();
+  } finally {
+    await fake.close();
+    await dropFakeModel(request);
+  }
+});

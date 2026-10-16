@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import type { Channel, RespondMode, Seat, SeatRoom, Team } from "../../data";
+import type { Channel, RespondMode, RoomLimits, Seat, SeatRoom, Team } from "../../data";
 import { api } from "../../lib/api";
 
 export const CONDUCTOR_ID = "channel";
-const DEFAULT_PER_MINUTE = 4;
+const LIMIT_DEFAULTS: Required<RoomLimits> = { implicitPerMinute: 4, maxHops: 4, maxBotWakesPerThread: 8 };
 
 const MODES: { id: RespondMode; label: string; hint: string }[] = [
   { id: "lead", label: "Lead replies", hint: "The lead answers un-mentioned messages. With no lead set, the next awake member does." },
@@ -51,7 +51,6 @@ export function RoomReplySettings({
 }) {
   const mode = channel.respond || "lead";
   const choices = leadChoices(channel, teams, roster);
-  const perMinute = channel.limits?.implicitPerMinute;
   const responder = roster.find((s) => s.id === channel.responderSeatId);
   return (
     <div className="room-reply-settings" data-testid="room-reply-settings">
@@ -94,27 +93,61 @@ export function RoomReplySettings({
         </p>
       )}
       {mode !== "quiet" && (
-        <label className="kv-label">
-          Replies per minute
-          <input
-            type="number"
-            min={1}
-            max={1000}
-            data-testid="room-rate"
-            key={`${channel.id}-rate-${perMinute ?? "default"}`}
-            defaultValue={perMinute ?? ""}
-            placeholder={String(DEFAULT_PER_MINUTE)}
-            onBlur={(e) => {
-              const raw = e.target.value.trim();
-              const next = raw ? Number(raw) : null;
-              if ((next ?? undefined) === perMinute) return;
-              if (next !== null && (!Number.isInteger(next) || next < 1)) return;
-              onPatch({ limits: { implicitPerMinute: next as number } });
-            }}
-          />
-        </label>
+        <LimitInput
+          channel={channel}
+          name="implicitPerMinute"
+          label="Replies per minute"
+          testId="room-rate"
+          onPatch={onPatch}
+        />
       )}
+      <LimitInput channel={channel} name="maxHops" label="Bot hops per thread" testId="room-max-hops" onPatch={onPatch} />
+      <LimitInput
+        channel={channel}
+        name="maxBotWakesPerThread"
+        label="Bot wakes per thread"
+        testId="room-max-bot-wakes"
+        onPatch={onPatch}
+      />
     </div>
+  );
+}
+
+/** Blank means the CORE default; the field saves on blur and ignores invalid input. */
+function LimitInput({
+  channel,
+  name,
+  label,
+  testId,
+  onPatch,
+}: {
+  channel: Channel;
+  name: keyof RoomLimits;
+  label: string;
+  testId: string;
+  onPatch: (body: Partial<Channel>) => void;
+}) {
+  const current = channel.limits?.[name];
+  return (
+    <label className="kv-label">
+      {label}
+      <input
+        type="number"
+        min={1}
+        max={1000}
+        data-testid={testId}
+        key={`${channel.id}-${name}-${current ?? "default"}`}
+        defaultValue={current ?? ""}
+        placeholder={String(LIMIT_DEFAULTS[name])}
+        onBlur={(e) => {
+          const raw = e.target.value.trim();
+          const next = raw ? Number(raw) : null;
+          if ((next ?? undefined) === current) return;
+          if (next !== null && (!Number.isInteger(next) || next < 1)) return;
+          onPatch({ limits: { [name]: next as number } });
+        }}
+      />
+    </label>
   );
 }
 
