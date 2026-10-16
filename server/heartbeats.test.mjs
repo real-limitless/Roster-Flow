@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { applyBudgetSideEffects } from "./budget.mjs";
-import { tickHeartbeats, heartbeatSkipReason } from "./heartbeats.mjs";
+import { tickHeartbeats, heartbeatPrompt, heartbeatSkipReason, unansweredMentions } from "./heartbeats.mjs";
 import { pauseSeat } from "./seats.mjs";
 import { emptyState, migrateState } from "./seed.mjs";
 
@@ -82,4 +82,25 @@ test("patch heartbeatMinutes 0 disables in one click", () => {
   withInbox(state);
   product.heartbeatMinutes = 0;
   assert.equal(tickHeartbeats(state, Date.now()).length, 0);
+});
+
+test("an @mention the seat never answered counts as heartbeat work", () => {
+  const state = migrateState(emptyState());
+  state.bus = [];
+  state.tasks = [];
+  state.inboxCursors = {};
+  const product = state.seats.find((s) => s.id === "product");
+  product.heartbeatMinutes = 5;
+  product.heartbeatLastAt = null;
+  const msg = (id, seatId, text, extra = {}) => ({ id, channel: "ship", who: seatId, kind: "human", seatId, text, time: "12:00", ...extra });
+  state.messages = [msg("h1", "maya", "@product can you check the brief?")];
+  assert.deepEqual(unansweredMentions(state, "product"), [{ channelId: "ship", messageId: "h1" }]);
+  assert.match(heartbeatPrompt(product, state), /Unanswered mentions: 1 \(in #ship\)/);
+  assert.equal(tickHeartbeats(state, Date.now()).map((d) => d.seatId).includes("product"), true);
+
+  state.messages.push(msg("h2", "product", "Checked, looks good.", { kind: "bot" }));
+  assert.deepEqual(unansweredMentions(state, "product"), []);
+  state.messages.push(msg("h3", "maya", "@product one more"), msg("h4", "system", "@product x", { system: true }));
+  state.roomSessions = { product: { ship: { sessionId: "s", cursor: "h3" } } };
+  assert.deepEqual(unansweredMentions(state, "product"), []);
 });

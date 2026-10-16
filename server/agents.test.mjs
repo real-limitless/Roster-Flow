@@ -113,3 +113,13 @@ test("teamAgentSeat is a primary OpenCode alias", () => {
   assert.equal(seat.seatType, "supervisor");
   assert.match(seat.instructions, /Supervisor/);
 });
+
+test("agent files cap tool steps: 4 for the conductor and supervisors, 8 for specialists", async () => {
+  const { agentSteps } = await import("./agents.mjs");
+  const base = { kind: "bot", role: "r", job: "j", tools: [], deny: [] };
+  assert.match(agentMarkdown({ ...base, id: "build", name: "B", seatType: "specialist" }), /\nsteps: 8\n/);
+  assert.match(agentMarkdown({ ...base, id: "eng-supervisor", name: "S", seatType: "supervisor" }), /\nsteps: 4\n/);
+  assert.equal(agentSteps({ id: "channel" }), 4);
+  assert.equal(agentSteps({ id: "x", steps: 12 }), 12);
+  assert.equal(agentSteps({ id: "x", steps: 0 }), 8);
+});
