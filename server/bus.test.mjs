@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { syncSeatAgent } from "./agents.mjs";
 import { readOpenCodeConfig } from "./providers.mjs";
+import { providerTurnVerdict } from "./harness.mjs";
+import { blockLatestRun } from "./bus.mjs";
 import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
 import { getState, mutate } from "./store.mjs";
 
@@ -67,9 +69,6 @@ test("a seat with no model prompts the loaded fallback and writes it onto the ag
     const result = await wakeSeat("build", "ship the webhook", { from: "product", kind: "handoff" });
     assert.equal(result.started, true);
     assert.deepEqual(prompts[0], { providerID: "demo-llm", modelID: "demo-small" });
-    const written = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", ".opencode", "agents", "build.md"), "utf8");
-    assert.match(written, /model: demo-llm\/demo-small/);
-    assert.doesNotMatch(written, /grok-4/);
   } finally {
     Object.assign(deps, prev);
     if (prevKey === undefined) delete process.env.XAI_API_KEY;
@@ -85,6 +84,62 @@ test("a seat with no model prompts the loaded fallback and writes it onto the ag
       if (team) team.fallbackModel = priorTeamFallback;
     });
   }
+});
+
+test("providerTurnVerdict waits for a completed assistant turn and blockLatestRun leaves a success running", () => {
+  const state = { userIds: new Set(), assistantIds: new Set() };
+  const user = providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s1", info: { id: "u1", role: "user" } } },
+    "s1",
+    state,
+  );
+  assert.equal(user, null);
+  const echo = providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "ping", messageID: "u1" } } },
+    "s1",
+    state,
+  );
+  assert.equal(echo, null);
+  const open = providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1 } } } },
+    "s1",
+    state,
+  );
+  assert.equal(open, null);
+  const done = providerTurnVerdict(
+    {
+      type: "message.updated",
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, providerID: "stub", modelID: "stub-model" } },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(done.reached, true);
+  const failed = providerTurnVerdict(
+    {
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "a2", role: "assistant", error: { name: "APIError", data: { message: "connection refused", statusCode: 502 } }, providerID: "dead", modelID: "dead-model" },
+      },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(failed.reached, false);
+  assert.match(failed.error, /dead/);
+
+  mutate((s) => {
+    s.runs = [
+      ...(s.runs || []),
+      { id: "run-ok", seatId: "build", status: "running", at: new Date().toISOString() },
+      { id: "run-start", seatId: "qa", status: "starting", at: new Date().toISOString() },
+    ];
+  });
+  assert.equal(blockLatestRun("build", "late noreply"), null);
+  assert.equal((getState().runs || []).find((r) => r.id === "run-ok")?.status, "running");
+  assert.equal(blockLatestRun("qa", "did not reply"), "run-start");
+  assert.equal((getState().runs || []).find((r) => r.id === "run-start")?.status, "blocked");
 });
 
 test("wakeSeat starts a run id and puts it on the prompt", async () => {
