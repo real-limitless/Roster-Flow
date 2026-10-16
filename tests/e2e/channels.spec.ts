@@ -329,3 +329,39 @@ test("team mode asks members, hides PASS, shows who is thinking, meters real tok
     await dropFakeModel(request);
   }
 });
+
+test("a supervisor delegates to a direct report with the task tool and the child's tokens land on that report", async ({ page, request }) => {
+  await resetApi(request);
+  await useFakeModel(request, ["eng-supervisor", "build"]);
+  const team = await request.patch(`${API}/api/v1/teams/eng`, { data: { defaultModel: "e2efake/m1", allowedModels: ["e2efake/m1"], fallbackModel: "e2efake/m1" } });
+  expect(team.ok()).toBeTruthy();
+  const child = { agent: "build", title: "Fix flaky webhook test", text: "Fixed the retry race.", tokens: { input: 1000, output: 200, reasoning: 100, cache: { read: 0, write: 0 } }, cost: 0.003 };
+  const fake = await startFakeOpenCode({
+    port: COMPANY_PORT,
+    providers: { e2efake: ["m1"] },
+    reply: (p) => (p.agent === "eng-supervisor" ? { text: "Build fixed the flaky webhook test.", children: [child] } : null),
+  });
+  try {
+    await page.goto("/app");
+    await page.getByTestId("team-eng").click();
+    await page.getByTestId("composer").fill("the webhook test is flaky again");
+    await page.getByTestId("send-message").click();
+    await expect(page.getByText("Build fixed the flaky webhook test.").first()).toBeVisible({ timeout: 20_000 });
+    const line = 'Eng Supervisor delegated to Eng.Build with task: "Fix flaky webhook test" (1,300 tokens).';
+    await expect(page.getByText(line).first()).toBeVisible({ timeout: 15_000 });
+
+    const room = (await (await request.get(`${API}/api/v1/channels/team-eng/messages`)).json()) as Array<Msg & { delegation?: { childSeatId: string } }>;
+    expect(room.filter((m) => m.delegation).map((m) => m.delegation?.childSeatId)).toEqual(["build"]);
+    expect(fake.prompts.map((p) => p.agent)).toEqual(["eng-supervisor"]);
+    expect(fake.prompts[0].text).toContain("task tool");
+    expect(fake.prompts[0].text).toMatch(/direct report: [^.]*build/);
+
+    type Row = { seatId: string; tokens: number; source: string; parentSeatId?: string; channelId?: string };
+    const rows = (await (await request.get(`${API}/api/v1/usage?channelId=team-eng`)).json()) as Row[] | { rows: Row[] };
+    const list = Array.isArray(rows) ? rows : rows.rows;
+    expect(list.filter((r) => r.source === "task").map((r) => [r.seatId, r.tokens, r.parentSeatId])).toEqual([["build", 1300, "eng-supervisor"]]);
+  } finally {
+    await fake.close();
+    await dropFakeModel(request);
+  }
+});
