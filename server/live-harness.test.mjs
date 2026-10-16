@@ -143,11 +143,83 @@ test("bad seats do not stop a stub seat or wiki-scribe from replying", { timeout
     const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
     assert.equal((state.runs || []).find((item) => item.id === valid.runId)?.status, "running");
     assert.equal((state.runs || []).find((item) => item.id === scribe.runId)?.status, "running");
-    const room = (state.messages || []).filter((m) => m.channel === "ship").map((m) => m.text).join("\n");
-    assert.match(room, /stub-reply-ok/);
+    const room = (state.messages || []).filter((m) => m.channel === "ship");
+    assert.ok(
+      room.some((m) => m.seatId === "wiki-scribe" && m.text.includes("stub-reply-ok")),
+      JSON.stringify({
+        scribe,
+        run: (state.runs || []).find((item) => item.id === scribe?.runId),
+        hits: stub.hits.length,
+      }),
+    );
+    assert.ok(!room.some((m) => m.seatId === "wiki-scribe" && /did not reply/.test(m.text)));
     const seen = stub.hits.slice(before).join("\n");
     assert.match(seen, /Valid|valid/);
     assert.match(stub.hits.join("\n"), /wiki-scribe|Wiki Scribe/);
+  } finally {
+    await core.stop();
+    await new Promise((resolve) => stub.server.close(resolve));
+  }
+});
+
+test("a seat hired after the serve is up reaches the stub and posts a reply", { timeout: 120000 }, async (t) => {
+  if (!existsSync(bin)) {
+    t.skip("opencode 1.19.x is not installed");
+    return;
+  }
+  const stub = await stubServer();
+  const core = await bootCore({
+    OPENCODE_BIN: bin,
+    OPENCODE_PORT: String(19000 + Math.floor(Math.random() * 2000)),
+    OPENCODE_SYSTEM_PORT: String(21000 + Math.floor(Math.random() * 2000)),
+    ROSTER_HARNESS_AUTOSTART: "1",
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_NAME: "Featherless",
+    ROSTER_PROVIDER_BASE_URL: `http://127.0.0.1:${stub.port}/v1`,
+    ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
+    ROSTER_PROVIDER_MODELS: "stub-model",
+    FEATHERLESS_API_KEY: "stub-key",
+    ROSTER_PROVIDER_TURN_MS: "30000",
+    XAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    GOOGLE_GENERATIVE_AI_API_KEY: "",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    let health;
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      health = await (await fetch(`${core.base}/api/v1/health`)).json();
+      if (health.harnessReady) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(health.harnessReady, true, JSON.stringify(health));
+    const hired = await fetch(`${core.base}/api/v1/seats`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Fresh", model: "featherless/stub-model", job: "Hired after boot." }),
+    });
+    const seat = await hired.json();
+    assert.equal(hired.status, 201, JSON.stringify(seat));
+    const before = stub.hits.length;
+    const res = await fetch(`${core.base}/api/v1/channels/ship/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "please @Fresh answer now", who: "You" }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 201, JSON.stringify(body));
+    const row = (body.wakeResults || []).find((item) => item.seat === seat.id);
+    assert.equal(row?.started, true, JSON.stringify(body.wakeResults));
+    assert.ok(stub.hits.length > before, "stub received no request");
+    const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    assert.equal((state.runs || []).find((item) => item.id === row.runId)?.status, "running");
+    const room = (state.messages || []).filter((m) => m.channel === "ship");
+    assert.ok(room.some((m) => m.seatId === seat.id && String(m.text).includes("stub-reply-ok")), room.map((m) => `${m.seatId}: ${m.text}`).join(" | "));
   } finally {
     await core.stop();
     await new Promise((resolve) => stub.server.close(resolve));

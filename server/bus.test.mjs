@@ -106,15 +106,21 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
     state,
   );
   assert.equal(open, null);
+  providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "stub-reply-ok", messageID: "a1" } } },
+    "s1",
+    state,
+  );
   const done = providerTurnVerdict(
     {
       type: "message.updated",
-      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, providerID: "stub", modelID: "stub-model" } },
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop", providerID: "stub", modelID: "stub-model" } },
     },
     "s1",
     state,
   );
   assert.equal(done.reached, true);
+  assert.equal(done.text, "stub-reply-ok");
   const failed = providerTurnVerdict(
     {
       type: "message.updated",
@@ -163,6 +169,30 @@ test("wakeSeat starts a run id and puts it on the prompt", async () => {
     const run = (getState().runs || []).find((r) => r.id === result.runId);
     assert.equal(run?.status, "running");
     assert.equal(run?.seatId, "build");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a followed room wake leaves the reply to the follow loop; an unfollowed one posts it", async () => {
+  const prev = { ...deps };
+  const channel = `posted-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_posted" });
+  deps.promptSession = async () => undefined;
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "Room reply." }), { cancel() {} });
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  const posted = () => getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.").length;
+  try {
+    const followed = await wakeSeat("build", "status?", { from: "you", kind: "mention-seat", channel, followed: true });
+    assert.equal(followed.started, true);
+    assert.equal(posted(), 0);
+    await wakeSeat("build", "status?", { from: "product", kind: "handoff", channel });
+    assert.equal(posted(), 1);
   } finally {
     Object.assign(deps, prev);
   }
