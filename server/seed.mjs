@@ -250,6 +250,7 @@ export function holdOrgSeed(state) {
 export function migrateOnboarding(state) {
   if (!Array.isArray(state.users)) state.users = [];
   if (!Array.isArray(state.authSessions)) state.authSessions = [];
+  if (!Array.isArray(state.apiTokens)) state.apiTokens = [];
   if (!state.onboarding || typeof state.onboarding !== "object") {
     state.onboarding = { ...defaultOnboarding };
     return state;
@@ -318,6 +319,7 @@ export function migrateCompanyLoop(state) {
   if (!Array.isArray(state.routines)) state.routines = [];
   if (!Array.isArray(state.routineRuns)) state.routineRuns = [];
   if (!Array.isArray(state.tasks)) state.tasks = [];
+  if (!Array.isArray(state.accessRequests)) state.accessRequests = [];
   if (holdOrgSeed(state)) return state;
   if (!state.goals.some((g) => g.id === "ship-train")) {
     state.goals.push(structuredClone(goals[0]));
@@ -414,6 +416,7 @@ export function migrateState(state) {
     };
   });
   migrateCompanyLoop(next);
+  if (!Array.isArray(next.jobs)) next.jobs = [];
   return next;
 }
 
@@ -429,6 +432,7 @@ function baseFields() {
     defaultModel: "",
     users: [],
     authSessions: [],
+    apiTokens: [],
     goals: [],
     approvals: [],
     inboxCursors: {},
@@ -436,6 +440,8 @@ function baseFields() {
     routines: [],
     routineRuns: [],
     tasks: [],
+    accessRequests: [],
+    jobs: [],
   };
 }
 

@@ -1,11 +1,37 @@
 import { createServer } from "node:http";
 import { getState, mutate, save, resetState, uid } from "./store.mjs";
 import { normalizeSeat, normalizeModelId } from "./seed.mjs";
-import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
+import {
+  ensure,
+  status as harnessStatus,
+  combinedStatus,
+  liveCombinedStatus,
+  listBoundSessions,
+  createSession,
+  promptSession,
+  listLiveModels,
+  harnessKindForSeat,
+  sessionKeyForKind,
+  whichOpenCode,
+  describeOpenCodeError,
+  restartForProviderChange,
+} from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
 import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
-import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
+import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
+import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
+import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
+import {
+  callbackSecretInfo,
+  deliverCallback,
+  getJob,
+  listJobs,
+  publishNewJob,
+  rotateCallbackSecret,
+  settleJob,
+  waitForJob,
+} from "./jobs.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
@@ -16,6 +42,7 @@ import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
 import { createTask, claimTask, completeTask, listTasks } from "./tasks.mjs";
+import { createAccessRequest, listAccessRequests } from "./access.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
@@ -38,6 +65,18 @@ function json(res, code, body) {
     "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
   res.end(data);
+}
+
+async function setupPayload(state, user) {
+  const live = await liveCombinedStatus();
+  const full = setupStatus(state, {
+    user,
+    binary: whichOpenCode(),
+    harness: live.harness,
+    providerKeys: hasProviderKey(),
+    dataWritable: isDataWritable(),
+  });
+  return user ? full : publicSetupStatus(full);
 }
 
 function fail(res, err) {
@@ -95,15 +134,49 @@ function messageText(body, extras) {
   return "";
 }
 
+function requestCaller(user, apiToken) {
+  return {
+    userId: user?.id || null,
+    seatId: user?.seatId || "you",
+    name: user?.name || null,
+    tokenId: apiToken?.token?.id || null,
+  };
+}
+
+function jobDeps() {
+  return { mutate, getState, postMessage, postBus, wakeSeat, deliverCallback };
+}
+
 function isPublicPath(method, pathname) {
   if (method === "GET" && pathname === "/api/v1/health") return true;
   if (method === "GET" && pathname === "/api/v1/setup/status") return true;
   if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
   if (method === "POST" && pathname === "/api/v1/setup/install") return true;
   if (method === "POST" && pathname === "/api/v1/auth/login") return true;
+  if (method === "POST" && pathname === "/api/v1/access") return true;
+  // Reachable without a session so a logged-out owner can present a password.
+  // When setupClosed(), startOver still requires an owner session or password.
+  if (method === "POST" && pathname === "/api/v1/setup/start-over") return true;
   return false;
 }
 
+try {
+  const seeded = await seedOwnerFromEnv(getState());
+  if (seeded.seeded) {
+    mutate(() => seeded.state);
+    console.log(`Owner ${seeded.user.email} seeded from env; setup is closed.`);
+  }
+  const tok = seedApiTokenFromEnv(getState());
+  if (tok.seeded) {
+    save();
+    console.log(`API token "${tok.record.name}" registered from ROSTER_API_TOKEN.`);
+  } else if (tok.reason === "no owner") {
+    console.log("ROSTER_API_TOKEN is set but no owner exists yet; it will register on the next boot after setup.");
+  }
+} catch (err) {
+  console.error(`Owner seed from env failed: ${err.message}`);
+  process.exit(1);
+}
 save();
 try {
   syncBotAgents(getState().seats, getState().teams);
@@ -127,42 +200,67 @@ const server = createServer(async (req, res) => {
     const method = req.method || "GET";
     if (tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
-    const user = userFromToken(getState(), token);
+    const apiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
+    const user = apiToken ? apiToken.user : userFromToken(getState(), token);
 
+    if (isApiToken(token) && !apiToken) {
+      json(res, 401, { error: "invalid, expired, or revoked API token" });
+      return;
+    }
     if (!skipOnboarding() && !isPublicPath(method, pathname) && !user) {
       json(res, 401, { error: "authentication required" });
       return;
     }
+    if (apiToken && !tokenAllows(apiToken.token, method, pathname)) {
+      json(res, 403, { error: "token scope does not allow this request" });
+      return;
+    }
+
+    if (pathname === "/api/v1/tokens" && method === "GET") {
+      json(res, 200, listApiTokens(getState()));
+      return;
+    }
+    if (pathname === "/api/v1/tokens" && method === "POST") {
+      const body = await readBody(req);
+      let out = null;
+      mutate((s) => {
+        out = createApiToken(s, {
+          name: body.name,
+          scopes: body.scopes,
+          expiresAt: body.expiresAt,
+          expiresInDays: body.expiresInDays,
+          userId: user?.id,
+        });
+      });
+      json(res, 201, out);
+      return;
+    }
+    const tokenOne = pathname.match(/^\/api\/v1\/tokens\/([^/]+)$/);
+    if (tokenOne && method === "DELETE") {
+      let out = null;
+      mutate((s) => {
+        out = revokeApiToken(s, decodeURIComponent(tokenOne[1]));
+      });
+      json(res, 200, out);
+      return;
+    }
 
     if (pathname === "/api/v1/setup/status" && method === "GET") {
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/install" && method === "POST") {
       mutate((s) => markInstallSeen(s));
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/first-user" && method === "POST") {
       const body = await readBody(req);
+      if (setupClosed(getState())) {
+        json(res, 409, { error: "setup is closed: an owner already exists" });
+        return;
+      }
+      requireBootstrapToken(req, body);
       const created = await addFirstUser(getState(), body);
       save();
       json(res, 201, { user: publicUser(created) });
@@ -171,16 +269,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/setup/harness" && method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       mutate((s) => markHarnessStep(s, { skipped: Boolean(body.skipped) }));
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/complete" && method === "POST") {
@@ -195,7 +284,36 @@ const server = createServer(async (req, res) => {
       } catch {
         /* agent files are best-effort */
       }
-      json(res, 200, { ...setupStatus(next, { user, binary: whichOpenCode(), providerKeys: hasProviderKey(), dataWritable: isDataWritable() }), state: publicState(next) });
+      json(res, 200, { ...(await setupPayload(next, user)), state: publicState(next) });
+      return;
+    }
+    if (pathname === "/api/v1/setup/start-over" && method === "POST") {
+      const body = await readBody(req);
+      const seen = getState();
+      // Bearer identity only (login session, or an API token userFromToken resolves). Never body.user.
+      // Non-admin API tokens are already rejected above: /setup/* requires the admin scope.
+      const sessionUser = userFromToken(seen, token);
+      const next = await startOver(seen, {
+        email: body.email,
+        confirm: body.confirm,
+        password: body.password,
+        user: sessionUser,
+        req,
+        body,
+      });
+      mutate((s) => {
+        const sameOwner =
+          setupClosed(s) === setupClosed(seen) &&
+          (s.users?.[0]?.id || "") === (seen.users?.[0]?.id || "") &&
+          (s.users?.[0]?.passwordHash || "") === (seen.users?.[0]?.passwordHash || "");
+        if (!sameOwner) {
+          const err = new Error("owner changed; retry start-over");
+          err.status = 409;
+          throw err;
+        }
+        return next;
+      });
+      json(res, 200, await setupPayload(next, null));
       return;
     }
     if (pathname === "/api/v1/auth/login" && method === "POST") {
@@ -215,10 +333,24 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/v1/access" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createAccessRequest(s, body);
+      });
+      json(res, created.updated ? 200 : 201, created);
+      return;
+    }
+    if (pathname === "/api/v1/access" && method === "GET") {
+      json(res, 200, { requests: listAccessRequests(getState()) });
+      return;
+    }
+
     if (pathname === "/api/v1/health" && method === "GET") {
       json(res, 200, {
         ok: true,
-        ...combinedStatus(),
+        ...(await liveCombinedStatus()),
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
       });
@@ -829,8 +961,80 @@ const server = createServer(async (req, res) => {
       postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
+        ...(body.jobId ? { jobId: String(body.jobId) } : {}),
       });
       json(res, 201, postBus({ ...body, text }));
+      return;
+    }
+    if (pathname === "/api/v1/jobs" && method === "GET") {
+      json(res, 200, listJobs(getState(), {
+        status: url.searchParams.get("status") || undefined,
+        target: url.searchParams.get("target") || undefined,
+        assignee: url.searchParams.get("assignee") || undefined,
+      }));
+      return;
+    }
+    if (pathname === "/api/v1/jobs" && method === "POST") {
+      const body = await readBody(req);
+      const { job } = await publishNewJob(body, requestCaller(user, apiToken), jobDeps());
+      json(res, 201, job);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret" && method === "GET") {
+      let info;
+      mutate((s) => {
+        info = callbackSecretInfo(s);
+      });
+      json(res, 200, info);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret/rotate" && method === "POST") {
+      let info;
+      mutate((s) => {
+        info = rotateCallbackSecret(s);
+      });
+      json(res, 200, info);
+      return;
+    }
+    const jobWait = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/wait$/);
+    if (jobWait && method === "GET") {
+      const id = decodeURIComponent(jobWait[1]);
+      const out = await waitForJob(id, {
+        timeout: url.searchParams.get("timeout"),
+        since: url.searchParams.get("since"),
+      }, jobDeps());
+      if (!out) {
+        json(res, 404, { error: "job not found" });
+        return;
+      }
+      json(res, 200, out);
+      return;
+    }
+    const jobCancel = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/cancel$/);
+    if (jobCancel && method === "POST") {
+      const id = decodeURIComponent(jobCancel[1]);
+      const body = await readBody(req).catch(() => ({}));
+      const job = await settleJob(id, "cancel", body, requestCaller(user, apiToken), jobDeps());
+      json(res, 200, job);
+      return;
+    }
+    const jobComplete = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/complete$/);
+    if (jobComplete && method === "POST") {
+      const id = decodeURIComponent(jobComplete[1]);
+      const body = await readBody(req);
+      const job = await settleJob(id, "complete", body, requestCaller(user, apiToken), jobDeps());
+      json(res, 200, job);
+      return;
+    }
+    const jobOne = pathname.match(/^\/api\/v1\/jobs\/([^/]+)$/);
+    if (jobOne && method === "GET") {
+      const id = decodeURIComponent(jobOne[1]);
+      const job = getJob(getState(), id);
+      if (!job) {
+        json(res, 404, { error: "job not found" });
+        return;
+      }
+      json(res, 200, job);
       return;
     }
     if (pathname === "/api/v1/block-actions" && method === "POST") {
@@ -872,7 +1076,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/harness" && method === "GET") {
-      json(res, 200, combinedStatus());
+      json(res, 200, await liveCombinedStatus());
       return;
     }
     if (pathname === "/api/v1/harness/ensure" && method === "POST") {
@@ -916,7 +1120,14 @@ const server = createServer(async (req, res) => {
     const promptPath = pathname.match(/^\/api\/v1\/harness\/sessions\/([^/]+)\/prompt$/);
     if (promptPath && method === "POST") {
       const body = await readBody(req);
-      json(res, 200, await promptSession(decodeURIComponent(promptPath[1]), body));
+      try {
+        json(res, 200, await promptSession(decodeURIComponent(promptPath[1]), body));
+      } catch (err) {
+        if (!err.status || err.status === 404) throw err;
+        const model = body.model?.providerID ? `${body.model.providerID}/${body.model.modelID || ""}` : "";
+        const d = describeOpenCodeError(err, { model });
+        json(res, d.status, { error: d.message, code: d.code });
+      }
       return;
     }
     if (pathname === "/api/v1/providers" && method === "GET") {
@@ -924,18 +1135,24 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/providers" && method === "PUT") {
-      json(res, 200, upsertProvider(await readBody(req)));
+      const out = upsertProvider(await readBody(req));
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     const authP = pathname.match(/^\/api\/v1\/providers\/([^/]+)\/auth$/);
     if (authP && method === "POST") {
       const body = await readBody(req);
-      json(res, 200, setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key));
+      const out = setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key);
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     const delP = pathname.match(/^\/api\/v1\/providers\/([^/]+)$/);
     if (delP && method === "DELETE") {
-      json(res, 200, removeProvider(decodeURIComponent(delP[1])));
+      const out = removeProvider(decodeURIComponent(delP[1]));
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     if (pathname === "/api/v1/models" && method === "GET") {
@@ -996,9 +1213,19 @@ function startRoutineTicker() {
     }
   }, ROUTINE_TICK_MS);
 }
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      `ROSTER_API_PORT ${PORT} is already in use on ${HOST}. Stop the other process or set a different ROSTER_API_PORT.`,
+    );
+  } else {
+    console.error(err);
+  }
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
-  console.log(`Setup: ${publicUrl()}/setup`);
+  if (!setupClosed(getState())) console.log(`Setup: ${publicUrl()}/setup`);
   startRoutineTicker();
 });

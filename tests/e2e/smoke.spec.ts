@@ -3,6 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Staff an org of agents");
+  await expect(page.getByText("SSO ready")).toHaveCount(0);
+  await expect(page.getByText("Local owner account")).toBeVisible();
 });
 
 test("workspace room send and block kit seed", async ({ page, request }) => {
@@ -216,6 +218,15 @@ test("org chart connectors survive narrow viewport", async ({ page }) => {
   await expect(page.getByTestId("seat-you")).toBeVisible();
 });
 
+test("family mcp-flow is not up when the ping is Roster HTML", async ({ page }) => {
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-family").click();
+  await expect(page.getByTestId("settings-family")).toBeVisible();
+  const status = page.getByTestId("family-mcp-status");
+  await expect(status).toBeVisible();
+  await expect(status).not.toContainText(" · up ·");
+});
+
 test("settings writes a provider through the API", async ({ page, request }) => {
   await page.goto("/app/settings");
   await expect(page.getByTestId("settings-providers")).toBeVisible();
@@ -417,9 +428,16 @@ test("related pages still render chart/room", async ({ page }) => {
   await page.goto("/org");
   await expect(page.getByRole("heading", { name: /org chart is the control plane/i })).toBeVisible();
   await expect(page.getByTestId("org-chart")).toBeVisible();
+  await expect(page.getByText(/yaml export is not shipped/i)).toBeVisible();
+  await expect(page.getByText("multi-team.yaml")).toHaveCount(0);
   await page.goto("/product");
   await expect(page.getByRole("heading", { name: /the room, the org, the harness/i })).toBeVisible();
+  await expect(page.getByTestId("clone-note")).toContainText("git checkout DEVELOPMENT");
+  await expect(page.getByTestId("clone-note")).not.toContainText("default is CORE");
+  await expect(page.getByText(/huddles/i)).toHaveCount(0);
   await page.goto("/orchestration");
+  await expect(page.getByText("send_message")).toBeVisible();
+  await expect(page.getByText("share_memory")).toHaveCount(0);
   await expect(page.getByText("roster_task_claim")).toBeVisible();
   await expect(page.getByText("depend_on")).toBeVisible();
 });
@@ -456,6 +474,25 @@ test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
   await page.getByTestId("inbox-mark-read").click();
   await expect(page.getByTestId("seat-inbox")).toContainText("Caught up");
   await expect(page.getByTestId("inbox-count-build")).toHaveCount(0);
+});
+
+test("access form persists on CORE and Settings lists it", async ({ page, request }) => {
+  await resetApi(request);
+  const email = `playwright-${Date.now()}@example.com`;
+  await page.goto("/access");
+  await page.getByLabel("Name").fill("Playwright Visitor");
+  await page.getByLabel("Work email").fill(email);
+  await page.getByLabel("Company").fill("Helix");
+  await page.getByRole("button", { name: "Request access" }).click();
+  await expect(page.getByTestId("access-success")).toBeVisible();
+  const listed = await request.get("http://127.0.0.1:8790/api/v1/access");
+  expect(listed.ok()).toBeTruthy();
+  const body = (await listed.json()) as { requests: Array<{ email: string; company: string }> };
+  expect(body.requests.some((row) => row.email === email && row.company === "Helix")).toBeTruthy();
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-access").click();
+  await expect(page.getByTestId("settings-access")).toBeVisible();
+  await expect(page.getByText(email)).toBeVisible();
 });
 
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
