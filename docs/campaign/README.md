@@ -27,7 +27,7 @@ cd docs/campaign
 ./capture.sh
 ```
 
-Requires the marketing + workspace client on `BASE_URL` (default `http://127.0.0.1:5173`). Workspace frames expect `ROSTER_SKIP_ONBOARDING=1`. Setup and login frames start a temporary CORE API so they do not rewrite `.roster-flow`. Uses the repo Playwright install.
+Requires the marketing + workspace client on `BASE_URL` (default `http://127.0.0.1:${ROSTER_WEB_PORT:-5175}`). Workspace frames expect `ROSTER_SKIP_ONBOARDING=1`. Setup and login frames start a temporary CORE API so they do not rewrite `.roster-flow`. Uses the repo Playwright install.
 
 ## Story
 

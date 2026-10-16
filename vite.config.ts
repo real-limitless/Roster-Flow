@@ -1,11 +1,13 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const webPort = Number(process.env.ROSTER_WEB_PORT || 5175);
+
 export default defineConfig({
   plugins: [react()],
   server: {
     host: "0.0.0.0",
-    port: 5173,
+    port: webPort,
     strictPort: true,
     proxy: {
       "/api": {
@@ -17,7 +19,7 @@ export default defineConfig({
   },
   preview: {
     host: "0.0.0.0",
-    port: 5173,
+    port: webPort,
     strictPort: true,
   },
 });

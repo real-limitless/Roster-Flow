@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from "
 import { dirname, join } from "node:path";
 import { normalizeModelId } from "./seed.mjs";
 import { opencodeDir, systemWorkspace } from "./paths.mjs";
-import { readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
+import { normalizeOpenCodeConfig, readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
 
 const agentsDir = join(opencodeDir, "agents");
 const systemRoot = systemWorkspace;
@@ -26,19 +26,30 @@ function yamlEscape(value) {
   return s;
 }
 
-function permissionsFor(seat) {
+/** OpenCode `permission` object (https://opencode.ai/docs/permissions). */
+export function permissionFor(seat) {
   const deny = new Set(seat.deny || []);
-  const rules = [];
-  if (deny.has("edit")) rules.push({ action: "edit", resource: "*", effect: "deny" });
-  if (deny.has("bash")) rules.push({ action: "shell", resource: "*", effect: "deny" });
-  if (deny.has("deploy") || deny.has("skip-confirm")) {
-    rules.push({ action: "shell", resource: "deploy *", effect: "deny" });
+  const permission = {};
+  if (deny.has("edit") || seat.seatType === "supervisor") permission.edit = "deny";
+  if (deny.has("bash") || seat.seatType === "supervisor") permission.bash = "deny";
+  else if (deny.has("deploy") || deny.has("skip-confirm")) {
+    // OpenCode uses the last matching bash rule. The catch-all allow must come
+    // before the deploy deny, or `deploy *` is allowed.
+    permission.bash = { "*": "allow", "deploy *": "deny" };
   }
-  if (seat.seatType === "supervisor") {
-    rules.push({ action: "edit", resource: "*", effect: "deny" });
-    rules.push({ action: "shell", resource: "*", effect: "deny" });
+  return permission;
+}
+
+function permissionYaml(permission) {
+  const lines = [];
+  for (const [k, v] of Object.entries(permission)) {
+    if (typeof v === "string") lines.push(`  ${k}: ${v}`);
+    else {
+      lines.push(`  ${k}:`);
+      for (const [pat, act] of Object.entries(v)) lines.push(`    ${JSON.stringify(pat)}: ${act}`);
+    }
   }
-  return rules;
+  return lines;
 }
 
 function agentBody(seat) {
@@ -53,16 +64,13 @@ function agentBody(seat) {
 export function agentMarkdown(seat) {
   const mode = seat.seatType === "supervisor" ? "primary" : "all";
   const model = normalizeModelId(seat.model) || "xai/grok-4";
-  const perms = permissionsFor(seat)
-    .map((p) => `  - { action: "${p.action}", resource: "${p.resource}", effect: "${p.effect}" }`)
-    .join("\n");
+  const perm = permissionFor(seat);
   return [
     "---",
     `description: ${yamlEscape(seat.job || seat.name)}`,
     `mode: ${mode}`,
     `model: ${yamlEscape(model)}`,
-    "permissions:",
-    perms || '  - { action: "read", resource: "*", effect: "allow" }',
+    ...(Object.keys(perm).length ? ["permission:", ...permissionYaml(perm)] : []),
     "---",
     agentBody(seat).trim(),
     "",
@@ -74,7 +82,8 @@ function agentConfigEntry(seat) {
     description: seat.job || seat.name,
     mode: seat.seatType === "supervisor" ? "primary" : "all",
     model: normalizeModelId(seat.model) || "xai/grok-4",
-    system: agentBody(seat).trim(),
+    prompt: agentBody(seat).trim(),
+    ...(Object.keys(permissionFor(seat)).length ? { permission: permissionFor(seat) } : {}),
   };
 }
 
@@ -85,16 +94,15 @@ function writeSystemOpenCodeConfig(seat) {
     $schema: "https://opencode.ai/config.json",
     plugin: ["roster-flow-opencode"],
     provider: {},
-    providers: {},
-    agents: {},
+    agent: {},
   });
   cfg.plugin = ["roster-flow-opencode"];
   cfg.provider = company.provider || cfg.provider || {};
-  cfg.providers = company.providers || cfg.providers || {};
-  cfg.agents = cfg.agents || {};
-  if (seat) cfg.agents[seat.id] = agentConfigEntry(seat);
-  writeFileSync(systemOcPath, JSON.stringify(cfg, null, 2));
-  return cfg;
+  const clean = normalizeOpenCodeConfig(cfg);
+  clean.agent = clean.agent || {};
+  if (seat) clean.agent[seat.id] = agentConfigEntry(seat);
+  writeFileSync(systemOcPath, JSON.stringify(clean, null, 2));
+  return clean;
 }
 
 export function syncSeatAgent(seat) {
@@ -110,8 +118,9 @@ export function syncSeatAgent(seat) {
   const file = join(agentsDir, `${seat.id}.md`);
   writeFileSync(file, agentMarkdown(seat));
   const cfg = readOpenCodeConfig();
-  cfg.agents = cfg.agents || {};
-  cfg.agents[seat.id] = agentConfigEntry(seat);
+  cfg.agent = { ...(cfg.agents || {}), ...(cfg.agent || {}) };
+  delete cfg.agents;
+  cfg.agent[seat.id] = agentConfigEntry(seat);
   writeOpenCodeConfig(cfg);
   return file;
 }
@@ -122,10 +131,11 @@ export function removeSeatAgent(id) {
   }
   const cfg = readOpenCodeConfig();
   if (cfg.agents) delete cfg.agents[id];
+  if (cfg.agent) delete cfg.agent[id];
   writeOpenCodeConfig(cfg);
   if (existsSync(systemOcPath)) {
-    const sys = readJson(systemOcPath, { agents: {} });
-    if (sys.agents) delete sys.agents[id];
+    const sys = normalizeOpenCodeConfig(readJson(systemOcPath, { agent: {} }));
+    if (sys.agent) delete sys.agent[id];
     writeFileSync(systemOcPath, JSON.stringify(sys, null, 2));
   }
 }
@@ -173,8 +183,9 @@ export function syncBotAgents(seats = [], teams = []) {
       const leftover = join(agentsDir, `${seat.id}.md`);
       if (existsSync(leftover)) unlinkSync(leftover);
       const cfg = readOpenCodeConfig();
-      if (cfg.agents?.[seat.id]) {
-        delete cfg.agents[seat.id];
+      if (cfg.agents?.[seat.id] || cfg.agent?.[seat.id]) {
+        if (cfg.agents) delete cfg.agents[seat.id];
+        if (cfg.agent) delete cfg.agent[seat.id];
         writeOpenCodeConfig(cfg);
       }
     }

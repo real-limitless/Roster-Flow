@@ -3,11 +3,13 @@ import { Link } from "react-router-dom";
 import { Logo } from "../components/Logo";
 import { seats as seedSeats, type Seat } from "../data";
 import { api } from "../lib/api";
+import { AccessPanel } from "./settings/AccessPanel";
 import { AgentsPanel } from "./settings/AgentsPanel";
 import { FamilyPanel } from "./settings/FamilyPanel";
 import { HarnessPanel } from "./settings/HarnessPanel";
 import { ProvidersPanel } from "./settings/ProvidersPanel";
 import { RoutinesPanel } from "./settings/RoutinesPanel";
+import { TokensPanel } from "./settings/TokensPanel";
 import type { HarnessStatus, Provider, SettingsPane } from "./settings/types";
 
 const PANES: Array<[SettingsPane, string]> = [
@@ -15,7 +17,9 @@ const PANES: Array<[SettingsPane, string]> = [
   ["harness", "Harness"],
   ["agents", "Agents"],
   ["routines", "Routines"],
+  ["access", "Access"],
   ["family", "Family"],
+  ["tokens", "API tokens"],
 ];
 
 export function Settings() {
@@ -114,7 +118,9 @@ export function Settings() {
           )}
           {pane === "agents" && <AgentsPanel seats={seats} />}
           {pane === "routines" && <RoutinesPanel seats={seats} onError={setErr} />}
+          {pane === "access" && <AccessPanel onError={setErr} />}
           {pane === "family" && <FamilyPanel />}
+          {pane === "tokens" && <TokensPanel onError={setErr} />}
         </main>
       </div>
     </div>
