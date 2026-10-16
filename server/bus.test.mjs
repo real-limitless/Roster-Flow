@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { syncSeatAgent } from "./agents.mjs";
 import { deps, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
 import { getState, mutate } from "./store.mjs";
 
@@ -26,6 +30,60 @@ test("promptBody asks an un-mentioned responder for a plain-text reply in that r
   assert.match(mentioned, /Reply in plain text\. Roster-flow posts your text to #ship\./);
   const mail = promptBody(seat, "channel", "hi", { from: "build", kind: "send_message" }, null).parts[0].text;
   assert.doesNotMatch(mail, /Reply in plain text/);
+});
+
+test("a seat with no model prompts the loaded fallback and writes it onto the agent", async () => {
+  const prompts = [];
+  const prev = { ...deps };
+  const prevKey = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = "test-key";
+  let priorModel;
+  let priorFallback;
+  let priorTeamFallback;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_fallback" });
+  deps.loadedModels = async () => [{ providerID: "demo-llm", modelID: "demo-small" }];
+  deps.promptSession = async (_id, body) => {
+    prompts.push(body.model);
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    const team = (s.teams || []).find((t) => t.id === "eng");
+    if (team) {
+      priorTeamFallback = team.fallbackModel;
+      team.fallbackModel = "";
+    }
+    if (seat) {
+      seat.status = "idle";
+      priorModel = seat.model;
+      priorFallback = seat.fallbackModel;
+      seat.model = "";
+      seat.fallbackModel = "";
+    }
+  });
+  try {
+    const result = await wakeSeat("build", "ship the webhook", { from: "product", kind: "handoff" });
+    assert.equal(result.started, true);
+    assert.deepEqual(prompts[0], { providerID: "demo-llm", modelID: "demo-small" });
+    const written = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", ".opencode", "agents", "build.md"), "utf8");
+    assert.match(written, /model: demo-llm\/demo-small/);
+    assert.doesNotMatch(written, /grok-4/);
+  } finally {
+    Object.assign(deps, prev);
+    if (prevKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = prevKey;
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      const team = (s.teams || []).find((t) => t.id === "eng");
+      if (seat) {
+        seat.model = priorModel;
+        seat.fallbackModel = priorFallback;
+        syncSeatAgent(seat);
+      }
+      if (team) team.fallbackModel = priorTeamFallback;
+    });
+  }
 });
 
 test("wakeSeat starts a run id and puts it on the prompt", async () => {

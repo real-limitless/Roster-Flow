@@ -61,15 +61,19 @@ function agentBody(seat) {
   return `Persona: ${persona}\nInstructions: ${instructions}${project}${knowledge}${skills}\n`;
 }
 
+function agentModel(seat) {
+  return normalizeModelId(seat?.model) || "";
+}
+
 export function agentMarkdown(seat) {
   const mode = seat.seatType === "supervisor" ? "primary" : "all";
-  const model = normalizeModelId(seat.model) || "xai/grok-4";
+  const model = agentModel(seat);
   const perm = permissionFor(seat);
   return [
     "---",
     `description: ${yamlEscape(seat.job || seat.name)}`,
     `mode: ${mode}`,
-    `model: ${yamlEscape(model)}`,
+    ...(model ? [`model: ${yamlEscape(model)}`] : []),
     ...(Object.keys(perm).length ? ["permission:", ...permissionYaml(perm)] : []),
     "---",
     agentBody(seat).trim(),
@@ -78,10 +82,11 @@ export function agentMarkdown(seat) {
 }
 
 function agentConfigEntry(seat) {
+  const model = agentModel(seat);
   return {
     description: seat.job || seat.name,
     mode: seat.seatType === "supervisor" ? "primary" : "all",
-    model: normalizeModelId(seat.model) || "xai/grok-4",
+    ...(model ? { model } : {}),
     prompt: agentBody(seat).trim(),
     ...(Object.keys(permissionFor(seat)).length ? { permission: permissionFor(seat) } : {}),
   };

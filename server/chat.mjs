@@ -291,7 +291,10 @@ async function wakeTarget(channelId, text, from, target) {
       detail: { model, hint: plan.hint, fallback: plan.fallback },
     });
   }
-  if (!plan.ok) return { seat: seatId, error: plan.hint, nokey: true, runId: null, started: false };
+  if (!plan.ok) {
+    const woke = await deps.wakeSeat(target.to, text, meta);
+    return { ...woke, seat: woke?.seat || seatId, error: woke?.error || plan.hint, nokey: true, runId: woke?.runId || null, started: false };
+  }
   emit({
     scope: "chat",
     step: "seat.wake",
@@ -333,7 +336,7 @@ async function startWakes(channelId, text, from, targets) {
 /** Woken OpenCode seats and the session each wake ran in. */
 function repliers(results) {
   const woken = results
-    .filter((w) => w && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human && !w.guest && w.started !== false)))
+    .filter((w) => w && w.started !== false && !w.nokey && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human && !w.guest)))
     .filter((w) => w.seat && isOpenCodeAdapter(seatOf(w.seat) || {}));
   return {
     seats: woken.map((w) => w.seat),

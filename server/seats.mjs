@@ -1,7 +1,24 @@
 import { applyBudgetSideEffects, budgetFieldsFromBody, rolloverSeatBudget, seatOverBudget } from "./budget.mjs";
+import { knownLoadedModels } from "./harness.mjs";
 import { normalizeModelId, normalizeSeat, slugify } from "./seed.mjs";
 import { attachSeatToTeam } from "./teams.mjs";
 import { removeSeatAgent } from "./agents.mjs";
+
+function firstLoadedModel() {
+  const loaded = knownLoadedModels("company");
+  const hit = Array.isArray(loaded) ? loaded.find((m) => m?.providerID && m?.modelID) : null;
+  return hit ? `${hit.providerID}/${hit.modelID}` : undefined;
+}
+
+/** Empty `model` means unassigned. A team default applies only when the field was omitted. */
+function hiredModel(body, team, kind) {
+  if (kind === "human") return undefined;
+  const explicit = normalizeModelId(body.model);
+  if (explicit) return explicit;
+  const blank = body.model === "" || body.model === null;
+  if (!blank && team?.defaultModel) return normalizeModelId(team.defaultModel) || undefined;
+  return firstLoadedModel();
+}
 
 const PROTECTED = new Set(["you", "mcp-guest"]);
 
@@ -43,7 +60,7 @@ export function hireSeat(state, body = {}) {
     projectId,
     tools: body.tools || (kind === "human" ? ["approve"] : ["read"]),
     deny: body.deny || (kind === "bot" ? ["deploy"] : []),
-    model: kind === "human" ? undefined : normalizeModelId(body.model) || team?.defaultModel || "xai/grok-4",
+    model: hiredModel(body, team, kind),
     fallbackModel: kind === "human" ? undefined : normalizeModelId(body.fallbackModel) || team?.fallbackModel,
     persona: body.persona,
     instructions: body.instructions,
