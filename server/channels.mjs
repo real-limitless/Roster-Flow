@@ -1,6 +1,7 @@
 import { slugify } from "./seed.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
 import { normalizeLimits, normalizeRespond, roomLimits, teamHomeRoom, teamRoomId } from "./room-config.mjs";
+import { nextUtcMidnight, roomSpentToday } from "./budget.mjs";
 
 export { RESPOND_MODES, ROOM_LIMIT_DEFAULTS, roomLimits, teamRoomId } from "./room-config.mjs";
 
@@ -136,8 +137,23 @@ function applyChannelPatch(state, ch, body) {
  * The seat that answers un-mentioned messages under the room's mode, before
  * pause / model checks. Null for quiet rooms.
  */
+/** The room's daily token budget today, or null when it has none. Over budget, the room is quiet until UTC midnight. */
+export function roomBudget(channel, state = {}, now = Date.now()) {
+  const tokensPerDay = roomLimits(channel).tokensPerDay;
+  if (!tokensPerDay || !channel?.id) return null;
+  const spentToday = roomSpentToday(state, channel.id, now);
+  const over = spentToday >= tokensPerDay;
+  return { tokensPerDay, spentToday, over, quietUntil: over ? nextUtcMidnight(now) : null };
+}
+
+/** The mode in effect now: the stored mode, or `quiet` while the room is over its daily budget. */
+export function effectiveRespond(channel, state = {}, now = Date.now()) {
+  if (roomBudget(channel, state, now)?.over) return "quiet";
+  return normalizeRespond(channel?.respond);
+}
+
 export function roomResponder(channel, state = {}) {
-  const mode = normalizeRespond(channel?.respond);
+  const mode = effectiveRespond(channel, state);
   if (mode === "quiet") return null;
   if (mode === "conductor") return CONDUCTOR_ID;
   return responderCandidates(channel, state)[0] || null;
@@ -172,6 +188,7 @@ export function publicChannel(channel, state = {}) {
     respond: normalizeRespond(channel.respond),
     limits: normalizeLimits(channel.limits),
     responderSeatId: roomResponder(channel, state),
+    budget: roomBudget(channel, state),
   };
 }
 

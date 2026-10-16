@@ -1,10 +1,15 @@
-export const RESPOND_MODES = ["lead", "conductor", "quiet"];
+export const RESPOND_MODES = ["lead", "team", "conductor", "quiet"];
 
 export const ROOM_LIMIT_DEFAULTS = Object.freeze({
   implicitPerMinute: 4,
+  fanout: 3,
   maxHops: 4,
   maxBotWakesPerThread: 8,
+  /** Null: no daily room budget. */
+  tokensPerDay: null,
 });
+
+const LIMIT_MAX = { fanout: 10, tokensPerDay: 1_000_000_000 };
 
 export function badRequest(message) {
   const err = new Error(message);
@@ -34,8 +39,9 @@ export function normalizeLimits(value, { strict = false } = {}) {
     const raw = value[key];
     if (raw === null || raw === "") continue;
     const n = Number(raw);
-    if (Number.isInteger(n) && n > 0 && n <= 1000) out[key] = n;
-    else if (strict) throw badRequest(`limits.${key} must be a whole number from 1 to 1000`);
+    const max = LIMIT_MAX[key] || 1000;
+    if (Number.isInteger(n) && n > 0 && n <= max) out[key] = n;
+    else if (strict) throw badRequest(`limits.${key} must be a whole number from 1 to ${max}`);
   }
   return out;
 }
