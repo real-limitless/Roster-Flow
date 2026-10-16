@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { apiHost, apiPort, opencodeHostname, publicUrl, rosterApiUrl } from "./config.mjs";
+import { apiHost, apiPort, opencodeHostname, publicUrl, rosterApiUrl, webPort } from "./config.mjs";
 
 test("api bind defaults stay loopback for host standup", () => {
   const prevHost = process.env.ROSTER_API_HOST;
@@ -13,10 +13,12 @@ test("api bind defaults stay loopback for host standup", () => {
   delete process.env.ROSTER_PUBLIC_URL;
   delete process.env.ROSTER_API;
   delete process.env.OPENCODE_HOSTNAME;
+  const prevWeb = process.env.ROSTER_WEB_PORT;
+  delete process.env.ROSTER_WEB_PORT;
   try {
     assert.equal(apiHost(), "127.0.0.1");
     assert.equal(apiPort(), 8790);
-    assert.equal(publicUrl(), "http://127.0.0.1:5173");
+    assert.equal(publicUrl(), "http://127.0.0.1:5175");
     assert.equal(rosterApiUrl(), "http://127.0.0.1:8790");
     assert.equal(opencodeHostname(), "127.0.0.1");
   } finally {
@@ -30,6 +32,8 @@ test("api bind defaults stay loopback for host standup", () => {
     else process.env.ROSTER_API = prevApi;
     if (prevOc === undefined) delete process.env.OPENCODE_HOSTNAME;
     else process.env.OPENCODE_HOSTNAME = prevOc;
+    if (prevWeb === undefined) delete process.env.ROSTER_WEB_PORT;
+    else process.env.ROSTER_WEB_PORT = prevWeb;
   }
 });
 
@@ -46,5 +50,36 @@ test("container env can bind CORE on all interfaces", () => {
     else process.env.ROSTER_API_HOST = prevHost;
     if (prevPublic === undefined) delete process.env.ROSTER_PUBLIC_URL;
     else process.env.ROSTER_PUBLIC_URL = prevPublic;
+  }
+});
+
+test("ROSTER_WEB_PORT drives the default public URL", () => {
+  const prevWeb = process.env.ROSTER_WEB_PORT;
+  const prevPublic = process.env.ROSTER_PUBLIC_URL;
+  delete process.env.ROSTER_PUBLIC_URL;
+  try {
+    delete process.env.ROSTER_WEB_PORT;
+    assert.equal(webPort(), 5175);
+    process.env.ROSTER_WEB_PORT = "5199";
+    assert.equal(webPort(), 5199);
+    assert.equal(publicUrl(), "http://127.0.0.1:5199");
+    process.env.ROSTER_PUBLIC_URL = "https://roster.example";
+    assert.equal(publicUrl(), "https://roster.example");
+  } finally {
+    if (prevWeb === undefined) delete process.env.ROSTER_WEB_PORT;
+    else process.env.ROSTER_WEB_PORT = prevWeb;
+    if (prevPublic === undefined) delete process.env.ROSTER_PUBLIC_URL;
+    else process.env.ROSTER_PUBLIC_URL = prevPublic;
+  }
+});
+
+test("API port never defaults to mcp-flow's 8787", () => {
+  const prev = process.env.ROSTER_API_PORT;
+  delete process.env.ROSTER_API_PORT;
+  try {
+    assert.notEqual(apiPort(), 8787);
+    assert.equal(apiPort(), 8790);
+  } finally {
+    if (prev !== undefined) process.env.ROSTER_API_PORT = prev;
   }
 });

@@ -7,21 +7,31 @@ import {
   status as harnessStatus,
   harnessKindForSeat,
   sessionKeyForKind,
+  loadedModels,
+  describeOpenCodeError,
+  lastAssistantFailure,
 } from "./harness.mjs";
-import { resolveUsableModel } from "./providers.mjs";
+import { isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
 import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
+import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
+import { estimateTokens, meterWake } from "./budget.mjs";
 
 export const deps = {
   createSession,
   promptSession,
   sessionMessages,
   harnessStatus,
+  loadedModels,
 };
+
+function modelRef(model) {
+  return model?.providerID ? `${model.providerID}/${model.modelID || ""}` : String(model || "");
+}
 
 function sessionMap(state, seat) {
   const key = sessionKeyForKind(harnessKindForSeat(seat));
@@ -116,7 +126,21 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
     });
   }
   const chain = modelChainForSeat(seat, team);
-  const refs = chain.length ? chain.map((m) => resolveUsableModel(seat, m)) : [resolveUsableModel(seat)];
+  const loaded = await deps.loadedModels(kind).catch(() => null);
+  const resolved = chain.length ? chain.map((m) => resolveUsableModel(seat, m, loaded)) : [resolveUsableModel(seat, undefined, loaded)];
+  // Sending a model OpenCode did not load fails inside the serve (prompt_async
+  // still returns 204), so the seat would never reply. Stop here instead.
+  const refs = resolved.filter((m) => !m?.providerID || isLoadedModel(loaded, m.providerID, m.modelID) !== false);
+  if (!refs.length) {
+    const want = modelRef(resolved[0]) || seat.model || "the seat model";
+    const have = loadedProviderIds(loaded);
+    const err = new Error(
+      `${want} is not loaded by the ${kind} OpenCode harness (loaded: ${have.join(", ") || "none"}). Check ${String(want).split("/")[0]} in Settings → Providers, then restart the harness.`,
+    );
+    err.code = "PROVIDER_NOT_LOADED";
+    err.status = 409;
+    throw err;
+  }
   let lastErr = null;
   for (const model of refs) {
     const body = promptBody(seat, to, text, meta, model);
@@ -131,12 +155,30 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
       });
       return { sessionId, seat: to, model, harness: kind };
     } catch (err) {
-      lastErr = err;
       if (err.status === 404) throw err;
+      const described = describeOpenCodeError(err, { model: modelRef(model), kind });
+      lastErr = Object.assign(new Error(described.message), { status: described.status, code: described.code, cause: err });
     }
   }
   if (lastErr) throw lastErr;
   return { sessionId, seat: to, model: refs[0], harness: kind };
+}
+
+function meterPromptedWake(to, text, meta, result, started) {
+  mutate((s) => {
+    meterWake(s, {
+      seatId: to,
+      runId: meta.runId,
+      model: result?.model,
+      inputTokens: estimateTokens(text) + 480,
+      outputTokens: 200,
+      ms: Date.now() - started,
+      source: meta.kind || "wake",
+    });
+  });
+  const live = (getState().seats || []).find((s) => s.id === to);
+  if (live?.pauseReason === "budget") return { ...result, paused: true, reason: "budget" };
+  return result;
 }
 
 export async function wakeSeat(to, text, meta = {}) {
@@ -148,8 +190,22 @@ export async function wakeSeat(to, text, meta = {}) {
   }
   const seat = seatById(to);
   if (!seat) return { error: "seat not found", seat: to };
+  if (seat.mcpGuest) {
+    emit({
+      scope: "chat",
+      step: "seat.mcp-guest",
+      seat: to,
+      channel: meta.channel || null,
+      detail: { origin: seat.origin || "mcp" },
+    });
+    return { guest: true, seat: to, origin: seat.origin || "mcp" };
+  }
   if (seat.kind !== "bot") return { human: true, seat: to };
-  const blocked = wakeBlocked(getState(), seat, meta);
+  let blocked = null;
+  mutate((s) => {
+    const live = (s.seats || []).find((x) => x.id === to);
+    blocked = wakeBlocked(s, live, meta);
+  });
   if (blocked) {
     emit({
       level: "warn",
@@ -160,6 +216,9 @@ export async function wakeSeat(to, text, meta = {}) {
       detail: { reason: blocked.reason, runId: meta.runId || null },
     });
     return { paused: true, seat: to, reason: blocked.reason };
+  }
+  if (!isOpenCodeAdapter(seat)) {
+    return wakeAdapter(seat, text, meta);
   }
   const kind = harnessKindForSeat(seat);
   const h = deps.harnessStatus(kind);
@@ -175,10 +234,12 @@ export async function wakeSeat(to, text, meta = {}) {
     return { offline: true, seat: to, harness: kind };
   }
   try {
+    const started = Date.now();
     let sessionId = await ensureSeatSession(to);
     if (!sessionId) return { error: "no session", seat: to, harness: kind };
     try {
-      return await promptWithFallback(sessionId, seat, to, text, meta);
+      const result = await promptWithFallback(sessionId, seat, to, text, meta);
+      return meterPromptedWake(to, text, meta, result, started);
     } catch (err) {
       if (err.status === 404) {
         mutate((s) => {
@@ -187,7 +248,8 @@ export async function wakeSeat(to, text, meta = {}) {
         });
         sessionId = await ensureSeatSession(to);
         if (!sessionId) return { error: "no session after recreate", seat: to, harness: kind };
-        return await promptWithFallback(sessionId, seat, to, text, meta);
+        const result = await promptWithFallback(sessionId, seat, to, text, meta);
+        return meterPromptedWake(to, text, meta, result, started);
       }
       throw err;
     }
@@ -199,9 +261,23 @@ export async function wakeSeat(to, text, meta = {}) {
       step: "seat.error",
       seat: to,
       channel: meta.channel || null,
-      detail: { harness: kind, error },
+      detail: { harness: kind, error, code: err.code || null },
     });
-    return { error, seat: to, harness: kind };
+    return { error, code: err.code || null, seat: to, harness: kind };
+  }
+}
+
+/** The seat's latest turn failure (e.g. provider 401) since `since` ms, or null. */
+export async function pullFailure(to, since = 0) {
+  const seat = seatById(to);
+  if (!seat) return null;
+  const kind = harnessKindForSeat(seat);
+  const sessionId = sessionMap(getState(), seat).sessions[to];
+  if (!sessionId) return null;
+  try {
+    return lastAssistantFailure(await deps.sessionMessages(sessionId, kind), { since, kind });
+  } catch {
+    return null;
   }
 }
 

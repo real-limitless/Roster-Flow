@@ -32,7 +32,11 @@ export function permissionFor(seat) {
   const permission = {};
   if (deny.has("edit") || seat.seatType === "supervisor") permission.edit = "deny";
   if (deny.has("bash") || seat.seatType === "supervisor") permission.bash = "deny";
-  else if (deny.has("deploy") || deny.has("skip-confirm")) permission.bash = { "deploy *": "deny", "*": "allow" };
+  else if (deny.has("deploy") || deny.has("skip-confirm")) {
+    // OpenCode uses the last matching bash rule. The catch-all allow must come
+    // before the deploy deny, or `deploy *` is allowed.
+    permission.bash = { "*": "allow", "deploy *": "deny" };
+  }
   return permission;
 }
 
@@ -102,7 +106,9 @@ function writeSystemOpenCodeConfig(seat) {
 }
 
 export function syncSeatAgent(seat) {
-  if (!seat || seat.kind !== "bot") return null;
+  if (!seat || seat.kind !== "bot" || seat.mcpGuest) return null;
+  const adapter = String(seat.adapter || "opencode").toLowerCase();
+  if (adapter && adapter !== "opencode") return null;
   if (seat.system) {
     mkdirSync(systemAgentsDir, { recursive: true });
     const file = join(systemAgentsDir, `${seat.id}.md`);

@@ -1,217 +1,493 @@
-/**
- * Roster MCP backend (issue #69, milestone M3).
- *
- * mcp-flow is the public front door. This is the streamable-http JSON-RPC
- * backend it proxies: POST /mcp, application/json, bearer auth. No SDK.
- * Budgets are a per-caller seam (not enforced here).
- */
-import { listModels } from "./providers.mjs";
-import { assertCallerCanTask, canReadJob, listTaskableSeats, listTaskableTeams } from "./access.mjs";
-import { getJob, publishNewJob, settleJob, followUpJob, waitForJob } from "./jobs.mjs";
-import { readJobFile, writeJobFile } from "./files.mjs";
+import { randomUUID } from "node:crypto";
+import { skipOnboarding } from "./flags.mjs";
+import { getState, mutate } from "./store.mjs";
+import { cycleSafe, postBus } from "./bus.mjs";
+import { postMessage } from "./chat.mjs";
+import { listInbox } from "./inbox.mjs";
+import { allowsWrite, callJobTool, isJobTool, JOB_TOOLS } from "./mcp-jobs.mjs";
 
-const PROTOCOL = "2025-03-26";
-const WRITE_TOOLS = new Set(["submit_task", "cancel_task", "put_file", "send_message"]);
+export const MCP_GUEST_ID = "mcp-guest";
 
-const TOOLS = [
+const mcpSessions = new Map();
+
+const ROOM_WRITE_TOOLS = new Set(["roster_join", "roster_send_message", "roster_handoff", "roster_report", "roster_ask_human"]);
+
+export const MCP_TOOLS = [
   {
-    name: "list_seats",
-    description: "Seats this caller may task, with role, model, tools, and open-job load.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    name: "roster_whoami",
+    description: "Bound MCP guest seat, origin, and channel membership. Not an OpenCode loop.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: "list_teams",
-    description: "Teams this caller may task. Seat ids are limited to that caller's reporting line.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    name: "submit_task",
-    description: "Hand a brief to a seat or team. Returns a job. Routing: supervisor, round_robin, or specialist.",
+    name: "roster_join",
+    description: "Bind this client to the MCP guest harness seat (origin: claude-code | cursor | codex | gemini-cli | goose | other).",
     inputSchema: {
       type: "object",
       properties: {
-        target: { type: "string", description: "Seat id or team:<id>" },
-        brief: { type: "string" },
-        routing: { type: "string" },
-        specialist: { type: "string" },
-        fileRefs: { type: "array" },
-        files: { type: "array", description: "Inline job files: { name, content, encoding? }" },
-        channel: { type: "string" },
-        callbackUrl: { type: "string" },
-        budget: { type: "object" },
-        priority: { type: "string" },
-        runId: { type: "string" },
-      },
-      required: ["target", "brief"],
-    },
-  },
-  {
-    name: "get_task",
-    description: "One job this caller may see.",
-    inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] },
-  },
-  {
-    name: "wait_task",
-    description: "Long-poll a job until it needs a human, finishes, or the timeout elapses.",
-    inputSchema: {
-      type: "object",
-      properties: { jobId: { type: "string" }, timeout: { type: "number" }, since: { type: "string" } },
-      required: ["jobId"],
-    },
-  },
-  {
-    name: "cancel_task",
-    description: "Cancel a job this caller submitted or is assigned.",
-    inputSchema: { type: "object", properties: { jobId: { type: "string" }, reason: { type: "string" } }, required: ["jobId"] },
-  },
-  {
-    name: "put_file",
-    description: "Store a job file (1MB each, 8 files, 4MB per job).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        jobId: { type: "string" },
+        origin: { type: "string" },
         name: { type: "string" },
-        content: { type: "string" },
-        encoding: { type: "string", enum: ["utf8", "base64"] },
       },
-      required: ["jobId", "name", "content"],
     },
   },
   {
-    name: "get_file",
-    description: "Read a job file. Content is base64.",
-    inputSchema: { type: "object", properties: { jobId: { type: "string" }, name: { type: "string" } }, required: ["jobId", "name"] },
+    name: "roster_list_seats",
+    description: "Org chart: humans, OpenCode bots, guest harnesses, teams, projects.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: "send_message",
-    description: "Follow-up mail into an open job. Wakes the assignee.",
-    inputSchema: { type: "object", properties: { jobId: { type: "string" }, text: { type: "string" } }, required: ["jobId", "text"] },
+    name: "roster_list_channels",
+    description: "Rooms plus membership.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: "list_models",
-    description: "Models configured on this Roster. No provider keys.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    name: "roster_read_messages",
+    description: "Recent messages for a channel (default #ship).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string" },
+        limit: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "roster_send_message",
+    description: "Send a message to a seat id, team:eng, or channel:ship on the audited bus.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Seat id, team:<id>, or channel:<id>" },
+        text: { type: "string" },
+        from: { type: "string", description: "Defaults to mcp-guest" },
+      },
+      required: ["to", "text"],
+    },
+  },
+  {
+    name: "roster_handoff",
+    description: "Close your phase and open the next seat with a brief.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string" },
+        text: { type: "string" },
+        from: { type: "string" },
+      },
+      required: ["to", "text"],
+    },
+  },
+  {
+    name: "roster_report",
+    description: "Post a structured result back to a Room thread.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+        channel: { type: "string" },
+        from: { type: "string" },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "roster_ask_human",
+    description: "Park the run on reports_to. Never dump into #general.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+        from: { type: "string" },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "roster_inbox",
+    description: "Read inbox for a seat (defaults to mcp-guest).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        seatId: { type: "string" },
+      },
+    },
   },
 ];
 
-function rpcResult(id, result) {
-  return { jsonrpc: "2.0", id, result };
+export function mcpGuestSeat() {
+  return {
+    id: MCP_GUEST_ID,
+    name: "MCP Guest",
+    role: "Guest",
+    kind: "bot",
+    seatType: "harness",
+    reportsTo: "you",
+    mcpGuest: true,
+    origin: "mcp",
+    job: "External agent via CORE /mcp. Not an OpenCode loop.",
+    tools: ["bus", "read"],
+    deny: ["edit", "deploy", "bash"],
+    status: "idle",
+  };
 }
 
-function rpcError(id, code, message) {
-  return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+export function ensureMcpGuest(state) {
+  if (!(state.seats || []).some((s) => s.id === MCP_GUEST_ID)) {
+    state.seats = [...(state.seats || []), mcpGuestSeat()];
+  }
+  const ship = (state.channels || []).find((c) => c.id === "ship");
+  if (ship && !(ship.seatIds || []).includes(MCP_GUEST_ID)) {
+    ship.seatIds = [...(ship.seatIds || []), MCP_GUEST_ID];
+  }
+  return state;
 }
 
-function toolText(value, isError = false) {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return { content: [{ type: "text", text }], isError };
+export function allowMcp(req, user) {
+  const dedicated = String(process.env.ROSTER_MCP_TOKEN || "").trim();
+  const presented = String(req?.headers?.authorization || "")
+    .replace(/^Bearer\s+/i, "")
+    .trim();
+  if (dedicated && presented === dedicated) return true;
+  if (user) return true;
+  if (skipOnboarding() && !dedicated) return true;
+  return false;
 }
 
-function allowsWrite(scopes) {
-  if (!scopes) return true;
-  return scopes.includes("write") || scopes.includes("admin");
+export function isMcpPath(pathname) {
+  return pathname === "/mcp" || pathname === "/mcp/" || pathname === "/api/v1/mcp";
 }
 
-async function callTool(name, args, ctx) {
-  const state = ctx.getState();
-  const caller = ctx.caller || {};
-  const a = args && typeof args === "object" ? args : {};
-  if (name === "list_seats") return listTaskableSeats(state, caller);
-  if (name === "list_teams") return listTaskableTeams(state, caller);
-  if (name === "list_models") return (ctx.listModels || listModels)().map(({ providerID, modelID, name: modelName, connected }) => ({ providerID, modelID, name: modelName, connected }));
-  if (name === "submit_task") {
-    assertCallerCanTask(state, caller, a);
-    const deps = ctx.jobDeps();
-    const files = Array.isArray(a.files) ? a.files : [];
-    const body = { ...a };
-    delete body.files;
-    if (files.length) {
-      const root = ctx.fileRoot;
-      deps.attachFiles = (s, jobId) => {
-        for (const file of files) writeJobFile(s, jobId, file, caller, root);
-      };
-    }
-    const { job } = await (ctx.publishNewJob || publishNewJob)(body, caller, deps);
-    return job;
+function fromOf(args = {}) {
+  return String(args.from || MCP_GUEST_ID);
+}
+
+function toolResult(obj) {
+  return {
+    content: [{ type: "text", text: typeof obj === "string" ? obj : JSON.stringify(obj) }],
+  };
+}
+
+function publicSeat(seat) {
+  if (!seat) return null;
+  return {
+    id: seat.id,
+    name: seat.name,
+    role: seat.role,
+    kind: seat.kind,
+    seatType: seat.seatType,
+    reportsTo: seat.reportsTo,
+    team: seat.team || null,
+    projectId: seat.projectId || null,
+    job: seat.job,
+    status: seat.status,
+    mcpGuest: Boolean(seat.mcpGuest),
+    origin: seat.origin || null,
+    system: Boolean(seat.system),
+  };
+}
+
+function floorChannel(to, channel) {
+  if (channel) return String(channel);
+  if (String(to).startsWith("channel:")) return String(to).slice("channel:".length);
+  return "ship";
+}
+
+function floorPost({ from, to, kind, text, channel, wake }) {
+  if (!from || !to || !text) {
+    const err = new Error("to and text required");
+    err.status = 400;
+    throw err;
   }
-  if (name === "get_task") {
-    const job = (ctx.getJob || getJob)(state, a.jobId);
-    if (!job || !canReadJob(job, caller)) {
-      const err = new Error("job not found");
-      err.status = 404;
-      throw err;
-    }
-    return job;
+  if (!cycleSafe(from, to)) {
+    const err = new Error("cycle detector: too many ping-pongs");
+    err.status = 429;
+    throw err;
   }
-  if (name === "wait_task") {
-    const existing = (ctx.getJob || getJob)(state, a.jobId);
-    if (!existing || !canReadJob(existing, caller)) {
-      const err = new Error("job not found");
-      err.status = 404;
-      throw err;
-    }
-    return (ctx.waitForJob || waitForJob)(a.jobId, { timeout: a.timeout, since: a.since }, ctx.jobDeps());
-  }
-  if (name === "cancel_task") {
-    return (ctx.settleJob || settleJob)(a.jobId, "cancel", { reason: a.reason }, caller, ctx.jobDeps());
-  }
-  if (name === "put_file") {
-    let meta;
-    ctx.mutate((s) => {
-      meta = writeJobFile(s, a.jobId, a, caller, ctx.fileRoot);
+  mutate((s) => ensureMcpGuest(s));
+  const fromSeat = getState().seats.find((s) => s.id === from);
+  const room = floorChannel(to, channel);
+  postMessage(room, fromSeat?.name || from, fromSeat?.kind || "bot", text, { seatId: from });
+  return postBus({
+    from,
+    to,
+    kind,
+    text,
+    channel: room,
+    wake: Boolean(wake) && !String(to).startsWith("channel:"),
+  });
+}
+
+export async function callMcpTool(name, args = {}) {
+  mutate((s) => ensureMcpGuest(s));
+  const from = fromOf(args);
+  if (name === "roster_whoami") {
+    const seat = getState().seats.find((s) => s.id === MCP_GUEST_ID);
+    const rooms = (getState().channels || [])
+      .filter((c) => (c.seatIds || []).includes(MCP_GUEST_ID))
+      .map((c) => c.id);
+    return toolResult({
+      seat: publicSeat(seat),
+      origin: seat?.origin || "mcp",
+      channels: rooms,
+      loop: false,
+      attach: false,
+      pty: false,
     });
-    return meta;
   }
-  if (name === "get_file") return readJobFile(state, a.jobId, a.name, caller, ctx.fileRoot);
-  if (name === "send_message") return (ctx.followUpJob || followUpJob)(a.jobId, { text: a.text }, caller, ctx.jobDeps());
+  if (name === "roster_join") {
+    mutate((s) => {
+      ensureMcpGuest(s);
+      const seat = (s.seats || []).find((x) => x.id === MCP_GUEST_ID);
+      if (!seat) return;
+      if (args.origin) seat.origin = String(args.origin).slice(0, 40);
+      if (args.name) seat.name = String(args.name).slice(0, 80);
+    });
+    const seat = getState().seats.find((s) => s.id === MCP_GUEST_ID);
+    return toolResult({ joined: true, seat: publicSeat(seat) });
+  }
+  if (name === "roster_list_seats") {
+    const s = getState();
+    return toolResult({
+      seats: (s.seats || []).map(publicSeat),
+      teams: (s.teams || []).map((t) => ({
+        id: t.id,
+        name: t.name,
+        supervisorSeatId: t.supervisorSeatId || null,
+        seatIds: t.seatIds || [],
+      })),
+      projects: (s.projects || []).map((p) => ({ id: p.id, name: p.name, pmSeatId: p.pmSeatId || null })),
+    });
+  }
+  if (name === "roster_list_channels") {
+    return toolResult(
+      (getState().channels || []).map((c) => ({
+        id: c.id,
+        name: c.name,
+        topic: c.topic || "",
+        teamIds: c.teamIds || [],
+        seatIds: c.seatIds || [],
+      })),
+    );
+  }
+  if (name === "roster_read_messages") {
+    const channel = String(args.channel || "ship");
+    const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 200);
+    const items = (getState().messages || [])
+      .filter((m) => m.channel === channel)
+      .slice(-limit)
+      .map((m) => ({
+        id: m.id,
+        who: m.who,
+        seatId: m.seatId || null,
+        kind: m.kind,
+        text: m.text,
+        time: m.time,
+      }));
+    return toolResult({ channel, messages: items });
+  }
+  if (name === "roster_send_message") {
+    return toolResult(floorPost({ from, to: args.to, kind: "send_message", text: args.text, wake: true }));
+  }
+  if (name === "roster_handoff") {
+    return toolResult(floorPost({ from, to: args.to, kind: "handoff", text: args.text, wake: true }));
+  }
+  if (name === "roster_report") {
+    const channel = args.channel || "ship";
+    return toolResult(
+      floorPost({
+        from,
+        to: `channel:${channel}`,
+        kind: "report",
+        text: args.text,
+        channel,
+        wake: false,
+      }),
+    );
+  }
+  if (name === "roster_ask_human") {
+    const seats = getState().seats || [];
+    const me = seats.find((s) => s.id === from);
+    const manager = me?.reportsTo || "you";
+    return toolResult(floorPost({ from, to: manager, kind: "ask_human", text: args.text, wake: false }));
+  }
+  if (name === "roster_inbox") {
+    const id = args.seatId || from;
+    const box = listInbox(getState(), id);
+    if (!box) {
+      const err = new Error("seat not found");
+      err.status = 404;
+      throw err;
+    }
+    return toolResult(box);
+  }
   const err = new Error(`unknown tool: ${name}`);
   err.status = 400;
   throw err;
 }
 
-export async function handleMcp(msg, ctx) {
-  if (!msg || typeof msg !== "object" || Array.isArray(msg)) {
-    return { status: 400, body: rpcError(null, -32600, "invalid request") };
-  }
-  const id = Object.prototype.hasOwnProperty.call(msg, "id") ? msg.id : undefined;
-  if (id === undefined || id === null) return { status: 202, body: null };
-  const method = String(msg.method || "");
-  const params = msg.params || {};
-  try {
-    if (method === "initialize") {
-      return {
-        status: 200,
-        body: rpcResult(id, {
-          protocolVersion: PROTOCOL,
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "roster-flow", version: "0.1.0" },
-        }),
-      };
-    }
-    if (method === "ping") return { status: 200, body: rpcResult(id, {}) };
-    if (method === "tools/list") return { status: 200, body: rpcResult(id, { tools: TOOLS }) };
-    if (method === "tools/call") {
-      const name = String(params.name || "");
-      if (!TOOLS.some((t) => t.name === name)) {
-        return { status: 200, body: rpcResult(id, toolText(`unknown tool: ${name}`, true)) };
-      }
-      if (WRITE_TOOLS.has(name) && !allowsWrite(ctx.scopes)) {
-        return { status: 200, body: rpcResult(id, toolText("write scope required", true)) };
-      }
-      try {
-        const value = await callTool(name, params.arguments, ctx);
-        return { status: 200, body: rpcResult(id, toolText(value)) };
-      } catch (err) {
-        return { status: 200, body: rpcResult(id, toolText(err.message || "error", true)) };
-      }
-    }
-    return { status: 200, body: rpcError(id, -32601, `method not found: ${method}`) };
-  } catch (err) {
-    return { status: 200, body: rpcError(id, -32603, err.message || "internal error") };
-  }
+export function jsonRpcResult(id, result) {
+  return { jsonrpc: "2.0", id: id ?? null, result };
 }
 
-export function mcpToolNames() {
-  return TOOLS.map((t) => t.name);
+export function jsonRpcError(id, code, message) {
+  return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+}
+
+/**
+ * `ctx` (from CORE /mcp): `caller`, token `scopes` (null = session, unscoped),
+ * and job deps for the job tools in mcp-jobs.mjs.
+ */
+export async function handleMcpMessage(msg = {}, ctx = {}) {
+  if (Array.isArray(msg)) {
+    return Promise.all(msg.map((m) => handleMcpMessage(m, ctx)));
+  }
+  if (!msg || typeof msg !== "object") return jsonRpcError(null, -32600, "invalid request");
+  const { id, method, params } = msg;
+  if (!method) return jsonRpcError(id, -32600, "invalid request");
+  if (String(method).startsWith("notifications/")) return { notification: true };
+  if (method === "initialize") {
+    return jsonRpcResult(id, {
+      protocolVersion: (params && params.protocolVersion) || "2025-03-26",
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: "roster-flow", version: "0.1.0" },
+      instructions:
+        "Roster-Flow room gateway and job backend. roster_* tools are seats, channels, and the bus; submit_task and the other job tools hand work to seats on your token's reporting line. You are not an OpenCode loop.",
+    });
+  }
+  if (method === "ping") return jsonRpcResult(id, {});
+  if (method === "tools/list") {
+    return jsonRpcResult(id, { tools: [...MCP_TOOLS, ...JOB_TOOLS] });
+  }
+  if (method === "tools/call") {
+    const name = params?.name;
+    const args = params?.arguments && typeof params.arguments === "object" ? { ...params.arguments } : {};
+    if (isJobTool(name)) return jsonRpcResult(id, await callJobTool(name, args, ctx));
+    if (ROOM_WRITE_TOOLS.has(name) && !allowsWrite(ctx.scopes)) {
+      return jsonRpcResult(id, { content: [{ type: "text", text: "write scope required" }], isError: true });
+    }
+    if ((name === "roster_send_message" || name === "roster_handoff") && !args.from) args.from = MCP_GUEST_ID;
+    if (name === "roster_inbox" && !args.seatId) args.seatId = MCP_GUEST_ID;
+    try {
+      const result = await callMcpTool(name, args);
+      return jsonRpcResult(id, result);
+    } catch (err) {
+      return jsonRpcResult(id, {
+        content: [{ type: "text", text: err.message || "tool error" }],
+        isError: true,
+      });
+    }
+  }
+  return jsonRpcError(id, -32601, `method not found: ${method}`);
+}
+
+export function mcpCorsHeaders(extra = {}) {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
+    "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
+    "access-control-expose-headers": "mcp-session-id, mcp-protocol-version",
+    ...extra,
+  };
+}
+
+async function readRaw(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function wantsSse(req) {
+  const accept = String(req.headers?.accept || "");
+  return accept.includes("text/event-stream") && !accept.includes("application/json");
+}
+
+function writeJson(res, code, body, extraHeaders = {}) {
+  const data = JSON.stringify(body);
+  res.writeHead(code, mcpCorsHeaders({ "content-type": "application/json; charset=utf-8", ...extraHeaders }));
+  res.end(data);
+}
+
+function writeSseMessage(res, body, extraHeaders = {}) {
+  res.writeHead(200, mcpCorsHeaders({ "content-type": "text/event-stream", "cache-control": "no-cache", ...extraHeaders }));
+  res.write(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
+  res.end();
+}
+
+export async function serveMcp(req, res, ctx = {}) {
+  mutate((s) => ensureMcpGuest(s));
+  const method = req.method || "GET";
+  if (method === "GET") {
+    if (wantsSse(req)) {
+      res.writeHead(
+        200,
+        mcpCorsHeaders({
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        }),
+      );
+      res.write("event: endpoint\ndata: /mcp\n\n");
+      res.write(": roster-flow room gateway\n\n");
+      res.end();
+      return;
+    }
+    writeJson(res, 200, {
+      ok: true,
+      name: "roster-flow",
+      transport: "streamable-http",
+      endpoint: "/mcp",
+      stdio: "node scripts/roster-flow-mcp.mjs",
+    });
+    return;
+  }
+  if (method === "DELETE") {
+    const sid = req.headers["mcp-session-id"];
+    if (sid) mcpSessions.delete(String(sid));
+    res.writeHead(204, mcpCorsHeaders());
+    res.end();
+    return;
+  }
+  if (method !== "POST") {
+    res.writeHead(405, mcpCorsHeaders());
+    res.end();
+    return;
+  }
+
+  let raw = "";
+  try {
+    raw = await readRaw(req);
+  } catch (err) {
+    writeJson(res, 400, jsonRpcError(null, -32700, err.message || "parse error"));
+    return;
+  }
+
+  let msg;
+  try {
+    msg = raw ? JSON.parse(raw) : {};
+  } catch {
+    writeJson(res, 400, jsonRpcError(null, -32700, "Parse error"));
+    return;
+  }
+
+  const out = await handleMcpMessage(msg, ctx);
+  if (out && out.notification) {
+    res.writeHead(202, mcpCorsHeaders());
+    res.end();
+    return;
+  }
+
+  const extra = {};
+  const incomingSid = req.headers["mcp-session-id"];
+  if (msg && !Array.isArray(msg) && msg.method === "initialize") {
+    const sid = incomingSid || randomUUID();
+    mcpSessions.set(String(sid), { created: Date.now() });
+    extra["mcp-session-id"] = String(sid);
+  } else if (incomingSid) {
+    extra["mcp-session-id"] = String(incomingSid);
+  }
+
+  if (wantsSse(req)) {
+    writeSseMessage(res, out, extra);
+    return;
+  }
+  writeJson(res, 200, out, extra);
 }

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir as defaultDataDir } from "./paths.mjs";
-import { canReadJob } from "./access.mjs";
+import { canReadJob } from "./job-access.mjs";
 
 export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_FILES = 8;

@@ -1,35 +1,68 @@
 import { createServer } from "node:http";
 import { getState, mutate, save, resetState, uid } from "./store.mjs";
-import { normalizeSeat, normalizeModelId } from "./seed.mjs";
-import { ensure, status as harnessStatus, combinedStatus, listBoundSessions, createSession, promptSession, listLiveModels, harnessKindForSeat, sessionKeyForKind, whichOpenCode } from "./harness.mjs";
+import {
+  ensure,
+  status as harnessStatus,
+  combinedStatus,
+  liveCombinedStatus,
+  listBoundSessions,
+  createSession,
+  promptSession,
+  listLiveModels,
+  harnessKindForSeat,
+  sessionKeyForKind,
+  whichOpenCode,
+  describeOpenCodeError,
+  restartForProviderChange,
+} from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
-import { addFirstUser, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
+import { addFirstUser, changePassword, DEMO_TOKEN, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
+import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
-import { completeSetup, markHarnessStep, markInstallSeen, publicState, setupStatus } from "./setup.mjs";
+import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
 import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
-import { deliverCallback, followUpJob, getJob, listJobs, publishNewJob, settleJob, waitForJob } from "./jobs.mjs";
-import { canReadJob } from "./access.mjs";
+import {
+  callbackSecretInfo,
+  deliverCallback,
+  followUpJob,
+  getJob,
+  listJobs,
+  publishNewJob,
+  rotateCallbackSecret,
+  settleJob,
+  waitForJob,
+} from "./jobs.mjs";
+import { canReadJob } from "./job-access.mjs";
 import { readJobFile, writeJobFile } from "./files.mjs";
-import { handleMcp } from "./mcp.mjs";
 import { attachPtyServer } from "./pty.mjs";
-import { attachSeatToTeam, createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
+import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
 import { createChannel, patchChannel } from "./channels.mjs";
 import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
-import { fireSeat, hireSeat, killRun, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
+import { attachConnector, listConnectors, publicConnector, removeConnector, searchKnowledge } from "./knowledge.mjs";
+import { fireSeat, hireSeat, killRun, patchSeat, pauseSeat, pauseTeam, resumeSeat, wakeBlocked } from "./seats.mjs";
+import { adapterSecretOk, isOpenCodeAdapter, parseAdapterCallback, publicSeat, publicSeats } from "./adapters.mjs";
 import { applyPlan, chatArchitect, getPlan } from "./architect.mjs";
+import { createTask, claimTask, completeTask, listTasks } from "./tasks.mjs";
+import { createAccessRequest, listAccessRequests } from "./access.mjs";
 import { createGoal, listGoals } from "./goals.mjs";
+import { listUsage, meterWake, usageCsv } from "./budget.mjs";
 import { listInbox, markInboxRead } from "./inbox.mjs";
 import { createApproval, listApprovals, recordApproval, resolveApproval } from "./approvals.mjs";
 import { clearRoutineActive, createRoutine, patchRoutine, publicRoutine, runRoutineNow, tickRoutines } from "./routines.mjs";
+import { tickHeartbeats } from "./heartbeats.mjs";
 import { auditSkill, familyStatus, installSkill, listMcpBackends, registerMcpBackend } from "./family.mjs";
+import { attachGithubCard, githubStatus, handleGithubBlockAction, isGithubAction, refreshGithubMessage } from "./github.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
 import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
+import { autostartHarness, seedProviderFromEnv } from "./autostart.mjs";
 import { isDataWritable } from "./paths.mjs";
 import { tryServeStatic } from "./static.mjs";
+import { handleSlackAction, handleSlackEvent, mirrorToSlack, slackStatus, verifySlackRequest } from "./slack.mjs";
+import { allowMcp, isMcpPath, MCP_GUEST_ID, serveMcp } from "./mcp.mjs";
 
 const PORT = apiPort();
 const HOST = apiHost();
@@ -39,10 +72,23 @@ function json(res, code, body) {
   res.writeHead(code, {
     "content-type": "application/json; charset=utf-8",
     "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type, authorization",
+    "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
     "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "access-control-expose-headers": "mcp-session-id, mcp-protocol-version",
   });
   res.end(data);
+}
+
+async function setupPayload(state, user) {
+  const live = await liveCombinedStatus();
+  const full = setupStatus(state, {
+    user,
+    binary: whichOpenCode(),
+    harness: live.harness,
+    providerKeys: hasProviderKey(),
+    dataWritable: isDataWritable(),
+  });
+  return user ? full : publicSetupStatus(full);
 }
 
 function fail(res, err) {
@@ -55,6 +101,12 @@ async function readBody(req) {
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
   return JSON.parse(raw);
+}
+
+async function readRaw(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function asList(value) {
@@ -100,6 +152,20 @@ function messageText(body, extras) {
   return "";
 }
 
+function githubHint(body = {}) {
+  return {
+    text: body.text,
+    prUrl: body.prUrl,
+    issueUrl: body.issueUrl,
+    branch: body.branch,
+  };
+}
+
+async function postRoomMessage(channel, who, kind, text, extras, hint = {}) {
+  const msg = postMessage(channel, who, kind, text, extras);
+  return attachGithubCard(msg, { ...hint, text });
+}
+
 function requestCaller(user, apiToken) {
   return {
     userId: user?.id || null,
@@ -119,6 +185,11 @@ function isPublicPath(method, pathname) {
   if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
   if (method === "POST" && pathname === "/api/v1/setup/install") return true;
   if (method === "POST" && pathname === "/api/v1/auth/login") return true;
+  if (method === "POST" && pathname === "/api/v1/access") return true;
+  // Reachable without a session so a logged-out owner can present a password.
+  // When setupClosed(), startOver still requires an owner session or password.
+  if (method === "POST" && pathname === "/api/v1/setup/start-over") return true;
+  if (pathname === "/api/v1/slack/events" || pathname === "/api/v1/slack/actions") return true;
   return false;
 }
 
@@ -139,6 +210,13 @@ try {
   console.error(`Owner seed from env failed: ${err.message}`);
   process.exit(1);
 }
+try {
+  const provider = seedProviderFromEnv();
+  if (provider.seeded) console.log(`Provider ${provider.provider.id} seeded from env.`);
+  else if (provider.reason) console.log(`Provider seed skipped: ${provider.reason}`);
+} catch (err) {
+  console.error(`Provider seed from env failed: ${err.message}`);
+}
 save();
 try {
   syncBotAgents(getState().seats, getState().teams);
@@ -151,7 +229,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "access-control-allow-origin": "*",
-        "access-control-allow-headers": "content-type, authorization",
+        "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
         "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       });
       res.end();
@@ -160,7 +238,26 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
     const { pathname } = url;
     const method = req.method || "GET";
-    if (pathname !== "/mcp" && pathname !== "/mcp/" && tryServeStatic(req, res, pathname)) return;
+    if (isMcpPath(pathname)) {
+      const token = parseBearer(req);
+      const mcpApiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
+      if (isApiToken(token) && (!mcpApiToken || !tokenAllows(mcpApiToken.token, method, pathname))) {
+        json(res, mcpApiToken ? 403 : 401, { error: mcpApiToken ? "token scope does not allow this request" : "invalid, expired, or revoked API token" });
+        return;
+      }
+      const mcpUser = mcpApiToken ? mcpApiToken.user : userFromToken(getState(), token);
+      if (!allowMcp(req, mcpUser)) {
+        json(res, 401, { error: "authentication required" });
+        return;
+      }
+      // Dedicated ROSTER_MCP_TOKEN and skip-onboarding callers act as the MCP guest seat.
+      const caller = mcpUser || mcpApiToken
+        ? requestCaller(mcpUser, mcpApiToken)
+        : { userId: null, seatId: MCP_GUEST_ID, name: "MCP Guest", tokenId: null };
+      await serveMcp(req, res, { caller, scopes: mcpApiToken?.token?.scopes || null, getState, mutate, jobDeps });
+      return;
+    }
+    if (tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
     const apiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
     const user = apiToken ? apiToken.user : userFromToken(getState(), token);
@@ -209,30 +306,12 @@ const server = createServer(async (req, res) => {
     }
 
     if (pathname === "/api/v1/setup/status" && method === "GET") {
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/install" && method === "POST") {
       mutate((s) => markInstallSeen(s));
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/first-user" && method === "POST") {
@@ -250,16 +329,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/setup/harness" && method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       mutate((s) => markHarnessStep(s, { skipped: Boolean(body.skipped) }));
-      json(
-        res,
-        200,
-        setupStatus(getState(), {
-          user,
-          binary: whichOpenCode(),
-          providerKeys: hasProviderKey(),
-          dataWritable: isDataWritable(),
-        }),
-      );
+      json(res, 200, await setupPayload(getState(), user));
       return;
     }
     if (pathname === "/api/v1/setup/complete" && method === "POST") {
@@ -274,7 +344,36 @@ const server = createServer(async (req, res) => {
       } catch {
         /* agent files are best-effort */
       }
-      json(res, 200, { ...setupStatus(next, { user, binary: whichOpenCode(), providerKeys: hasProviderKey(), dataWritable: isDataWritable() }), state: publicState(next) });
+      json(res, 200, { ...(await setupPayload(next, user)), state: publicState(next) });
+      return;
+    }
+    if (pathname === "/api/v1/setup/start-over" && method === "POST") {
+      const body = await readBody(req);
+      const seen = getState();
+      // Bearer identity only (login session, or an API token userFromToken resolves). Never body.user.
+      // Non-admin API tokens are already rejected above: /setup/* requires the admin scope.
+      const sessionUser = userFromToken(seen, token);
+      const next = await startOver(seen, {
+        email: body.email,
+        confirm: body.confirm,
+        password: body.password,
+        user: sessionUser,
+        req,
+        body,
+      });
+      mutate((s) => {
+        const sameOwner =
+          setupClosed(s) === setupClosed(seen) &&
+          (s.users?.[0]?.id || "") === (seen.users?.[0]?.id || "") &&
+          (s.users?.[0]?.passwordHash || "") === (seen.users?.[0]?.passwordHash || "");
+        if (!sameOwner) {
+          const err = new Error("owner changed; retry start-over");
+          err.status = 409;
+          throw err;
+        }
+        return next;
+      });
+      json(res, 200, await setupPayload(next, null));
       return;
     }
     if (pathname === "/api/v1/auth/login" && method === "POST") {
@@ -293,18 +392,110 @@ const server = createServer(async (req, res) => {
       json(res, 200, { ok: true });
       return;
     }
+    if (pathname === "/api/v1/auth/password" && method === "POST") {
+      if (!user) {
+        json(res, 401, { error: "authentication required" });
+        return;
+      }
+      if (skipOnboarding() && token === DEMO_TOKEN) {
+        json(res, 401, { error: "sign in with the owner password to rotate it" });
+        return;
+      }
+      const body = await readBody(req);
+      const out = await changePassword(getState(), {
+        userId: user.id,
+        currentPassword: body.current || body.currentPassword,
+        newPassword: body.next || body.newPassword,
+        keepToken: token,
+      });
+      save();
+      json(res, 200, { ok: true, ...out });
+      return;
+    }
+
+    if (pathname === "/api/v1/access" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createAccessRequest(s, body);
+      });
+      json(res, created.updated ? 200 : 201, created);
+      return;
+    }
+    if (pathname === "/api/v1/access" && method === "GET") {
+      json(res, 200, { requests: listAccessRequests(getState()) });
+      return;
+    }
 
     if (pathname === "/api/v1/health" && method === "GET") {
+      const status = await liveCombinedStatus();
       json(res, 200, {
         ok: true,
-        ...combinedStatus(),
+        ...status,
+        ready: status.harness === "up" && status.systemHarness?.harness === "up",
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
+        demo: demoMode(),
+        demoResetMs: demoResetMs(),
       });
       return;
     }
     if (pathname === "/api/v1/family/status" && method === "GET") {
       json(res, 200, await familyStatus());
+      return;
+    }
+    if (pathname === "/api/v1/slack" && method === "GET") {
+      json(res, 200, slackStatus());
+      return;
+    }
+    if (pathname === "/api/v1/slack/events" && method === "POST") {
+      const raw = await readRaw(req);
+      const ts = req.headers["x-slack-request-timestamp"];
+      const sig = req.headers["x-slack-signature"];
+      if (!verifySlackRequest(raw, ts, sig)) {
+        json(res, 401, { error: "invalid slack signature" });
+        return;
+      }
+      let body = {};
+      try {
+        body = raw ? JSON.parse(raw) : {};
+      } catch {
+        json(res, 400, { error: "invalid json" });
+        return;
+      }
+      try {
+        const out = await handleSlackEvent(body);
+        json(res, 200, out);
+      } catch (err) {
+        fail(res, err);
+      }
+      return;
+    }
+    if (pathname === "/api/v1/slack/actions" && method === "POST") {
+      const raw = await readRaw(req);
+      const ts = req.headers["x-slack-request-timestamp"];
+      const sig = req.headers["x-slack-signature"];
+      if (!verifySlackRequest(raw, ts, sig)) {
+        json(res, 401, { error: "invalid slack signature" });
+        return;
+      }
+      let payload = {};
+      try {
+        if (String(req.headers["content-type"] || "").includes("application/x-www-form-urlencoded")) {
+          payload = JSON.parse(new URLSearchParams(raw).get("payload") || "{}");
+        } else {
+          payload = raw ? JSON.parse(raw) : {};
+        }
+      } catch {
+        json(res, 400, { error: "invalid payload" });
+        return;
+      }
+      try {
+        const out = await handleSlackAction(payload);
+        json(res, 200, out);
+      } catch (err) {
+        fail(res, err);
+      }
       return;
     }
     if (pathname === "/api/v1/family/skills/audit" && method === "POST") {
@@ -328,6 +519,10 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/reset" && method === "POST") {
+      if (!allowStateReset()) {
+        json(res, 403, { error: "reset disabled on public demo" });
+        return;
+      }
       const st = resetState();
       try {
         syncBotAgents(st.seats, st.teams);
@@ -378,9 +573,93 @@ const server = createServer(async (req, res) => {
       json(res, 200, updated);
       return;
     }
+    const projectConn = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/connectors(?:\/([^/]+))?$/);
+    if (projectConn && !projectConn[2] && method === "GET") {
+      json(res, 200, listConnectors(getState(), decodeURIComponent(projectConn[1])).map(publicConnector));
+      return;
+    }
+    if (projectConn && !projectConn[2] && method === "POST") {
+      const body = await readBody(req);
+      try {
+        let created = null;
+        mutate((s) => {
+          created = attachConnector(s, decodeURIComponent(projectConn[1]), body);
+        });
+        json(res, 201, created);
+      } catch (err) {
+        fail(res, err);
+      }
+      return;
+    }
+    if (projectConn && projectConn[2] && method === "DELETE") {
+      let removed = null;
+      mutate((s) => {
+        removed = removeConnector(s, decodeURIComponent(projectConn[1]), decodeURIComponent(projectConn[2]));
+      });
+      if (!removed) {
+        json(res, 404, { error: "connector not found" });
+        return;
+      }
+      json(res, 200, removed);
+      return;
+    }
+    const projectKnow = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/knowledge$/);
+    if (projectKnow && method === "GET") {
+      try {
+        const out = await searchKnowledge(getState(), decodeURIComponent(projectKnow[1]), url.searchParams.get("q") || "", {
+          seatId: url.searchParams.get("seatId") || user?.seatId || "you",
+        });
+        json(res, 200, out);
+      } catch (err) {
+        fail(res, err);
+      }
+      return;
+    }
     if (pathname === "/api/v1/goals" && method === "GET") {
       json(res, 200, listGoals(getState()));
       return;
+    }
+    if (pathname === "/api/v1/tasks" && method === "GET") {
+      json(
+        res,
+        200,
+        listTasks(getState(), {
+          projectId: url.searchParams.get("projectId") || undefined,
+          runId: url.searchParams.get("runId") || undefined,
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/v1/tasks" && method === "POST") {
+      const body = await readBody(req);
+      let created = null;
+      mutate((s) => {
+        created = createTask(s, body);
+      });
+      json(res, 201, created);
+      return;
+    }
+    {
+      const claimMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/claim$/);
+      if (claimMatch && method === "POST") {
+        const body = await readBody(req).catch(() => ({}));
+        let claimed = null;
+        mutate((s) => {
+          claimed = claimTask(s, decodeURIComponent(claimMatch[1]), body.seatId);
+        });
+        json(res, 200, claimed);
+        return;
+      }
+      const completeMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/complete$/);
+      if (completeMatch && method === "POST") {
+        const body = await readBody(req).catch(() => ({}));
+        let done = null;
+        mutate((s) => {
+          done = completeTask(s, decodeURIComponent(completeMatch[1]), body.seatId);
+        });
+        json(res, 200, done);
+        return;
+      }
     }
     if (pathname === "/api/v1/goals" && method === "POST") {
       const body = await readBody(req);
@@ -389,6 +668,64 @@ const server = createServer(async (req, res) => {
         created = createGoal(s, body);
       });
       json(res, 201, created);
+      return;
+    }
+    if (pathname === "/api/v1/usage" && method === "GET") {
+      const rows = listUsage(getState(), {
+        projectId: url.searchParams.get("projectId") || undefined,
+        teamId: url.searchParams.get("teamId") || undefined,
+        seatId: url.searchParams.get("seatId") || undefined,
+      });
+      if (url.searchParams.get("format") === "csv") {
+        const body = usageCsv(rows);
+        res.writeHead(200, {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": "attachment; filename=roster-usage.csv",
+          "access-control-allow-origin": "*",
+        });
+        res.end(body);
+        return;
+      }
+      json(res, 200, rows);
+      return;
+    }
+    if (pathname === "/api/v1/heartbeats/tick" && method === "POST") {
+      let due = [];
+      mutate((s) => {
+        due = tickHeartbeats(s, Date.now());
+      });
+      for (const item of due) {
+        if (item.coalesced) continue;
+        postBus({
+          from: "heartbeat",
+          to: item.seatId,
+          kind: "heartbeat",
+          text: item.prompt,
+          wake: true,
+        });
+      }
+      json(res, 200, { due });
+      return;
+    }
+    if (pathname === "/api/v1/usage" && method === "POST") {
+      const body = await readBody(req);
+      let out = null;
+      mutate((s) => {
+        out = meterWake(s, {
+          seatId: body.seatId,
+          runId: body.runId,
+          model: body.model,
+          inputTokens: body.inputTokens,
+          outputTokens: body.outputTokens,
+          ms: body.ms,
+          source: body.source || "manual",
+        });
+      });
+      if (!out?.row) {
+        json(res, 400, { error: "bot seatId required" });
+        return;
+      }
+      json(res, 201, out.row);
       return;
     }
     if (pathname === "/api/v1/approvals" && method === "GET") {
@@ -596,11 +933,11 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/bots" && method === "GET") {
-      json(res, 200, getState().seats.filter((s) => s.kind === "bot"));
+      json(res, 200, publicSeats(getState().seats.filter((s) => s.kind === "bot")));
       return;
     }
     if (pathname === "/api/v1/seats" && method === "GET") {
-      json(res, 200, getState().seats);
+      json(res, 200, publicSeats(getState().seats));
       return;
     }
     if (pathname === "/api/v1/seats" && method === "POST") {
@@ -617,7 +954,7 @@ const server = createServer(async (req, res) => {
         });
       });
       if (seat.kind === "bot") syncSeatAgent(seat);
-      json(res, 201, seat);
+      json(res, 201, publicSeat(seat));
       return;
     }
     if (pathname === "/api/v1/seats/me/inbox" && method === "GET") {
@@ -682,22 +1019,14 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       let updated = null;
       mutate((s) => {
-        s.seats = s.seats.map((seat) => {
-          if (seat.id !== id) return seat;
-          const next = { ...seat, ...body, id };
-          if (body.model) next.model = normalizeModelId(body.model);
-          if (body.fallbackModel !== undefined) next.fallbackModel = normalizeModelId(body.fallbackModel) || undefined;
-          updated = normalizeSeat(next);
-          return updated;
-        });
-        if (updated?.team) attachSeatToTeam(s, updated.team, updated.id);
+        updated = patchSeat(s, id, body);
       });
       if (!updated) {
         json(res, 404, { error: "seat not found" });
         return;
       }
       if (updated.kind === "bot") syncSeatAgent(updated);
-      json(res, 200, updated);
+      json(res, 200, publicSeat(updated));
       return;
     }
     if (seatPatch && method === "DELETE") {
@@ -709,16 +1038,72 @@ const server = createServer(async (req, res) => {
       json(res, 200, result);
       return;
     }
+    const adapterCb = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/adapter\/(report|handoff)$/);
+    if (adapterCb && method === "POST") {
+      const id = decodeURIComponent(adapterCb[1]);
+      const verb = adapterCb[2];
+      const seat = getState().seats.find((s) => s.id === id);
+      if (!seat) {
+        json(res, 404, { error: "seat not found" });
+        return;
+      }
+      if (isOpenCodeAdapter(seat)) {
+        json(res, 400, { error: "OpenCode seats use the plugin bus, not adapter callbacks" });
+        return;
+      }
+      if (!adapterSecretOk(seat, req)) {
+        json(res, 401, { error: "adapter secret required" });
+        return;
+      }
+      const body = await readBody(req);
+      const parsed = parseAdapterCallback({ ...body, kind: verb });
+      if (!parsed.text) {
+        json(res, 400, { error: "text required" });
+        return;
+      }
+      const to = verb === "handoff" ? parsed.to : `channel:${parsed.channel}`;
+      postMessage(parsed.channel, seat.name, seat.kind || "bot", parsed.text, { seatId: id });
+      json(
+        res,
+        201,
+        postBus({
+          from: id,
+          to,
+          kind: verb === "handoff" ? "handoff" : "report",
+          text: parsed.text,
+          channel: parsed.channel,
+          wake: verb === "handoff" && !String(to).startsWith("channel:"),
+        }),
+      );
+      return;
+    }
     const attach = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/attach$/);
     if (attach && method === "POST") {
       const id = decodeURIComponent(attach[1]);
       const body = await readBody(req).catch(() => ({}));
-      const seat = getState().seats.find((s) => s.id === id);
-      const blocked = wakeBlocked(getState(), seat, { runId: body.runId });
+      const guestSeat = getState().seats.find((s) => s.id === id);
+      if (guestSeat?.mcpGuest) {
+        json(res, 400, { error: "guest harness seats do not attach OpenCode", guest: true, seat: id });
+        return;
+      }
+      if (guestSeat && !isOpenCodeAdapter(guestSeat)) {
+        json(res, 400, {
+          error: "non-OpenCode adapters do not attach a PTY",
+          adapter: guestSeat.adapter || "webhook",
+          seat: id,
+        });
+        return;
+      }
+      let blocked = null;
+      mutate((s) => {
+        const found = s.seats.find((s0) => s0.id === id);
+        blocked = wakeBlocked(s, found, { runId: body.runId });
+      });
       if (blocked) {
         json(res, 200, { seat: id, paused: true, reason: blocked.reason, sessionId: null, attach: null });
         return;
       }
+      const seat = getState().seats.find((s) => s.id === id);
       const kind = harnessKindForSeat(seat);
       try {
         await ensure({ kind });
@@ -792,7 +1177,7 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: "text, blocks, or attachment required" });
         return;
       }
-      const msg = postMessage(id, body.who || "You", body.kind || "human", text, extras);
+      const msg = await postRoomMessage(id, body.who || "You", body.kind || "human", text, extras, githubHint(body));
       const routed = text
         ? await routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
         : { mentions: [], wakes: [], notify: [] };
@@ -841,7 +1226,7 @@ const server = createServer(async (req, res) => {
       let channel = "ship";
       if (String(to).startsWith("channel:")) channel = to.slice("channel:".length);
       const fromSeat = getState().seats.find((s) => s.id === from);
-      postMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from });
+      await postRoomMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from }, githubHint(body));
       const entry = postBus({ from, to, kind: "send_message", text, wake: body.wake !== false && !String(to).startsWith("channel:") });
       json(res, 201, entry);
       return;
@@ -863,12 +1248,27 @@ const server = createServer(async (req, res) => {
         return;
       }
       const fromSeat = getState().seats.find((s) => s.id === body.from);
-      postMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
+      const msg = await postRoomMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
         ...(body.jobId ? { jobId: String(body.jobId) } : {}),
-      });
+      }, githubHint(body));
+      void mirrorToSlack(msg, { kind: body.kind }).catch(() => undefined);
       json(res, 201, postBus({ ...body, text }));
+      return;
+    }
+    if (pathname === "/api/v1/github" && method === "GET") {
+      json(res, 200, githubStatus());
+      return;
+    }
+    const githubMsg = pathname.match(/^\/api\/v1\/messages\/([^/]+)\/github$/);
+    if (githubMsg && method === "GET") {
+      try {
+        const message = await refreshGithubMessage(decodeURIComponent(githubMsg[1]));
+        json(res, 200, { github: message.github, message });
+      } catch (err) {
+        fail(res, err);
+      }
       return;
     }
     if (pathname === "/api/v1/jobs" && method === "GET") {
@@ -885,6 +1285,22 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const { job } = await publishNewJob(body, requestCaller(user, apiToken), jobDeps());
       json(res, 201, job);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret" && method === "GET") {
+      let info;
+      mutate((s) => {
+        info = callbackSecretInfo(s);
+      });
+      json(res, 200, info);
+      return;
+    }
+    if (pathname === "/api/v1/jobs/callback-secret/rotate" && method === "POST") {
+      let info;
+      mutate((s) => {
+        info = rotateCallbackSecret(s);
+      });
+      json(res, 200, info);
       return;
     }
     const jobWait = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/wait$/);
@@ -920,6 +1336,10 @@ const server = createServer(async (req, res) => {
       const id = decodeURIComponent(jobComplete[1]);
       const body = await readBody(req);
       const job = await settleJob(id, "complete", body, requestCaller(user, apiToken), jobDeps());
+      if (body.prUrl || body.branch) {
+        const msg = [...(getState().messages || [])].reverse().find((m) => m.jobId === id);
+        if (msg) await attachGithubCard(msg, { text: msg.text, prUrl: body.prUrl, branch: body.branch });
+      }
       json(res, 200, job);
       return;
     }
@@ -959,48 +1379,12 @@ const server = createServer(async (req, res) => {
       json(res, 200, job);
       return;
     }
-    if ((pathname === "/mcp" || pathname === "/mcp/") && method === "GET") {
-      json(res, 200, {
-        ok: true,
-        name: "roster-flow",
-        transport: "streamable-http",
-        endpoint: "/mcp",
-        front: "mcp-flow",
-      });
-      return;
-    }
-    if ((pathname === "/mcp" || pathname === "/mcp/") && method === "POST") {
-      let body;
-      try {
-        body = await readBody(req);
-      } catch {
-        json(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
-        return;
-      }
-      const caller = requestCaller(user, apiToken);
-      const scopes = apiToken?.token?.scopes || null;
-      const out = await handleMcp(body, {
-        caller,
-        scopes,
-        getState,
-        mutate,
-        fileRoot: undefined,
-        jobDeps,
-      });
-      if (out.status === 202) {
-        res.writeHead(202);
-        res.end();
-        return;
-      }
-      json(res, out.status, out.body);
-      return;
-    }
     if (pathname === "/api/v1/block-actions" && method === "POST") {
       const body = await readBody(req);
       const messageId = String(body.messageId || "");
       const actionId = String(body.actionId || "");
       const value = String(body.value || "");
-      const userId = String(body.userId || "you");
+      const userId = String(body.userId || user?.seatId || "you");
       const msg = getState().messages.find((m) => m.id === messageId);
       if (!msg) {
         json(res, 404, { error: "message not found" });
@@ -1009,6 +1393,17 @@ const server = createServer(async (req, res) => {
       if (!actionId) {
         json(res, 400, { error: "actionId required" });
         return;
+      }
+      if (isGithubAction(actionId) || msg.github) {
+        if (isGithubAction(actionId)) {
+          try {
+            const out = await handleGithubBlockAction({ msg, actionId, userId, value });
+            json(res, 200, out);
+          } catch (err) {
+            fail(res, err);
+          }
+          return;
+        }
       }
       const to = msg.seatId || "channel";
       const text = `block_actions ${actionId}${value ? `=${value}` : ""}`;
@@ -1034,7 +1429,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/harness" && method === "GET") {
-      json(res, 200, combinedStatus());
+      json(res, 200, await liveCombinedStatus());
       return;
     }
     if (pathname === "/api/v1/harness/ensure" && method === "POST") {
@@ -1078,7 +1473,14 @@ const server = createServer(async (req, res) => {
     const promptPath = pathname.match(/^\/api\/v1\/harness\/sessions\/([^/]+)\/prompt$/);
     if (promptPath && method === "POST") {
       const body = await readBody(req);
-      json(res, 200, await promptSession(decodeURIComponent(promptPath[1]), body));
+      try {
+        json(res, 200, await promptSession(decodeURIComponent(promptPath[1]), body));
+      } catch (err) {
+        if (!err.status || err.status === 404) throw err;
+        const model = body.model?.providerID ? `${body.model.providerID}/${body.model.modelID || ""}` : "";
+        const d = describeOpenCodeError(err, { model });
+        json(res, d.status, { error: d.message, code: d.code });
+      }
       return;
     }
     if (pathname === "/api/v1/providers" && method === "GET") {
@@ -1086,18 +1488,24 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/providers" && method === "PUT") {
-      json(res, 200, upsertProvider(await readBody(req)));
+      const out = upsertProvider(await readBody(req));
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     const authP = pathname.match(/^\/api\/v1\/providers\/([^/]+)\/auth$/);
     if (authP && method === "POST") {
       const body = await readBody(req);
-      json(res, 200, setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key));
+      const out = setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key);
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     const delP = pathname.match(/^\/api\/v1\/providers\/([^/]+)$/);
     if (delP && method === "DELETE") {
-      json(res, 200, removeProvider(decodeURIComponent(delP[1])));
+      const out = removeProvider(decodeURIComponent(delP[1]));
+      restartForProviderChange();
+      json(res, 200, out);
       return;
     }
     if (pathname === "/api/v1/models" && method === "GET") {
@@ -1153,14 +1561,60 @@ function startRoutineTicker() {
         });
         mutate((s) => clearRoutineActive(s, item.runId));
       }
+      let beats = [];
+      mutate((s) => {
+        beats = tickHeartbeats(s, Date.now());
+      });
+      for (const item of beats) {
+        if (item.coalesced) continue;
+        postBus({
+          from: "heartbeat",
+          to: item.seatId,
+          kind: "heartbeat",
+          text: item.prompt,
+          wake: true,
+        });
+      }
     } catch (err) {
       console.error("routine tick", err);
     }
   }, ROUTINE_TICK_MS);
 }
+
+function startDemoResetTicker() {
+  const ms = demoResetMs();
+  if (!ms) return;
+  console.log(`Demo reseed every ${ms}ms`);
+  setInterval(() => {
+    try {
+      const st = resetState();
+      try {
+        syncBotAgents(st.seats, st.teams);
+      } catch {
+        /* agent files are best-effort */
+      }
+    } catch (err) {
+      console.error("demo reset", err);
+    }
+  }, ms);
+}
+
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      `ROSTER_API_PORT ${PORT} is already in use on ${HOST}. Stop the other process or set a different ROSTER_API_PORT.`,
+    );
+  } else {
+    console.error(err);
+  }
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   const shown = HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST;
   console.log(`roster-flow CORE API http://${shown}:${PORT}`);
   if (!setupClosed(getState())) console.log(`Setup: ${publicUrl()}/setup`);
+  if (demoMode()) console.log(`Demo: ${publicUrl()}/app`);
   startRoutineTicker();
+  void autostartHarness().catch((err) => console.error("harness autostart", err));
+  startDemoResetTicker();
 });

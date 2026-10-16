@@ -1,203 +1,80 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { emptyState } from "./seed.mjs";
-import { hireSeat } from "./seats.mjs";
-import { handleMcp, mcpToolNames } from "./mcp.mjs";
-import { bootCore } from "./test-helpers.mjs";
+import { callMcpTool, handleMcpMessage, MCP_TOOLS, ensureMcpGuest, mcpGuestSeat, allowMcp } from "./mcp.mjs";
+import { emptyState, migrateState } from "./seed.mjs";
+import { getState, mutate } from "./store.mjs";
+import { deps, wakeSeat } from "./bus.mjs";
 
-const owner = { userId: "usr-1", seatId: "you", name: "Ops", tokenId: "tok-owner" };
-
-function world(caller = owner) {
-  const state = emptyState();
-  hireSeat(state, {
-    id: "guest-claude",
-    name: "Claude",
-    reportsTo: "eng-supervisor",
-    guest: true,
-    job: "External harness.",
-  });
-  const dir = mkdtempSync(join(tmpdir(), "rf-files-"));
-  const bus = [];
-  const deps = {
-    mutate(fn) {
-      fn(state);
-    },
-    getState() {
-      return state;
-    },
-    postMessage() {},
-    postBus(entry) {
-      bus.push(entry);
-      return entry;
-    },
-    async wakeSeat() {
-      return { offline: true };
-    },
-    async deliverCallback() {
-      return { ok: true, status: 204, at: new Date().toISOString() };
-    },
-  };
-  return {
-    state,
-    bus,
-    dir,
-    ctx: {
-      caller,
-      scopes: ["read", "write"],
-      getState: () => state,
-      mutate(fn) {
-        fn(state);
-      },
-      fileRoot: dir,
-      jobDeps: () => deps,
-    },
-  };
-}
-
-function toolText(out) {
-  const text = out.body?.result?.content?.[0]?.text;
-  return text ? JSON.parse(text) : null;
-}
-
-test("MCP tool list covers the epic set", () => {
-  assert.deepEqual(mcpToolNames(), [
-    "list_seats",
-    "list_teams",
-    "submit_task",
-    "get_task",
-    "wait_task",
-    "cancel_task",
-    "put_file",
-    "get_file",
-    "send_message",
-    "list_models",
-  ]);
+test("tools/list exposes bus verbs already in the OpenCode plugin", async () => {
+  const names = MCP_TOOLS.map((t) => t.name);
+  for (const name of ["roster_ask_human", "roster_handoff", "roster_inbox", "roster_report", "roster_send_message"]) {
+    assert.ok(names.includes(name), name);
+  }
+  const listed = await handleMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.ok(listed.result.tools.length >= 5);
 });
 
-test("guest sees only the manager's reporting line and its own jobs", async () => {
-  const guest = { userId: "usr-1", seatId: "guest-claude", name: "Claude", tokenId: "tok-guest" };
-  const { ctx, dir } = world(guest);
+test("initialize is streamable-HTTP JSON-RPC", async () => {
+  const out = await handleMcpMessage({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-03-26", clientInfo: { name: "test" } },
+  });
+  assert.equal(out.result.serverInfo.name, "roster-flow");
+  assert.ok(out.result.capabilities.tools);
+});
+
+test("send and inbox go through the CORE bus as mcp-guest", async () => {
+  mutate((s) => {
+    Object.assign(s, migrateState(emptyState()));
+    ensureMcpGuest(s);
+  });
+  const sent = await callMcpTool("roster_send_message", { to: "you", text: "hello from guest" });
+  assert.match(sent.content[0].text, /hello from guest/);
+  const box = await callMcpTool("roster_inbox", { seatId: "you" });
+  assert.match(box.content[0].text, /hello from guest/);
+  const room = getState().messages.filter((m) => m.seatId === "mcp-guest");
+  assert.ok(room.some((m) => /hello from guest/.test(m.text)));
+});
+
+test("mcp guest template is not an OpenCode loop", () => {
+  const seat = mcpGuestSeat();
+  assert.equal(seat.mcpGuest, true);
+  assert.equal(seat.seatType, "harness");
+  assert.ok(seat.deny.includes("edit"));
+});
+
+test("wakeSeat skips OpenCode for the MCP guest", async () => {
+  const prompts = [];
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_should_not" });
+  deps.promptSession = async () => {
+    prompts.push("nope");
+  };
+  mutate((s) => {
+    Object.assign(s, migrateState(emptyState()));
+    ensureMcpGuest(s);
+  });
   try {
-    const seats = await handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_seats", arguments: {} } }, ctx);
-    const ids = toolText(seats).map((s) => s.id).sort();
-    assert.deepEqual(ids, ["build", "eng-generic", "review"]);
-    const teams = toolText(await handleMcp({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "list_teams", arguments: {} } }, ctx));
-    const eng = teams.find((t) => t.id === "eng");
-    assert.ok(eng);
-    assert.equal(eng.supervisorSeatId, null);
-    assert.deepEqual([...eng.seatIds].sort(), ["build", "eng-generic", "review"]);
-    assert.ok(teams.every((t) => t.seatIds.every((id) => ["build", "eng-generic", "review"].includes(id))));
-
-    const denied = await handleMcp({
-      jsonrpc: "2.0",
-      id: 3,
-      method: "tools/call",
-      params: { name: "submit_task", arguments: { target: "qa", brief: "no" } },
-    }, ctx);
-    assert.equal(denied.body.result.isError, true);
-
-    const supervisor = await handleMcp({
-      jsonrpc: "2.0",
-      id: 4,
-      method: "tools/call",
-      params: { name: "submit_task", arguments: { target: "team:eng", routing: "supervisor", brief: "dispatch" } },
-    }, ctx);
-    assert.equal(supervisor.body.result.isError, true);
-
-    const ok = await handleMcp({
-      jsonrpc: "2.0",
-      id: 5,
-      method: "tools/call",
-      params: { name: "submit_task", arguments: { target: "build", brief: "Ship the webhook", files: [{ name: "note.txt", content: "hello" }] } },
-    }, ctx);
-    const job = toolText(ok);
-    assert.equal(ok.body.result.isError, false);
-    assert.equal(job.assignee, "build");
-    assert.equal(job.status, "queued");
-    assert.equal(job.files[0].name, "note.txt");
-
-    const hidden = world(owner);
-    hidden.state.jobs = ctx.getState().jobs;
-    const other = await handleMcp({
-      jsonrpc: "2.0",
-      id: 6,
-      method: "tools/call",
-      params: { name: "get_task", arguments: { jobId: job.id } },
-    }, { ...ctx, caller: { ...guest, seatId: "guest-other", tokenId: "tok-other" } });
-    assert.equal(other.body.result.isError, true);
-
-    const file = toolText(await handleMcp({
-      jsonrpc: "2.0",
-      id: 7,
-      method: "tools/call",
-      params: { name: "get_file", arguments: { jobId: job.id, name: "note.txt" } },
-    }, ctx));
-    assert.equal(Buffer.from(file.content, "base64").toString("utf8"), "hello");
+    const result = await wakeSeat("mcp-guest", "mail the guest", { from: "you", kind: "send_message" });
+    assert.equal(result.guest, true);
+    assert.equal(prompts.length, 0);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    Object.assign(deps, prev);
   }
 });
 
-test("read scope cannot submit, and initialize is JSON-RPC", async () => {
-  const { ctx, dir } = world();
-  ctx.scopes = ["read"];
+test("allowMcp requires the dedicated token when set", () => {
+  const prevTok = process.env.ROSTER_MCP_TOKEN;
+  process.env.ROSTER_MCP_TOKEN = "harness-secret";
   try {
-    const init = await handleMcp({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, ctx);
-    assert.equal(init.body.result.serverInfo.name, "roster-flow");
-    assert.equal(init.body.result.protocolVersion, "2025-03-26");
-    const note = await handleMcp({ jsonrpc: "2.0", method: "notifications/initialized" }, ctx);
-    assert.equal(note.status, 202);
-    const denied = await handleMcp({
-      jsonrpc: "2.0",
-      id: 2,
-      method: "tools/call",
-      params: { name: "submit_task", arguments: { target: "build", brief: "x" } },
-    }, ctx);
-    assert.equal(denied.body.result.isError, true);
-    assert.match(denied.body.result.content[0].text, /write scope/);
+    assert.equal(allowMcp({ headers: {} }, null), false);
+    assert.equal(allowMcp({ headers: { authorization: "Bearer harness-secret" } }, null), true);
+    assert.equal(allowMcp({ headers: {} }, { id: "owner" }), true);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("POST /mcp accepts a bearer token and submits a job", async () => {
-  const token = "rf_mcp_backend_token_00000001";
-  const core = await bootCore({
-    ROSTER_OWNER_EMAIL: "ops@example.com",
-    ROSTER_OWNER_PASSWORD: "password1",
-    ROSTER_OWNER_TEMPLATE: "starter",
-    ROSTER_API_TOKEN: token,
-    OPENCODE_BIN: "/nonexistent/opencode",
-    OPENCODE_PORT: "1",
-    OPENCODE_SYSTEM_PORT: "1",
-  });
-  try {
-    const missing = await fetch(`${core.base}/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
-    });
-    assert.equal(missing.status, 401);
-    const res = await fetch(`${core.base}/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: { name: "submit_task", arguments: { target: "build", brief: "from mcp-flow" } },
-      }),
-    });
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    const job = JSON.parse(body.result.content[0].text);
-    assert.equal(body.result.isError, false);
-    assert.equal(job.assignee, "build");
-    assert.equal(job.caller.seatId, "you");
-  } finally {
-    await core.stop();
+    if (prevTok === undefined) delete process.env.ROSTER_MCP_TOKEN;
+    else process.env.ROSTER_MCP_TOKEN = prevTok;
   }
 });

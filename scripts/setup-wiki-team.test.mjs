@@ -45,3 +45,24 @@ test("setup-wiki-team requires a token and reports a rejected one", async () => 
   const revoked = async () => ({ ok: false, status: 401, text: async () => '{"error":"invalid, expired, or revoked API token"}' });
   await assert.rejects(setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: revoked, log() {} }), /rejected \(401\)/);
 });
+
+test("setup-wiki-team explains a CORE that cannot write its data volume", async () => {
+  const eacces = async () => ({
+    ok: false,
+    status: 500,
+    text: async () => JSON.stringify({ error: "EACCES: permission denied, open '/data/opencode/opencode.json'", detail: "EACCES" }),
+  });
+  await assert.rejects(
+    setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: eacces, log() {} }),
+    (err) => {
+      assert.match(err.message, /^provider: 500 EACCES: permission denied, open '\/data\/opencode\/opencode\.json'/);
+      assert.match(err.message, /CORE cannot write its data volume\. Start roster-flow as root/);
+      return true;
+    },
+  );
+  const other = async () => ({ ok: false, status: 500, text: async () => '{"error":"boom"}' });
+  await assert.rejects(setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: other, log() {} }), (err) => {
+    assert.equal(err.message, "provider: 500 boom");
+    return true;
+  });
+});

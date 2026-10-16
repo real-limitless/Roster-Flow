@@ -16,7 +16,7 @@ Three surfaces, same seats and (when the harness is up) the same OpenCode sessio
 | **Harness** | OpenCode TUI / CLI | Session, tool trace, attach |
 | **Chart** | Living org tree | Seat, reporting line, run path |
 
-A **bot** is an OpenCode agent with a Roster-flow identity: name, reports-to, allow/deny tools, model, owner. A **team** is a named roster you can @mention (`@eng`, `@qa`). **Channel** is the conductor: it compiles a human sentence into a run graph and owns `@channel`. It does not ship code. A **room** (`#ship`) is a membership list of teams and seats.
+A **bot** is an OpenCode agent with a Roster-flow identity: name, reports-to, allow/deny tools, model, owner. A seat may instead use a **transport adapter** (`webhook`, `claude-code`, `codex`) so an existing harness can sit on the chart. Adapters are not a second agent loop. A **team** is a named roster you can @mention (`@eng`, `@qa`). **Channel** is the conductor: it compiles a human sentence into a run graph and owns `@channel`. It does not ship code. A **room** (`#ship`) is a membership list of teams and seats.
 
 ## Hierarchy
 
@@ -56,18 +56,21 @@ Faithful behaviors we implement (not UI-only):
 - **Jobs** — persistent work (`queued` through `done` / `failed` / `cancelled`) addressed to a seat or a team. Submit wakes the resolved seat on that bus and posts the brief in the room. `roster_report` with a job id completes it.
 - **Chief of staff** — Channel routes; specialists execute; humans confirm deploy/merge.
 - **Group thread** — the Room channel is the shared log (Grok Bot group chat).
+- **Slack** — optional transport for `#ship`. OpenCode stays the harness.
+- **Project knowledge** — per-project git/docs connectors. mcp-flow if live, else CORE-local. Not used for training.
+- **GitHub cards** — an Eng.Build report with a PR URL becomes a Room card (status, checks, human merge). Token stays in env. Worktrees stay local.
 
-The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools so an agent inside the harness can talk to peers through the same bus.
+The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools so an agent inside the harness can talk to peers through the same bus. CORE also serves those bus verbs (plus seat/channel reads) at `POST /mcp` so Claude Code, Cursor, and other MCP clients can sit in the room as `mcp-guest` without becoming a second OpenCode loop. mcp-flow remains the tool gateway.
 
-External harnesses do not connect to CORE as a public MCP gateway. mcp-flow sits in front and proxies `POST /mcp` (JSON-RPC, bearer token). A guest token is bound to a seat and can task only that manager's reporting line.
+CORE `POST /mcp` (JSON-RPC, bearer token) serves both the room tools ([MCP.md](MCP.md)) and the job tools. mcp-flow stays the public front door and proxies it for job work. A guest token is bound to a seat and can task only that manager's reporting line.
 
 ## Process map
 
 ```
-Browser (Vite :5173, or CORE-served dist in Compose)
+Browser (Vite :ROSTER_WEB_PORT, default 5175, or CORE-served dist in Compose)
     │  /api/v1/*
     ▼
-CORE API (ROSTER_API_HOST, default 127.0.0.1:8787; Compose binds 0.0.0.0)
+CORE API (ROSTER_API_HOST, default 127.0.0.1:8790 via ROSTER_API_PORT; 8787 is reserved for mcp-flow; Compose binds 0.0.0.0)
     ├── store  (ROSTER_DATA_DIR / .roster-flow/state.json)
     ├── bus    (messages, cycle detect)
     ├── providers → writes ROSTER_OPENCODE_DIR/opencode.json + auth sidecar
@@ -79,8 +82,12 @@ CORE API (ROSTER_API_HOST, default 127.0.0.1:8787; Compose binds 0.0.0.0)
 
 `docker compose up` is the official install: one image runs CORE + the built UI + OpenCode. Company and System serves stay on container localhost so PTY attach still uses `opencode attach http://127.0.0.1:<port>`. Persist `/data` (`roster-data` volume). Host `npm run standup` is unchanged (Vite + loopback CORE).
 
+Room-join peers (Claude Code / Codex / Cursor sitting in `#ship`) are tracked in [COMPETITIVE-ROOMS.md](COMPETITIVE-ROOMS.md). The MCP guest path is GitHub [#3](https://github.com/real-limitless/Roster-Flow/issues/3), not a second agent loop.
+
 ## What is not in this slice
 
 - Multi-tenant cloud sandboxes (that is Everflow’s product).
 - Real SSO. Local first-run is an owner account (name, email, password) plus a bearer session. `ROSTER_SKIP_ONBOARDING=1` keeps the open-API demo path and still accepts `Authorization: Bearer roster-demo`.
 - OpenChamber / OpenCode web iframe. Harness embeds `opencode attach` in xterm (PTY), not a second web app.
+
+Paperclip / Grok Bot gaps mapped to GitHub issues: [COMPETITIVE.md](COMPETITIVE.md).
