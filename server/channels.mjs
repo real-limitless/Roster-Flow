@@ -1,5 +1,8 @@
 import { slugify } from "./seed.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
+import { normalizeLimits, normalizeRespond, roomLimits, teamHomeRoom, teamRoomId } from "./room-config.mjs";
+
+export { RESPOND_MODES, ROOM_LIMIT_DEFAULTS, roomLimits, teamRoomId } from "./room-config.mjs";
 
 export function normalizeChannel(ch = {}) {
   const name = String(ch.name || ch.id || "").trim();
@@ -11,6 +14,8 @@ export function normalizeChannel(ch = {}) {
     teamIds: [...new Set(ch.teamIds || [])],
     seatIds: [...new Set(ch.seatIds || [])],
     leadSeatId: ch.leadSeatId ? String(ch.leadSeatId) : null,
+    respond: normalizeRespond(ch.respond),
+    limits: normalizeLimits(ch.limits),
   };
 }
 
@@ -119,7 +124,79 @@ function applyChannelPatch(state, ch, body) {
   if (body.removeSeat) ch.seatIds = ch.seatIds.filter((s) => s !== body.removeSeat);
   if (!ch.seatIds.includes(CONDUCTOR_ID)) ch.seatIds.unshift(CONDUCTOR_ID);
   if (body.leadSeatId !== undefined) ch.leadSeatId = validateLead(state, ch, body.leadSeatId);
+  if (body.respond !== undefined) ch.respond = normalizeRespond(body.respond, { strict: true });
+  if (body.limits !== undefined) ch.limits = { ...normalizeLimits(ch.limits), ...normalizeLimits(body.limits, { strict: true }) };
+  for (const [key, value] of Object.entries(body.limits || {})) {
+    if (value === null || value === "") delete ch.limits[key];
+  }
   dropStaleLead(ch, state);
+}
+
+/**
+ * The seat that answers un-mentioned messages under the room's mode, before
+ * pause / model checks. Null for quiet rooms.
+ */
+export function roomResponder(channel, state = {}) {
+  const mode = normalizeRespond(channel?.respond);
+  if (mode === "quiet") return null;
+  if (mode === "conductor") return CONDUCTOR_ID;
+  return responderCandidates(channel, state)[0] || null;
+}
+
+/** Rooms the seat belongs to, directly or through a team. */
+export function channelsForSeat(state = {}, seatId) {
+  const out = [];
+  for (const ch of state.channels || []) {
+    const direct = (ch.seatIds || []).includes(seatId);
+    const viaTeams = (ch.teamIds || []).filter((tid) =>
+      ((state.teams || []).find((t) => t.id === tid)?.seatIds || []).includes(seatId),
+    );
+    if (!direct && !viaTeams.length && seatId !== CONDUCTOR_ID) continue;
+    out.push({
+      id: ch.id,
+      name: ch.name,
+      direct: direct || seatId === CONDUCTOR_ID,
+      viaTeams,
+      lead: ch.leadSeatId === seatId,
+      responder: roomResponder(ch, state) === seatId,
+      respond: normalizeRespond(ch.respond),
+    });
+  }
+  return out;
+}
+
+/** Channel as sent to clients: the stored record plus the current responder. */
+export function publicChannel(channel, state = {}) {
+  return {
+    ...channel,
+    respond: normalizeRespond(channel.respond),
+    limits: normalizeLimits(channel.limits),
+    responderSeatId: roomResponder(channel, state),
+  };
+}
+
+/**
+ * Give every staffed team a `team-<id>` room led by its supervisor. Records the
+ * client drafted before rooms had modes get the supervisor as lead once.
+ */
+export function ensureTeamRooms(state) {
+  state.channels = state.channels || [];
+  for (const team of state.teams || []) {
+    if (team.staffed === false || !(team.seatIds || []).length) continue;
+    const id = teamRoomId(team.id);
+    const existing = state.channels.find((c) => c.id === id);
+    if (!existing) {
+      state.channels.push(teamHomeRoom(team));
+      continue;
+    }
+    if (!(existing.teamIds || []).includes(team.id)) existing.teamIds = [...(existing.teamIds || []), team.id];
+    if (existing.respond === undefined) {
+      existing.respond = "lead";
+      if (!existing.leadSeatId && team.supervisorSeatId) existing.leadSeatId = team.supervisorSeatId;
+    }
+    dropStaleLead(existing, state);
+  }
+  return state;
 }
 
 export function defaultMembership(id) {
