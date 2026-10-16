@@ -355,7 +355,13 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
         for (const p of parts) {
           if (!p.id || seen.has(p.id)) continue;
           seen.add(p.id);
-          if (getState().messages.some((m) => m.text === p.text && m.channel === channelId)) continue;
+          if (
+            getState().messages.some(
+              (m) => m.channel === channelId && (m.sessionId === p.id || (m.seatId === seatId && m.text === p.text)),
+            )
+          ) {
+            continue;
+          }
           const seat = getState().seats.find((s) => s.id === seatId);
           postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id });
           posted += 1;
@@ -385,16 +391,23 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
       }
       if ([...seats].every((id) => failed.has(id))) break;
       if (replies) break;
-      const anyStarting = [...seats].some(
-        (id) => !failed.has(id) && (getState().runs || []).some((r) => r.seatId === id && r.status === "starting"),
+      const stillOpen = [...seats].some(
+        (id) =>
+          !failed.has(id) &&
+          (getState().runs || []).some((r) => r.seatId === id && (r.status === "starting" || r.status === "running")),
       );
-      if (!anyStarting) {
-        settledPolls += 1;
-        if (settledPolls >= 8) break;
-      }
+      if (!stillOpen) break;
+      settledPolls += 1;
+      if (settledPolls >= 8) break;
       await new Promise((r) => setTimeout(r, deps.followDelayMs));
     }
-    const waiting = [...seats].filter((id) => !failed.has(id) && !(getState().runs || []).some((r) => r.seatId === id && r.status === "running"));
+    const waiting = [...seats].filter((id) => {
+      if (failed.has(id)) return false;
+      const latest = [...(getState().runs || [])].reverse().find((r) => r.seatId === id);
+      if (latest && (latest.status === "running" || latest.status === "done")) return false;
+      if ((getState().messages || []).some((m) => m.channel === channelId && m.seatId === id && !m.system)) return false;
+      return true;
+    });
     if (!replies && waiting.length) {
       const first = waiting[0];
       const seat = getState().seats.find((s) => s.id === first);
