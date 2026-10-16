@@ -477,8 +477,8 @@ function SeatBtn({
         {seat.system ? " · system" : ""}
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}
-        {budget ? " Â· budget" : seat.status === "paused" ? " Â· paused" : ""}
-        {claimed ? " Â· claim" : ""}
+        {budget ? " · budget" : seat.status === "paused" ? " · paused" : ""}
+        {claimed ? " · claim" : ""}
       </div>
     </button>
   );
