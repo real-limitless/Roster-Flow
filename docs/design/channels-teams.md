@@ -315,3 +315,13 @@ Acceptance on the live app: with a usable model loaded on the System serve, `Any
 - **Project rooms with a record put the PM first** when no lead is set, then the usual order.
 - **The header hides system seats** unless "Show system seats" is on or the seat is the room's responder. The responder's avatar is listed first.
 - **"Leave room" only shows for direct members.** A seat that is in a room through a team leaves by leaving the team or removing the team from the room.
+
+### Phase 3
+- **Which wakes use a room session:** room wakes (implicit, @mentions, team, project and channel rooms). Bus mail (`roster_send_message` / `roster_handoff`), heartbeats, jobs, and the seat's own `dm-<seat>` room stay in the DM session. Phase 4 moves tool calls onto the room of the calling session.
+- **No migration of the flat map.** `state.sessions` / `state.systemSessions` stay the DM sessions as they are. `state.roomSessions` starts empty, and a seat's first wake in a room opens `roster:<seat>:<room>`. `sessionRooms` is now only set by DM-session wakes from the seat's DM room, so DM replies no longer jump to the last room the seat was mentioned in.
+- **A room session belongs to one serve.** The entry records `harness`. If the seat moves between the company and System serve, the next wake opens a new session there.
+- **Context starts with room history.** A new room session has no cursor, so the first wake carries the last 20 room messages. After each prompt is accepted, the cursor moves to the newest room message. The triggering message is left out because the prompt already quotes it.
+- **Reply capture follows the wake's session id.** `followChannel` gets a seat→session map from the wake results. Seats it picks up from bus mail in the room are read from their DM session, as before. `syncBoundSessions` mirrors room sessions into their room and DM sessions into `sessionRooms[seat]` or `dm-<seat>`.
+- **Plugin system block (`systemBlock()`)** looks up the session through `GET /api/v1/sessions/:id/room`. A room session gets the rules, the room name, and one line (id, name, team, job) per member of the room and of the caller's team, with no persona or instructions. DM and unknown sessions keep the full-org block.
+- **Cleanup runs hourly** from `startSessionSync` (`cleanupRoomSessions()`), using `lastWakeAt`. The serve's `DELETE /session/:id` failing (already gone) still drops the entry.
+- **Fixed while testing: an adopted serve was dropped on the next `ensure()`.** `ensureOnce` only kept an instance that had a child process, so a serve CORE adopted (started by the container entrypoint, or the e2e fake) was discarded on the second wake, and CORE tried to spawn `opencode` instead. It now keeps a healthy adopted serve.
