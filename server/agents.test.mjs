@@ -2,17 +2,33 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync, existsSync } from "node:fs";
 import { agentMarkdown, permissionFor, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
-import { hireSeat } from "./seats.mjs";
+import { firstLoadedModel, hireSeat } from "./seats.mjs";
 import { emptyState } from "./seed.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("hiring with model '' does not store xai/grok-4", () => {
+test("hiring with model '' does not store the built-in opencode provider", () => {
+  const builtin = [{ providerID: "opencode", modelID: "longcat-2.5-preview-free", connected: true }];
+  assert.equal(firstLoadedModel(builtin, builtin), undefined);
   const seat = hireSeat(emptyState(), { name: "Blank Model", model: "", job: "Unset." });
+  assert.notEqual(seat.model, "opencode/longcat-2.5-preview-free");
   assert.notEqual(seat.model, "xai/grok-4");
-  if (seat.model) assert.match(String(seat.model), /\//);
+  const connected = [
+    { providerID: "opencode", modelID: "longcat-2.5-preview-free", connected: true },
+    { providerID: "featherless", modelID: "stub-model", connected: true },
+  ];
+  assert.equal(
+    firstLoadedModel(
+      [
+        { providerID: "opencode", modelID: "longcat-2.5-preview-free" },
+        { providerID: "featherless", modelID: "stub-model" },
+      ],
+      connected,
+    ),
+    "featherless/stub-model",
+  );
 });
 
 test("agentMarkdown does not invent xai/grok-4 when the seat has no model", () => {
