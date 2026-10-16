@@ -94,6 +94,9 @@ export function fireSeat(state, id) {
   for (const project of state.projects || []) {
     if (project.pmSeatId === id) project.pmSeatId = undefined;
   }
+  for (const channel of state.channels || []) {
+    if (channel.leadSeatId === id) channel.leadSeatId = null;
+  }
   state.seats = state.seats.filter((s) => s.id !== id);
   try {
     removeSeatAgent(id);

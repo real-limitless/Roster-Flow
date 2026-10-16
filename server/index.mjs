@@ -1182,7 +1182,7 @@ const server = createServer(async (req, res) => {
       const routed = text
         ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
         : { mentions: [], wakes: [], notify: [], pending: Promise.resolve([]) };
-      const wakeResults = (await routed.pending || []).map((row) => ({
+      const wakeResults = (await (routed.started || routed.pending) || []).map((row) => ({
         seat: row?.seat || null,
         runId: row?.runId || null,
         started: Boolean(row?.started),
@@ -1195,6 +1195,7 @@ const server = createServer(async (req, res) => {
         runId: wakeResults[0]?.runId ?? null,
         started: wakeResults.length ? wakeResults.every((row) => row.started) : false,
         wakeResults,
+        ...(routed.queued ? { queued: true } : {}),
         messages: getState().messages.filter((m) => m.channel === id),
       });
       return;

@@ -15,6 +15,19 @@ test("promptBody tells the seat which job to finish", () => {
   assert.match(text, /roster_report/);
 });
 
+test("promptBody asks an un-mentioned responder for a plain-text reply in that room", () => {
+  const seat = { name: "Channel", role: "Conductor", job: "Conduct", tools: ["bus"], deny: [] };
+  const text = promptBody(seat, "channel", "Anyone here", { from: "you", kind: "implicit", channel: "general" }, null).parts[0].text;
+  assert.match(text, /A human wrote in #general without mentioning anyone/);
+  assert.match(text, /Reply in plain text, briefly, as yourself\. Roster-flow posts your text to #general\./);
+  assert.match(text, /Do not use roster_report for this reply/);
+  assert.doesNotMatch(text, /Use roster_send_message \/ roster_handoff \/ roster_report to talk/);
+  const mentioned = promptBody(seat, "channel", "@channel hi", { from: "you", kind: "mention-seat", channel: "ship" }, null).parts[0].text;
+  assert.match(mentioned, /Reply in plain text\. Roster-flow posts your text to #ship\./);
+  const mail = promptBody(seat, "channel", "hi", { from: "build", kind: "send_message" }, null).parts[0].text;
+  assert.doesNotMatch(mail, /Reply in plain text/);
+});
+
 test("wakeSeat starts a run id and puts it on the prompt", async () => {
   const prompts = [];
   const prev = { ...deps };

@@ -118,6 +118,23 @@ export async function ensureSeatSession(to) {
   return sessionId || null;
 }
 
+export const IMPLICIT = "implicit";
+
+const ROOM_KINDS = new Set([IMPLICIT, "mention-seat", "mention-team", "mention-channel", "team-room", "project-pm", "project-channel", "dm"]);
+
+/** Lines that tell a seat woken from a room how its reply gets back there. */
+export function roomReplyLines(meta = {}) {
+  if (!meta.channel || !ROOM_KINDS.has(meta.kind)) return [];
+  const room = `#${meta.channel}`;
+  if (meta.kind === IMPLICIT) {
+    return [
+      `A human wrote in ${room} without mentioning anyone. You are the seat answering for ${room}.`,
+      `Reply in plain text, briefly, as yourself. Roster-flow posts your text to ${room}. Do not use roster_report for this reply.`,
+    ];
+  }
+  return [`Reply in plain text. Roster-flow posts your text to ${room}.`];
+}
+
 export function promptBody(seat, to, text, meta, model) {
   const pack = goalPackLines(getState(), { seat, runId: meta.runId });
   return {
@@ -141,9 +158,12 @@ export function promptBody(seat, to, text, meta, model) {
           meta.jobId
             ? `Job ${meta.jobId}. Finish with roster_report jobId=${meta.jobId}. Park with roster_ask_human jobId=${meta.jobId}.`
             : "",
+          ...roomReplyLines(meta),
           `Message from ${meta.from || "bus"} (${meta.kind || "send_message"}):`,
           text,
-          "Use roster_send_message / roster_handoff / roster_report to talk to peers. Do not impersonate them.",
+          meta.kind === IMPLICIT
+            ? "Answer that message in plain text. Use roster_send_message / roster_handoff only if they asked for work another seat owns."
+            : "Use roster_send_message / roster_handoff / roster_report to talk to peers. Do not impersonate them.",
         ]
           .filter(Boolean)
           .join("\n"),
