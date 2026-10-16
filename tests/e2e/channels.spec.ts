@@ -257,3 +257,75 @@ test("a bot @mention wakes another room member at hop 1, and plugin posts land i
     await dropFakeModel(request);
   }
 });
+
+test("team mode asks members, hides PASS, shows who is thinking, meters real tokens, and a spent room budget goes quiet", async ({ page, request }) => {
+  await resetApi(request);
+  await useFakeModel(request, ["build", "product", "devops"]);
+  const usage = { tokens: { input: 1200, output: 80, reasoning: 20, cache: { read: 500, write: 0 } }, cost: 0.0042 };
+  const fake = await startFakeOpenCode({
+    port: COMPANY_PORT,
+    providers: { e2efake: ["m1"] },
+    reply: (p) => (p.agent === "build" ? "Build can take the deploy." : p.agent === "product" ? "PASS" : null),
+    delayMs: (p) => (p.agent === "build" ? 2500 : 150),
+    usage: () => usage,
+  });
+  try {
+    await page.goto("/app");
+    await page.getByTestId("channel-ship").click();
+    await page.getByTestId("conversation-title").click();
+    await page.getByTestId("room-respond").selectOption("team");
+    await page.getByTestId("room-lead").selectOption("build");
+    await page.getByTestId("room-fanout").fill("2");
+    await page.getByTestId("room-fanout").blur();
+    await page.getByTestId("room-tokens-per-day").fill("1000");
+    await page.getByTestId("room-tokens-per-day").blur();
+    await expect
+      .poll(async () => ((await (await request.get(`${API}/api/v1/channels/ship`)).json()) as Room).limits)
+      .toEqual({ fanout: 2, tokensPerDay: 1000 });
+    await expect(page.getByTestId("room-budget")).toContainText("Today: 0 of 1,000 tokens");
+    await closeModal(page);
+    await expect(page.getByTestId("conversation-responder")).toHaveText("Team replies");
+
+    await page.getByTestId("composer").fill("who can take the deploy?");
+    await page.getByTestId("send-message").click();
+    await expect(page.getByTestId("thinking-build")).toContainText("Eng.Build is thinking…");
+    await expect(page.getByText("Build can take the deploy.").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("thinking-build")).toHaveCount(0);
+
+    expect(fake.prompts.map((p) => p.agent).sort()).toEqual(["build", "product"]);
+    expect(fake.prompts.every((p) => p.text.includes("otherwise reply with exactly PASS"))).toBeTruthy();
+    const ship = (await (await request.get(`${API}/api/v1/channels/ship/messages`)).json()) as Msg[];
+    expect(ship.some((m) => m.text === "PASS")).toBeFalsy();
+    expect(ship.some((m) => /^Waking /.test(m.text))).toBeFalsy();
+
+    type Row = { seatId: string; tokens: number; usdEstimate: number; metered?: string; channelId?: string; cacheReadTokens?: number };
+    await expect
+      .poll(async () => {
+        const rows = (await (await request.get(`${API}/api/v1/usage?channelId=ship`)).json()) as Row[] | { rows: Row[] };
+        const list = Array.isArray(rows) ? rows : rows.rows;
+        return list
+          .filter((r) => r.metered === "opencode")
+          .map((r) => [r.seatId, r.tokens, r.usdEstimate, r.cacheReadTokens])
+          .sort();
+      }, { timeout: 15_000 })
+      .toEqual([
+        ["build", 1300, 0.0042, 500],
+        ["product", 1300, 0.0042, 500],
+      ]);
+
+    await expect
+      .poll(async () => ((await (await request.get(`${API}/api/v1/channels/ship`)).json()) as Room & { budget?: { over: boolean } }).budget?.over)
+      .toBe(true);
+    await expect(page.getByTestId("conversation-responder")).toHaveText("Quiet (budget)", { timeout: 10_000 });
+    await page.getByTestId("composer").fill("anyone else?");
+    await page.getByTestId("send-message").click();
+    await expect(page.getByText(/This room used its daily budget \(2600 of 1000 tokens\)/).first()).toBeVisible({ timeout: 10_000 });
+    expect(fake.prompts).toHaveLength(2);
+
+    const trace = (await (await request.get(`${API}/api/v1/debug/trace?scope=harness&limit=200`)).json()) as { events: Array<{ step: string }> };
+    expect(trace.events.some((e) => e.step === "events.connected")).toBeTruthy();
+  } finally {
+    await fake.close();
+    await dropFakeModel(request);
+  }
+});

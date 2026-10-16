@@ -158,10 +158,21 @@ export type Team = {
   models?: string[];
 };
 
-export type RespondMode = "lead" | "conductor" | "quiet";
+export type RespondMode = "lead" | "team" | "conductor" | "quiet";
+
+export type RoomBudget = {
+  tokensPerDay: number;
+  spentToday: number;
+  over: boolean;
+  quietUntil: string | null;
+};
+
+export type ThinkingSeat = { seatId: string; name: string; model?: string | null; since: number };
 
 export type RoomLimits = {
   implicitPerMinute?: number;
+  fanout?: number;
+  tokensPerDay?: number;
   maxHops?: number;
   maxBotWakesPerThread?: number;
 };
@@ -178,6 +189,8 @@ export type Channel = {
   limits?: RoomLimits;
   /** Set by CORE: who answers un-mentioned messages now, before pause and model checks. */
   responderSeatId?: string | null;
+  /** Set by CORE when the room has a daily token budget. */
+  budget?: RoomBudget | null;
 };
 
 export type SeatRoom = {

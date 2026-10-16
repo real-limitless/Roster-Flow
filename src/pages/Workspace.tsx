@@ -24,6 +24,7 @@ import {
   type ModelStrategy,
   type Task,
   type Team,
+  type ThinkingSeat,
   isOpenCodeSeat,
   seatAdapter,
 } from "../data";
@@ -69,6 +70,7 @@ export function Workspace() {
   const [rooms, setRooms] = useState<Channel[]>(seedChannels);
   const [focus, setFocus] = useState<ConversationFocus>({ kind: "channel", id: "ship" });
   const [messages, setMessages] = useState<Msg[]>(seedMessages);
+  const [thinking, setThinking] = useState<ThinkingSeat[]>([]);
   const [selectedId, setSelectedId] = useState("build");
   const [showSystem, setShowSystem] = useState(false);
   const [createModal, setCreateModal] = useState<CreateKind | null>(null);
@@ -236,11 +238,22 @@ export function Workspace() {
           if (Array.isArray(m)) setMessages((prev) => replaceChannel(prev, channel, m));
         })
         .catch(() => undefined);
+      void api
+        .thinking(channel)
+        .then((rows) => setThinking(Array.isArray(rows) ? rows : []))
+        .catch(() => setThinking([]));
     };
+    setThinking([]);
     tick();
     const t = window.setInterval(tick, 800);
     return () => window.clearInterval(t);
   }, [channel]);
+
+  const roomMessageCount = messages.filter((m) => m.channel === channel).length;
+  useEffect(() => {
+    // Replies change server-derived room fields (responder, today's budget), so re-read rooms as messages land.
+    refreshRooms();
+  }, [channel, roomMessageCount]);
 
   useEffect(() => {
     const tick = () => {
@@ -889,6 +902,13 @@ export function Workspace() {
                               .catch(() => undefined);
                           }}
                         />
+                      ))}
+                      {thinking.map((t) => (
+                        <div className="thinking-row" key={t.seatId} data-testid={`thinking-${t.seatId}`}>
+                          <span className="thinking-dots" aria-hidden="true" />
+                          {t.name} is thinking…
+                          {t.model && <span className="meta">{t.model}</span>}
+                        </div>
                       ))}
                     </div>
                     {coachOpen && (
