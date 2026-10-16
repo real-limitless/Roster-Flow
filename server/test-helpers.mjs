@@ -38,6 +38,7 @@ export async function bootCore(env) {
   }
   return {
     base,
+    dir,
     async stop() {
       child.kill("SIGTERM");
       await Promise.race([
