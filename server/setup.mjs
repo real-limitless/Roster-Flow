@@ -17,7 +17,12 @@ export function publicState(state) {
   };
 }
 
-export function setupStatus(state, { user = null, binary = null, providerKeys = false, dataWritable = true } = {}) {
+/**
+ * `harness` is the company serve state from harness.status ("up" | "offline").
+ * `harnessReady` means that serve answers health now, the same signal
+ * /api/v1/health reports; a binary on PATH only sets `checks.opencode`.
+ */
+export function setupStatus(state, { user = null, binary = null, harness = "offline", providerKeys = false, dataWritable = true } = {}) {
   const skip = skipOnboarding();
   const users = state.users || [];
   const hasUser = users.length > 0;
@@ -37,7 +42,7 @@ export function setupStatus(state, { user = null, binary = null, providerKeys = 
     hasOwner: hasUser,
     setupClosed: hasUser,
     authenticated: Boolean(user) || skip,
-    harnessReady: Boolean(binary),
+    harnessReady: harness === "up",
     bootstrapTokenRequired: Boolean(bootstrapToken()) && !hasUser,
     complete,
     installSeen: Boolean(onboarding.installSeen) || complete,
@@ -47,6 +52,7 @@ export function setupStatus(state, { user = null, binary = null, providerKeys = 
     checks: {
       api: true,
       opencode: Boolean(binary),
+      harness: harness === "up",
       providerKeys: Boolean(providerKeys),
       dataDir: Boolean(dataWritable),
     },
@@ -76,6 +82,7 @@ export function publicSetupStatus(status) {
     checks: {
       api: Boolean(status.checks?.api),
       opencode: Boolean(status.checks?.opencode),
+      harness: Boolean(status.checks?.harness),
       providerKeys: Boolean(status.checks?.providerKeys),
       dataDir: Boolean(status.checks?.dataDir),
     },

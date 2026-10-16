@@ -65,6 +65,8 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_PROVIDER_BASE_URL` | unset | OpenAI-compatible base URL. |
 | `ROSTER_PROVIDER_API_KEY_ENV` | unset | **Name** of the env var that holds the key. The key is not written into config. |
 | `ROSTER_PROVIDER_MODELS` | unset | Comma-separated model ids. |
+| `OPENCODE_CONFIG` | empty | Optional extra OpenCode config file for the company serve. Empty means only `ROSTER_OPENCODE_DIR/opencode.json`, which the serve always loads (it applies on top of this file). |
+| `FEATHERLESS_API_KEY` | unset | Key for the `featherless` provider that `roster-setup` writes as `{env:FEATHERLESS_API_KEY}`. Passed through to both OpenCode serves. |
 
 `ROSTER_OWNER_*`, `ROSTER_BOOTSTRAP_TOKEN`, and `ROSTER_API_TOKEN` / `ROSTER_API_TOKEN_SCOPES` are applied on boot. See [Headless bootstrap](#headless-bootstrap-no-setup-screen) below.
 
@@ -76,7 +78,7 @@ docker compose -f docker-compose.dokploy.yml up --build
 
 The file joins the external network `dokploy-network` and registers aliases `roster-flow` and `roster`. It exposes 8790 and 5175 and does not publish them on the host. wiki-flow should call Roster at `http://roster-flow:8790` (or whatever `ROSTER_API_PORT` is). `ROSTER_PUBLIC_URL` defaults to `http://127.0.0.1:8790` on this file because CORE serves the UI on the API port; override it with the public hostname.
 
-`roster-setup` is a one-shot that runs `scripts/setup-wiki-team.mjs` after CORE is healthy. It uses `ROSTER_API_TOKEN` (needs `write`) against `http://roster-flow:$ROSTER_API_PORT`. Set the same token on the app service so boot registers it, and set `ROSTER_OWNER_*` so an owner exists before the one-shot runs. If `ROSTER_API_TOKEN` is unset, the one-shot skips. `WIKI_MODEL` and `WIKI_PROJECT_ID` are optional (`Qwen/Qwen2.5-Coder-32B-Instruct`, `wiki-flow-docs`).
+`roster-setup` is a one-shot that runs `scripts/setup-wiki-team.mjs` after CORE is healthy. It uses `ROSTER_API_TOKEN` (needs `write`) against `http://roster-flow:$ROSTER_API_PORT`. Set the same token on the app service so boot registers it, and set `ROSTER_OWNER_*` so an owner exists before the one-shot runs. If `ROSTER_API_TOKEN` is unset, the one-shot skips. `WIKI_MODEL` and `WIKI_PROJECT_ID` are optional (`Qwen/Qwen2.5-Coder-32B-Instruct`, `wiki-flow-docs`). Its provider write lands in `/data/opencode/opencode.json`; CORE restarts any running OpenCode serve so the provider is live, and `GET /api/v1/health` lists it under `loadedProviders`.
 
 Optional bind mount instead of the named volume (Fedora/Podman SELinux: add `:Z`):
 

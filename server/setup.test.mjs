@@ -100,6 +100,20 @@ test("unauthenticated setup status is booleans only and hides owner identity", a
   assert.equal(JSON.stringify(redacted).includes("chen@example.com"), false);
 });
 
+test("harnessReady tracks the live company serve, not just the binary", () => {
+  const state = pendingState();
+  const offline = setupStatus(state, { binary: "/usr/local/bin/opencode", harness: "offline" });
+  assert.equal(offline.harnessReady, false);
+  assert.equal(offline.checks.opencode, true);
+  assert.equal(offline.checks.harness, false);
+  assert.equal(setupStatus(state, { binary: "/usr/local/bin/opencode" }).harnessReady, false);
+  const up = setupStatus(state, { binary: "/usr/local/bin/opencode", harness: "up" });
+  assert.equal(up.harnessReady, true);
+  assert.equal(publicSetupStatus(up).harnessReady, true);
+  assert.equal(publicSetupStatus(up).checks.harness, true);
+  assert.equal(publicSetupStatus(offline).harnessReady, false);
+});
+
 test("completeSetup is 409 after it already finished", async () => {
   const state = pendingState();
   await addFirstUser(state, { name: "Chen", email: "chen@example.com", password: "password1" });
