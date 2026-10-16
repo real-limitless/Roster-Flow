@@ -316,10 +316,32 @@ export function loadedProviderIds(loaded) {
   return Array.isArray(loaded) ? [...new Set(loaded.map((m) => m.providerID).filter(Boolean))] : [];
 }
 
+/** OpenCode ships this provider with no key. It is not a Roster fallback. */
+export function isBuiltinProvider(providerID) {
+  return String(providerID || "").toLowerCase() === "opencode";
+}
+
+/**
+ * A model may be written into the shared OpenCode config only when its provider
+ * is one the operator configured and connected. The built-in `opencode` provider
+ * is never written: one bad agent model reloads the whole serve.
+ */
+export function modelAllowedInConfig(model) {
+  const parsed = parseModelRef(model);
+  if (!parsed?.providerID || !parsed.modelID) return false;
+  if (isBuiltinProvider(parsed.providerID)) return false;
+  const provider = listProviders().find((p) => p.id === parsed.providerID);
+  if (!provider?.connected) return false;
+  if ((provider.models || []).length && !provider.models.some((m) => m.id === parsed.modelID)) return false;
+  return true;
+}
+
 /** A connected configured model, restricted to ones the serve loaded when `loaded` is known. */
-export function firstConnectedModel(loaded = null) {
-  const models = listModels().filter((m) => m.connected && isLoadedModel(loaded, m.providerID, m.modelID) !== false);
-  if (!models.length) return null;
+export function firstConnectedModel(loaded = null, models = listModels()) {
+  const pool = (models || []).filter(
+    (m) => m.connected && !isBuiltinProvider(m.providerID) && isLoadedModel(loaded, m.providerID, m.modelID) !== false,
+  );
+  if (!pool.length) return null;
   const preferred = [
     ["infiniterouter-dev", "big-pickle"],
     ["infiniterouter-dev", "auto"],
@@ -328,10 +350,10 @@ export function firstConnectedModel(loaded = null) {
     ["xai", "grok-4"],
   ];
   for (const [providerID, modelID] of preferred) {
-    const hit = models.find((m) => m.providerID === providerID && m.modelID === modelID);
+    const hit = pool.find((m) => m.providerID === providerID && m.modelID === modelID);
     if (hit) return hit;
   }
-  return models[0];
+  return pool[0];
 }
 
 export function keyStatusForModel(model, loaded = null) {

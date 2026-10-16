@@ -1,5 +1,5 @@
 import { getState, mutate, uid } from "./store.mjs";
-import { isPass, meterChildren, meterTurn, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
+import { blockLatestRun, isPass, meterChildren, meterTurn, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
 import { effectiveRespond, resolveMembers, responderCandidates, roomBudget, roomLimits } from "./channels.mjs";
 import { isOpenCodeAdapter } from "./adapters.mjs";
@@ -312,7 +312,10 @@ async function wakeTarget(channelId, text, from, target) {
   if (!plan.ok) {
     stopThinking(channelId, seatId);
     const woke = await deps.wakeSeat(target.to, text, meta);
-    return { ...woke, seat: woke?.seat || seatId, error: woke?.error || plan.hint, nokey: true, runId: woke?.runId || null, started: false };
+    const runId = woke?.runId || null;
+    const reason = woke?.error || plan.hint || "model not loaded";
+    if (runId) blockLatestRun(woke?.seat || seatId, reason);
+    return { ...woke, seat: woke?.seat || seatId, error: reason, nokey: true, runId, started: false };
   }
   emit({
     scope: "chat",
@@ -736,6 +739,7 @@ export async function followChannel(
         seat: first,
         detail: { hint: hint || "noreply" },
       });
+      if (ticks > 0) blockLatestRun(first, hint || "did not reply");
     } else if (!replies && passed.size && !failed.size) {
       const names = [...passed].map((id) => seatOf(id)?.name || id).join(", ");
       statusMessage(channelId, `Nobody had anything to add (${names} passed).`);
