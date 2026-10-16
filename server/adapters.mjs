@@ -1,11 +1,30 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getState, mutate } from "./store.mjs";
 import { rosterApiUrl } from "./config.mjs";
+import { postPinned, resolveCallback } from "./jobs.mjs";
 
 export const ADAPTERS = ["opencode", "webhook", "claude-code", "codex"];
 
+/**
+ * adapterUrl gets the same address rules as job callbackUrl: private and
+ * loopback hosts need ROSTER_CALLBACK_ALLOWLIST, link-local/metadata never
+ * pass, the connection is pinned to the checked addresses, and redirects are
+ * not followed.
+ */
+async function postAdapterWake(url, init) {
+  let target;
+  try {
+    target = await resolveCallback(url);
+  } catch (err) {
+    throw new Error(String(err?.message || err).replace(/callbackUrl/g, "adapterUrl"));
+  }
+  const res = await postPinned(target, { headers: init.headers, body: init.body, timeoutMs: 5000 });
+  if (res.status >= 300 && res.status < 400) throw new Error("adapterUrl redirect blocked");
+  return { ok: res.status >= 200 && res.status < 300, status: res.status };
+}
+
 export const deps = {
-  fetchFn: globalThis.fetch.bind(globalThis),
+  fetchFn: postAdapterWake,
 };
 
 export function normalizeAdapter(seat) {

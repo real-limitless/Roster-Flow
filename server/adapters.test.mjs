@@ -21,6 +21,7 @@ test("publicSeat strips adapterSecret", () => {
 
 test("webhook wake POSTs the bus payload with report/handoff callbacks", async () => {
   const posts = [];
+  const sendWake = adapterDeps.fetchFn;
   adapterDeps.fetchFn = async (url, init) => {
     posts.push({ url, body: JSON.parse(init.body) });
     return { ok: true, status: 202 };
@@ -47,7 +48,7 @@ test("webhook wake POSTs the bus payload with report/handoff callbacks", async (
     const seat = getState().seats.find((x) => x.id === "hook-bot");
     assert.equal(seat.lastAdapterWake.ok, true);
   } finally {
-    adapterDeps.fetchFn = globalThis.fetch.bind(globalThis);
+    adapterDeps.fetchFn = sendWake;
   }
 });
 
@@ -110,4 +111,36 @@ test("adapterWakePayload is a transport, not a runtime", () => {
   const payload = adapterWakePayload({ id: "hook-bot", name: "Hook", adapter: "webhook" }, "hi", { from: "you" });
   assert.ok(payload.callbacks.report);
   assert.equal(payload.adapter, "webhook");
+});
+
+test("adapterUrl follows the callback address rules", async () => {
+  const { createServer } = await import("node:http");
+  const hits = [];
+  const srv = createServer((req, res) => {
+    hits.push(req.url);
+    res.writeHead(202).end("{}");
+  });
+  await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${srv.address().port}/wake`;
+  const seat = { id: "hook-bot", name: "Hook", adapter: "webhook", adapterUrl: url };
+  const prev = process.env.ROSTER_CALLBACK_ALLOWLIST;
+  try {
+    delete process.env.ROSTER_CALLBACK_ALLOWLIST;
+    const blocked = await wakeAdapter(seat, "hi", { from: "you" });
+    assert.match(blocked.error, /adapterUrl resolves to a blocked address/);
+    assert.equal(hits.length, 0);
+
+    const metadata = await wakeAdapter({ ...seat, adapterUrl: "http://169.254.169.254/latest" }, "hi", {});
+    assert.match(metadata.error, /blocked address/);
+
+    process.env.ROSTER_CALLBACK_ALLOWLIST = "127.0.0.1";
+    const ok = await wakeAdapter(seat, "hi", { from: "you" });
+    assert.equal(ok.notified, true);
+    assert.equal(ok.status, 202);
+    assert.deepEqual(hits, ["/wake"]);
+  } finally {
+    if (prev === undefined) delete process.env.ROSTER_CALLBACK_ALLOWLIST;
+    else process.env.ROSTER_CALLBACK_ALLOWLIST = prev;
+    await new Promise((resolve) => srv.close(resolve));
+  }
 });

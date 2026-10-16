@@ -758,7 +758,7 @@ export function pinnedLookup(addresses) {
 }
 
 /** Connects to a checked address. Host header and TLS SNI stay the original hostname. */
-function postPinned(target, { headers, body, timeoutMs }) {
+export function postPinned(target, { headers, body, timeoutMs }) {
   const secure = target.url.protocol === "https:";
   return new Promise((resolve, reject) => {
     const req = (secure ? https : http).request({
