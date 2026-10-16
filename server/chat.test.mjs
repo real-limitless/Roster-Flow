@@ -942,3 +942,20 @@ test("a reset stops follow loops that started before it", async () => {
     Object.assign(deps, prev);
   }
 });
+
+test("a follow opens the serve's event stream even when the first poll already has the reply", async () => {
+  const prev = { ...deps };
+  const opened = [];
+  const stamp = Date.now();
+  stubAwake({
+    ensureEventStream: (kind) => opened.push(kind),
+    pullAssistant: async (seat) => (seat === "review" ? [{ id: `early-${stamp}`, text: "Already done.", created: stamp + 1000 }] : []),
+  });
+  try {
+    await routeChannelMessage({ channelId: "ship", text: "@review quick one" }).pending;
+    assert.ok(getState().messages.some((m) => m.sessionId === `early-${stamp}`));
+    assert.ok(opened.includes("company"));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});

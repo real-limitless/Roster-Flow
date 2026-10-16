@@ -644,6 +644,8 @@ export async function followChannel(
   try {
     let ticksLeft = limit;
     let eventWakes = 0;
+    // Open the serve's event stream up front: a wake can return after the turn already finished.
+    for (const k of new Set([...seats].map(kindOf))) deps.ensureEventStream?.(k);
     while (ticksLeft > 0 && epoch === followEpoch) {
       absorbBusSeats(channelId, seats);
       for (const seatId of [...seats]) {
