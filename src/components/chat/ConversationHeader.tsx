@@ -11,6 +11,8 @@ const TABS: { id: RoomTab; label: string }[] = [
 export function ConversationHeader({
   title,
   members,
+  responder = null,
+  responderSeatId = null,
   tab,
   inspectorOpen,
   debugOpen,
@@ -23,6 +25,9 @@ export function ConversationHeader({
 }: {
   title: string;
   members: Seat[];
+  /** Who answers un-mentioned messages, e.g. "Lead: Eng.Build" or "Quiet". */
+  responder?: string | null;
+  responderSeatId?: string | null;
   tab: RoomTab;
   inspectorOpen: boolean;
   debugOpen?: boolean;
@@ -43,12 +48,23 @@ export function ConversationHeader({
           {title}
         </button>
         <div className="conversation-header-tools">
+          {responder && (
+            <button
+              type="button"
+              className="conversation-responder"
+              data-testid="conversation-responder"
+              title="Who answers messages that mention nobody"
+              onClick={onTitleClick}
+            >
+              {responder}
+            </button>
+          )}
           <div className="conversation-members" data-testid="conversation-members">
             {shown.map((s) => (
               <button
                 key={s.id}
                 type="button"
-                className="conversation-member"
+                className={`conversation-member ${s.id === responderSeatId ? "is-responder" : ""}`.trim()}
                 data-testid={`conversation-member-${s.id}`}
                 title={s.name}
                 onClick={() => onOpenSeat(s.id)}

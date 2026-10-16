@@ -158,12 +158,34 @@ export type Team = {
   models?: string[];
 };
 
+export type RespondMode = "lead" | "conductor" | "quiet";
+
+export type RoomLimits = {
+  implicitPerMinute?: number;
+};
+
 export type Channel = {
   id: string;
   name: string;
   topic?: string;
   teamIds?: string[];
   seatIds?: string[];
+  /** Bot member that answers un-mentioned messages. */
+  leadSeatId?: string | null;
+  respond?: RespondMode;
+  limits?: RoomLimits;
+  /** Set by CORE: who answers un-mentioned messages now, before pause and model checks. */
+  responderSeatId?: string | null;
+};
+
+export type SeatRoom = {
+  id: string;
+  name: string;
+  direct: boolean;
+  viaTeams: string[];
+  lead: boolean;
+  responder: boolean;
+  respond: RespondMode;
 };
 
 export type CatalogModel = {

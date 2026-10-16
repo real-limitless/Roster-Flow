@@ -943,6 +943,38 @@ input:focus, textarea:focus, select:focus {
 }
 .conversation-member:first-child { margin-left: 0; }
 .conversation-member .av { border: 2px solid #0a0e14; }
+.conversation-member.is-responder .av { border-color: var(--phosphor); }
+.conversation-responder {
+  background: var(--panel-2);
+  border: 1px solid var(--rail);
+  color: var(--ink, inherit);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  min-height: 28px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.room-reply-settings select { width: 100%; }
+.seat-room {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: 6px;
+}
+.seat-room .micro { grid-column: 1; margin: 0; }
+.seat-room .pill-btn { grid-column: 2; grid-row: 1 / span 2; }
+.seat-room-name {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.seat-room-name:hover { text-decoration: underline; }
 .conversation-member-more {
   background: var(--panel);
   border: 1px solid var(--rail);
