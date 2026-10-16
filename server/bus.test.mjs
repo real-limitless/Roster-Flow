@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
+import { deps, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
 import { getState, mutate } from "./store.mjs";
 
 test("promptBody tells the seat which job to finish", () => {
@@ -376,4 +376,13 @@ test("room wakes run in the seat's session for that room and carry the messages 
     });
     Object.assign(deps, prev);
   }
+});
+
+test("room wakes tell the seat how to bring someone in, and hop wakes say who mentioned it", () => {
+  const plain = roomReplyLines({ channel: "ship", kind: "mention-seat" });
+  assert.ok(plain.some((l) => l.includes("@mention their seat id in your reply; that wakes them here")));
+  assert.ok(!plain.some((l) => l.includes("mentioned you in")));
+  const hop = roomReplyLines({ channel: "ship", kind: "mention-seat", thread: { hop: 2, from: "product", maxHops: 4 } });
+  assert.equal(hop[0], "@product mentioned you in #ship (hop 2 of 4). Answer them; @mention someone else only if they must act.");
+  assert.deepEqual(roomReplyLines({ kind: "send_message" }), []);
 });

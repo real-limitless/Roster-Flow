@@ -150,13 +150,18 @@ export function roomSessionChannel(meta = {}, seatId) {
 export function roomReplyLines(meta = {}) {
   if (!meta.channel || !ROOM_KINDS.has(meta.kind)) return [];
   const room = `#${meta.channel}`;
+  const mention = `To bring in another member of ${room}, @mention their seat id in your reply; that wakes them here.`;
+  const hop = meta.thread?.hop > 0
+    ? [`@${meta.thread.from} mentioned you in ${room} (hop ${meta.thread.hop} of ${meta.thread.maxHops}). Answer them; @mention someone else only if they must act.`]
+    : [];
   if (meta.kind === IMPLICIT) {
     return [
       `A human wrote in ${room} without mentioning anyone. You are the seat answering for ${room}.`,
       `Reply in plain text, briefly, as yourself. Roster-flow posts your text to ${room}. Do not use roster_report for this reply.`,
+      mention,
     ];
   }
-  return [`Reply in plain text. Roster-flow posts your text to ${room}.`];
+  return [...hop, `Reply in plain text. Roster-flow posts your text to ${room}.`, mention];
 }
 
 export function promptBody(seat, to, text, meta, model) {
