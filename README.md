@@ -58,11 +58,9 @@ docker compose up --build
 # Podman: podman compose up --build
 ```
 
-Then open http://127.0.0.1:5173/setup (install → owner → login → harness → welcome).
+Compose exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only. It does not publish them on the host. Reach Roster through the proxy, or from another container at `http://roster-flow:8790`. 8787 is mcp-flow. Host `npm run dev` / `npm run api` still bind 5175 and 8790 on the machine.
 
 State lives in the `roster-data` volume (survives `compose down`). Provider keys stay in `.env` / the environment: they are not baked into the image. Room, chart, and bus work if OpenCode is offline; Architect needs the System harness.
-
-Published URL is **5173** (UI, `/setup`, `/app`, and `/api` on the same origin). The API is also published on **8790** (leave 8787 for mcp-flow). Override UI with `ROSTER_HTTP_PORT`. Host `npm run api` uses 8790.
 
 ## Stand up (host Node, humans and Playwright agents)
 
@@ -72,10 +70,10 @@ npx playwright install chromium
 npm run standup
 ```
 
-- Marketing: http://127.0.0.1:5173/
-- First-run setup: http://127.0.0.1:5173/setup
-- Workspace: http://127.0.0.1:5173/app
-- Settings (providers / models): http://127.0.0.1:5173/app/settings
+- Marketing: http://127.0.0.1:5175/
+- First-run setup: http://127.0.0.1:5175/setup
+- Workspace: http://127.0.0.1:5175/app
+- Settings (providers / models): http://127.0.0.1:5175/app/settings
 - CORE API: http://127.0.0.1:8790/api/v1/health
 
 Full container and host paths, selectors, seed data, and Playwright: [docs/STANDUP.md](docs/STANDUP.md).
