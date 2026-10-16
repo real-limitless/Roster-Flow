@@ -53,6 +53,7 @@ Faithful behaviors we implement (not UI-only):
 
 - **Autonomous work** — a run wakes each seat in order (or in parallel when the graph says so). Each bot has its own OpenCode session when the harness is up.
 - **Inter-bot mail** — `send_message` / `handoff` / `report` / `ask_human` on an audited bus (Oh My OpenAgent team mailbox pattern: fire-and-forget, inbox, wake idle recipient).
+- **Jobs** — persistent work (`queued` through `done` / `failed` / `cancelled`) addressed to a seat or a team. Submit wakes the resolved seat on that bus and posts the brief in the room. `roster_report` with a job id completes it.
 - **Chief of staff** — Channel routes; specialists execute; humans confirm deploy/merge.
 - **Group thread** — the Room channel is the shared log (Grok Bot group chat).
 
@@ -61,10 +62,10 @@ The OpenCode plugin (`packages/roster-flow-opencode`) registers `roster_*` tools
 ## Process map
 
 ```
-Browser (Vite :5173, or CORE-served dist in Compose)
+Browser (Vite :ROSTER_WEB_PORT, default 5175, or CORE-served dist in Compose)
     │  /api/v1/*
     ▼
-CORE API (ROSTER_API_HOST, default 127.0.0.1:8787; Compose binds 0.0.0.0)
+CORE API (ROSTER_API_HOST, default 127.0.0.1:8790 via ROSTER_API_PORT; 8787 is reserved for mcp-flow; Compose binds 0.0.0.0)
     ├── store  (ROSTER_DATA_DIR / .roster-flow/state.json)
     ├── bus    (messages, cycle detect)
     ├── providers → writes ROSTER_OPENCODE_DIR/opencode.json + auth sidecar

@@ -8,7 +8,7 @@ import { chromium } from "playwright";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const outDir = path.resolve(root, "docs/images");
-const base = process.env.BASE_URL || "http://127.0.0.1:5173";
+const base = process.env.BASE_URL || `http://127.0.0.1:${process.env.ROSTER_WEB_PORT || 5175}`;
 const setupPort = Number(process.env.CAPTURE_SETUP_PORT || 8798);
 
 const hideScrollbars = `
