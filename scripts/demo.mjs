@@ -7,9 +7,10 @@ const env = {
   ROSTER_DEMO_RESET_MS: process.env.ROSTER_DEMO_RESET_MS || String(30 * 60 * 1000),
 };
 
-console.log("Demo (no owner): http://127.0.0.1:5173/app  — starter #ship, Chart, Harness");
+const web = `http://127.0.0.1:${process.env.ROSTER_WEB_PORT || 5175}`;
+console.log(`Demo (no owner): ${web}/app  — starter #ship, Chart, Harness`);
 console.log("Resets on restart and on the DEMO_RESET interval. POST /api/v1/reset is off.");
-console.log("Owner + keys + OpenCode: npm run standup → http://127.0.0.1:5173/setup");
+console.log(`Owner + keys + OpenCode: npm run standup → ${web}/setup`);
 
 const kids = [
   spawn(process.execPath, ["server/index.mjs"], { stdio: "inherit", env }),
