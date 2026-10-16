@@ -153,3 +153,61 @@ test("teams get a home room led by the supervisor, and seats list and leave thei
   expect(ship.seatIds).not.toContain("product");
   expect(ship.responderSeatId).toBe("devops");
 });
+
+test("a seat keeps one session per room, gets the room's new messages, and replies land in that room", async ({ request }) => {
+  await resetApi(request);
+  await useFakeModel(request, ["build"]);
+  const fake = await startFakeOpenCode({
+    port: COMPANY_PORT,
+    providers: { e2efake: ["m1"] },
+    reply: (p) => (p.agent === "build" ? `Build in ${p.title.split(":")[2] || "dm"}: ${fakeCount(p.title)}` : null),
+  });
+  const counts = new Map<string, number>();
+  function fakeCount(title: string) {
+    const n = (counts.get(title) || 0) + 1;
+    counts.set(title, n);
+    return n;
+  }
+  const replyIn = (room: string, text: string) =>
+    expect
+      .poll(async () => {
+        const msgs = (await (await request.get(`${API}/api/v1/channels/${room}/messages`)).json()) as Msg[];
+        return msgs.find((m) => m.text === text)?.seatId || null;
+      }, { timeout: 20_000 })
+      .toBe("build");
+  try {
+    expect((await request.patch(`${API}/api/v1/channels/ship`, { data: { respond: "quiet" } })).ok()).toBeTruthy();
+    const say = (text: string) =>
+      request.post(`${API}/api/v1/channels/ship/messages`, { data: { text, who: "Maya", seatId: "maya" } });
+    expect((await say("webhook retries twice")).ok()).toBeTruthy();
+    expect((await request.post(`${API}/api/v1/channels/ship/messages`, { data: { text: "@build can you fix the retries?" } })).ok()).toBeTruthy();
+    await replyIn("ship", "Build in ship: 1");
+    expect((await say("the logs show a 502 too")).ok()).toBeTruthy();
+    expect((await request.post(`${API}/api/v1/channels/incidents/messages`, { data: { text: "@build is prod ok?" } })).ok()).toBeTruthy();
+    await replyIn("incidents", "Build in incidents: 1");
+    expect((await request.post(`${API}/api/v1/channels/ship/messages`, { data: { text: "@build any news?" } })).ok()).toBeTruthy();
+    await replyIn("ship", "Build in ship: 2");
+
+    const titles = [...fake.sessions.values()].map((s) => s.title).sort();
+    expect(titles).toEqual(["roster:build:incidents", "roster:build:ship"]);
+    const shipPrompts = fake.prompts.filter((p) => p.title === "roster:build:ship");
+    expect(shipPrompts).toHaveLength(2);
+    expect(shipPrompts[1].sessionId).toBe(shipPrompts[0].sessionId);
+    expect(shipPrompts[0].text).toContain("Maya: webhook retries twice");
+    expect(shipPrompts[1].text).toContain("since your last turn there");
+    expect(shipPrompts[1].text).toContain("Maya: the logs show a 502 too");
+    expect(shipPrompts[1].text).not.toContain("webhook retries twice");
+    expect(shipPrompts[1].text).not.toContain("can you fix the retries");
+    expect(shipPrompts[1].text).not.toContain("Build in ship: 1");
+
+    const incidents = (await (await request.get(`${API}/api/v1/channels/incidents/messages`)).json()) as Msg[];
+    expect(incidents.some((m) => m.text.startsWith("Build in ship"))).toBeFalsy();
+
+    const room = await request.get(`${API}/api/v1/sessions/${shipPrompts[0].sessionId}/room`);
+    expect(await room.json()).toMatchObject({ seatId: "build", channelId: "ship", kind: "room" });
+    expect((await request.get(`${API}/api/v1/sessions/ses-unknown/room`)).status()).toBe(404);
+  } finally {
+    await fake.close();
+    await dropFakeModel(request);
+  }
+});
