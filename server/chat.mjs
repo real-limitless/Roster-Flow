@@ -15,6 +15,7 @@ import {
   knownLoadedModels,
 } from "./harness.mjs";
 import { emit } from "./trace.mjs";
+import { cleanupRoomSessions } from "./room-sessions.mjs";
 import { firstConnectedModel, isUsable, keyStatusForModel } from "./providers.mjs";
 
 const followingSeats = new Map();
@@ -261,7 +262,7 @@ async function wakeTarget(channelId, text, from, target) {
   const state = getState();
   const seatId = resolvedSeatId(target.to, state);
   const direct = seatOf(seatId, state);
-  rememberSessionRoom(seatId, channelId);
+  if (String(channelId).startsWith("dm-")) rememberSessionRoom(seatId, channelId);
   const meta = { from, kind: target.reason, channel: channelId, announce: false, ...(target.meta || {}) };
   if (direct && direct.kind === "bot" && !direct.mcpGuest && !isOpenCodeAdapter(direct)) {
     emit({ scope: "chat", step: "seat.wake", channel: channelId, seat: seatId, detail: { reason: target.reason, adapter: direct.adapter } });
@@ -325,11 +326,15 @@ async function startWakes(channelId, text, from, targets) {
   return results;
 }
 
+/** Woken OpenCode seats and the session each wake ran in. */
 function repliers(results) {
-  return results
+  const woken = results
     .filter((w) => w && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human && !w.guest && w.started !== false)))
-    .map((w) => w.seat)
-    .filter((id) => id && isOpenCodeAdapter(seatOf(id) || {}));
+    .filter((w) => w.seat && isOpenCodeAdapter(seatOf(w.seat) || {}));
+  return {
+    seats: woken.map((w) => w.seat),
+    sessions: Object.fromEntries(woken.filter((w) => w.sessionId).map((w) => [w.seat, w.sessionId])),
+  };
 }
 
 const implicitInflight = new Map();
@@ -368,8 +373,8 @@ function runImplicit(channelId, text, from, target) {
   const started = startWakes(channelId, text, from, [target]);
   const pending = started
     .then(async (results) => {
-      const seats = repliers(results);
-      if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since });
+      const { seats, sessions } = repliers(results);
+      if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since, sessions });
       return results;
     })
     .finally(() => {
@@ -475,8 +480,8 @@ export function routeChannelMessage({ channelId, text, from = "you", wake = true
     const since = Date.now();
     started = startWakes(channelId, text, from, targets);
     pending = started.then(async (results) => {
-      const seats = repliers(results);
-      if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since });
+      const { seats, sessions } = repliers(results);
+      if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since, sessions });
       return results;
     });
   }
@@ -501,14 +506,21 @@ function absorbBusSeats(channelId, seats) {
   }
 }
 
-export async function followChannel(channelId, seatIds = [], ticks = deps.followTicks, { since = 0 } = {}) {
+/**
+ * Mirror replies into the room until they arrive or the ticks run out.
+ * `sessions` maps a seat to the session its wake ran in; seats without one
+ * (bus mail picked up from the room) are read from their DM session.
+ */
+export async function followChannel(channelId, seatIds = [], ticks = deps.followTicks, { since = 0, sessions: bound = {} } = {}) {
   const existing = followingSeats.get(channelId);
   if (existing) {
-    for (const id of seatIds) existing.add(id);
+    for (const id of seatIds) existing.seats.add(id);
+    Object.assign(existing.sessions, bound);
     return;
   }
   const seats = new Set(seatIds.filter(Boolean));
-  followingSeats.set(channelId, seats);
+  const follow = { seats, sessions: { ...bound } };
+  followingSeats.set(channelId, follow);
   const seen = new Set();
   const failed = new Set();
   let replies = 0;
@@ -522,7 +534,8 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
       absorbBusSeats(channelId, seats);
       for (const seatId of [...seats]) {
         if (failed.has(seatId)) continue;
-        const parts = await deps.pullAssistant(seatId);
+        const sessionId = follow.sessions[seatId] || null;
+        const parts = await deps.pullAssistant(seatId, { sessionId });
         let posted = 0;
         for (const p of parts) {
           if (!p.id || seen.has(p.id)) continue;
@@ -542,7 +555,7 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
           });
         }
         if (posted || !deps.pullFailure) continue;
-        const failure = await deps.pullFailure(seatId, since);
+        const failure = await deps.pullFailure(seatId, since, { sessionId });
         if (!failure) continue;
         failed.add(seatId);
         const seat = getState().seats.find((s) => s.id === seatId);
@@ -579,7 +592,7 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
       });
     }
   } finally {
-    if (followingSeats.get(channelId) === seats) followingSeats.delete(channelId);
+    if (followingSeats.get(channelId) === follow) followingSeats.delete(channelId);
   }
   return replies;
 }
@@ -619,25 +632,35 @@ export function mirrorTranscript(channelId, seatId, parts) {
   return posted;
 }
 
+/** Every bound session and the room its replies belong in: room sessions to their room, DM sessions to the seat's last DM-session room. */
+export function boundSessions(state = getState()) {
+  const out = [];
+  for (const map of [state.sessions || {}, state.systemSessions || {}]) {
+    for (const [seatId, sessionId] of Object.entries(map)) {
+      if (sessionId) out.push({ seatId, sessionId, channelId: state.sessionRooms?.[seatId] || `dm-${seatId}` });
+    }
+  }
+  for (const [seatId, rooms] of Object.entries(state.roomSessions || {})) {
+    for (const [channelId, entry] of Object.entries(rooms || {})) {
+      if (entry?.sessionId) out.push({ seatId, sessionId: entry.sessionId, channelId });
+    }
+  }
+  return out;
+}
+
 export async function syncBoundSessions() {
-  const state = getState();
-  const maps = [
-    { sessions: state.sessions || {} },
-    { sessions: state.systemSessions || {} },
-  ];
-  for (const { sessions } of maps) {
-    for (const [seatId, sessionId] of Object.entries(sessions)) {
-      if (!sessionId) continue;
-      const channelId = state.sessionRooms?.[seatId] || `dm-${seatId}`;
-      try {
-        const msgs = await deps.pullAssistant(seatId);
-        mirrorTranscript(channelId, seatId, msgs);
-      } catch {
-        /* session gone */
-      }
+  for (const { seatId, sessionId, channelId } of boundSessions()) {
+    try {
+      const msgs = await deps.pullAssistant(seatId, { sessionId });
+      mirrorTranscript(channelId, seatId, msgs);
+    } catch {
+      /* session gone */
     }
   }
 }
+
+const CLEANUP_EVERY_MS = 60 * 60 * 1000;
+let cleanupTimer = null;
 
 export function startSessionSync(intervalMs = 2500) {
   if (syncTimer) return;
@@ -645,6 +668,10 @@ export function startSessionSync(intervalMs = 2500) {
     void syncBoundSessions();
   }, intervalMs);
   if (typeof syncTimer.unref === "function") syncTimer.unref();
+  cleanupTimer = setInterval(() => {
+    void cleanupRoomSessions().catch(() => undefined);
+  }, CLEANUP_EVERY_MS);
+  if (typeof cleanupTimer.unref === "function") cleanupTimer.unref();
 }
 
 export { sessionTranscript };

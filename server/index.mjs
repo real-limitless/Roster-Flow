@@ -39,6 +39,7 @@ import { attachPtyServer } from "./pty.mjs";
 import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
 import { channelsForSeat, createChannel, patchChannel, publicChannel } from "./channels.mjs";
+import { sessionRoom } from "./room-sessions.mjs";
 import { postMessage, resetChatRuntime, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
@@ -1490,6 +1491,16 @@ const server = createServer(async (req, res) => {
         ...combinedStatus(),
         providerKeys: hasProviderKey(),
       });
+      return;
+    }
+    const sessionRoomPath = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/room$/);
+    if (sessionRoomPath && method === "GET") {
+      const found = sessionRoom(getState(), decodeURIComponent(sessionRoomPath[1]));
+      if (!found) {
+        json(res, 404, { error: "session not bound to a seat" });
+        return;
+      }
+      json(res, 200, found);
       return;
     }
     if (pathname === "/api/v1/harness/sessions" && method === "GET") {
