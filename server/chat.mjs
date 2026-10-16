@@ -567,9 +567,11 @@ export async function followChannel(
           if (!p.id || seen.has(p.id)) continue;
           seen.add(p.id);
           if (since && p.created && p.created < since) continue;
-          if (alreadyMirrored(p.id)) {
-            // Session sync can post the reply before this loop reads it; it still answers this wake.
-            const prior = mirroredReply(p.id, channelId, seatId);
+          const runId = latestRunId(seatId);
+          const recovered = recoveredReply(channelId, seatId, runId, p.text);
+          if (alreadyMirrored(p.id) || recovered) {
+            // Session sync or a late-reply recovery can post the reply before this loop reads it; it still answers this wake.
+            const prior = recovered || mirroredReply(p.id, channelId, seatId);
             if (prior) {
               posted += 1;
               replies += 1;
@@ -579,7 +581,13 @@ export async function followChannel(
             continue;
           }
           const seat = getState().seats.find((s) => s.id === seatId);
-          const msg = postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id, ...threadCaption(seatId, channelId) });
+          const msg = postMessage(channelId, seat?.name || seatId, "bot", p.text, {
+            seatId,
+            mirrored: true,
+            sessionId: p.id,
+            runId,
+            ...threadCaption(seatId, channelId),
+          });
           posted += 1;
           replies += 1;
           answered.add(seatId);
@@ -608,16 +616,24 @@ export async function followChannel(
         });
       }
       if ([...seats].every((id) => failed.has(id) || answered.has(id))) break;
-      const anyStarting = [...seats].some(
-        (id) => !failed.has(id) && (getState().runs || []).some((r) => r.seatId === id && r.status === "starting"),
+      const stillOpen = [...seats].some(
+        (id) =>
+          !failed.has(id) &&
+          !answered.has(id) &&
+          (getState().runs || []).some((r) => r.seatId === id && (r.status === "starting" || r.status === "running")),
       );
-      if (!anyStarting) {
-        settledPolls += 1;
-        if (settledPolls >= 8) break;
-      }
+      // A followed room wake is already done when this loop starts; give its transcript a few polls to show the reply.
+      settledPolls += 1;
+      if (settledPolls >= (stillOpen ? 8 : 3)) break;
       await new Promise((r) => setTimeout(r, deps.followDelayMs));
     }
-    const waiting = [...seats].filter((id) => !failed.has(id) && !(getState().runs || []).some((r) => r.seatId === id && r.status === "running"));
+    const waiting = [...seats].filter((id) => {
+      if (failed.has(id)) return false;
+      const latest = [...(getState().runs || [])].reverse().find((r) => r.seatId === id);
+      if (latest && (latest.status === "running" || latest.status === "done")) return false;
+      if ((getState().messages || []).some((m) => m.channel === channelId && m.seatId === id && !m.system)) return false;
+      return true;
+    });
     if (!replies && waiting.length) {
       const first = waiting[0];
       const seat = getState().seats.find((s) => s.id === first);
@@ -712,6 +728,16 @@ function alreadyMirrored(sessionMessageId) {
 /** The room message for an OpenCode message id when it is this seat's reply in this room, else null. */
 function mirroredReply(sessionMessageId, channelId, seatId) {
   return (getState().messages || []).find((m) => m.sessionId === sessionMessageId && m.channel === channelId && m.seatId === seatId) || null;
+}
+
+function latestRunId(seatId) {
+  return [...(getState().runs || [])].reverse().find((r) => r.seatId === seatId)?.id || null;
+}
+
+/** A reply the bus already posted for this run, for example after a provider timeout. */
+function recoveredReply(channelId, seatId, runId, text) {
+  if (!runId) return null;
+  return (getState().messages || []).find((m) => m.channel === channelId && m.seatId === seatId && m.runId === runId && m.text === text) || null;
 }
 
 export function mirrorTranscript(channelId, seatId, parts) {

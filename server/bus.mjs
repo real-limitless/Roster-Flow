@@ -73,6 +73,31 @@ function noteRun(runId, seatId, status, reason) {
   });
 }
 
+function serveBusy(kind, exceptRunId) {
+  const seats = getState().seats || [];
+  return (getState().runs || []).some((run) => {
+    if (!run || run.id === exceptRunId) return false;
+    if (run.status !== "starting" && run.status !== "running") return false;
+    const seat = seats.find((item) => item.id === run.seatId);
+    if (!seat) return true;
+    return harnessKindForSeat(seat) === kind;
+  });
+}
+
+/** Hold a serve restart until every other run on this harness has finished. */
+export async function waitForIdleServe(kind, exceptRunId, timeoutMs = Number(process.env.ROSTER_RESTART_WAIT_MS) || 90000) {
+  const start = Date.now();
+  while (serveBusy(kind, exceptRunId)) {
+    if (Date.now() - start >= timeoutMs) {
+      const err = new Error("the harness is busy with another run, so this seat was not loaded");
+      err.status = 409;
+      err.code = "HARNESS_BUSY";
+      throw err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 async function announceWake(meta, text) {
   if (!meta || meta.announce === false || !meta.channel || !text) return;
   const { postMessage } = await import("./chat.mjs");
@@ -261,8 +286,16 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
   const seeded = { ...seat, model: modelRef(first) || seat.model || "" };
   if ((deps.agentNeedsServeRestart || agentNeedsServeRestart)(seeded, kind)) {
     // OpenCode reads agents at process start. A seat hired after boot is invisible
-    // until the serve is restarted, and the prompt never reaches the provider.
+    // until the serve is restarted. Restarting kills every in-flight stream, so
+    // this seat waits until the serve is idle instead of restarting immediately.
     syncSeatAgent(seeded);
+    await waitForIdleServe(kind, meta.runId);
+    if (serveBusy(kind, meta.runId)) {
+      const err = new Error("the harness is busy with another run, so this seat was not loaded");
+      err.status = 409;
+      err.code = "HARNESS_BUSY";
+      throw err;
+    }
     await (deps.ensure || ensure)({ kind, forceRestart: true });
     if (room) dropRoomSession(to, room);
     else {
@@ -285,6 +318,7 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
       modelID: model.modelID,
     });
     const watch = (deps.watchProviderTurn || watchProviderTurn)(sid, kind);
+    const askedAt = Date.now();
     try {
       await deps.promptSession(sid, body, kind);
       const outcome = await watch;
@@ -292,19 +326,29 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
         const err = new Error(outcome?.error || "the provider did not respond in time");
         err.code = outcome?.error ? outcome.code || "PROVIDER_ERROR" : "PROVIDER_TIMEOUT";
         err.status = 502;
+        if (!outcome?.done && !outcome?.cancelled) err.lateReply = watch.rest;
         throw err;
       }
-      let providerText = outcome.text || "";
-      for (let attempt = 0; attempt < 15 && !providerText; attempt++) {
-        try {
-          providerText = assistantText(await deps.sessionMessages(sid, kind))
-            .map((m) => m.text)
-            .filter(Boolean)
-            .join("\n");
-        } catch {
-          providerText = "";
-        }
-        if (!providerText) await new Promise((r) => setTimeout(r, 200));
+      noteRun(meta.runId, to, "running", null);
+      let final = outcome;
+      if (!outcome.done && watch.rest) final = await watch.rest;
+      if (final?.error && !final?.text && !outcome.text) {
+        const err = new Error(final.error);
+        err.code = final.code || "PROVIDER_ERROR";
+        err.status = 502;
+        throw err;
+      }
+      let providerText = final?.text || outcome.text || "";
+      try {
+        // Room and DM sessions are reused, so earlier turns' replies are in the transcript too.
+        const replies = assistantText(await deps.sessionMessages(sid, kind)).filter((m) => m.text);
+        const dated = replies.some((m) => m.created);
+        const polled = (dated ? replies.filter((m) => m.created && m.created >= askedAt) : replies.slice(-1))
+          .map((m) => m.text)
+          .join("\n");
+        if (polled.length > providerText.length) providerText = polled;
+      } catch {
+        /* the streamed text is enough */
       }
       emit({
         scope: "chat",
@@ -315,10 +359,15 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
       });
       return { sessionId: sid, seat: to, model, harness: kind, providerText };
     } catch (err) {
-      watch.cancel?.();
+      if (!err.lateReply) watch.cancel?.();
       if (err.status === 404) throw err;
       const described = describeOpenCodeError(err, { model: modelRef(model), kind });
-      lastErr = Object.assign(new Error(described.message), { status: described.status, code: described.code || err.code, cause: err });
+      lastErr = Object.assign(new Error(described.message), {
+        status: described.status,
+        code: described.code || err.code,
+        cause: err,
+        lateReply: err.lateReply,
+      });
     }
   }
   if (lastErr) throw lastErr;
@@ -342,6 +391,23 @@ function meterPromptedWake(to, text, meta, result, started) {
   return result;
 }
 
+async function postSeatReply(to, seat, runMeta, reply) {
+  if (!reply || !runMeta?.channel || !runMeta.runId) return;
+  const { postMessage } = await import("./chat.mjs");
+  const already = (getState().messages || []).some(
+    (m) => m.channel === runMeta.channel && m.seatId === to && m.runId === runMeta.runId && m.text === reply,
+  );
+  if (!already) postMessage(runMeta.channel, seat.name, "bot", reply, { seatId: to, mirrored: true, runId: runMeta.runId });
+}
+
+async function recoverLateReply(to, seat, runMeta, reply) {
+  const run = (getState().runs || []).find((item) => item.id === runMeta.runId);
+  if (!run || (run.status !== "blocked" && run.status !== "starting")) return;
+  noteRun(runMeta.runId, to, "running", null);
+  await postSeatReply(to, seat, runMeta, reply);
+  noteRun(runMeta.runId, to, "done", null);
+}
+
 async function finishPrompted(to, seat, text, runMeta, result, started) {
   const metered = meterPromptedWake(to, text, runMeta, result, started);
   if (metered.paused) {
@@ -351,12 +417,8 @@ async function finishPrompted(to, seat, text, runMeta, result, started) {
   }
   noteRun(runMeta.runId, to, "running", null);
   // Room wakes from chat.mjs are posted by its follow loop, which dedupes by OpenCode message id.
-  if (result?.providerText && runMeta.channel && !runMeta.followed) {
-    const { postMessage } = await import("./chat.mjs");
-    const reply = result.providerText;
-    const already = (getState().messages || []).some((m) => m.channel === runMeta.channel && m.seatId === to && m.text === reply);
-    if (!already) postMessage(runMeta.channel, seat.name, "bot", reply, { seatId: to, mirrored: true });
-  }
+  if (!runMeta.followed) await postSeatReply(to, seat, runMeta, result?.providerText);
+  noteRun(runMeta.runId, to, "done", null);
   return { ...metered, runId: runMeta.runId, started: true };
 }
 
@@ -502,6 +564,14 @@ export async function wakeSeat(to, text, meta = {}) {
     });
     noteRun(runMeta.runId, to, "blocked", error);
     await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${error}`);
+    if (err.lateReply) {
+      Promise.resolve(err.lateReply)
+        .then((final) => {
+          if (final?.reached && final.text) return recoverLateReply(to, seat, runMeta, final.text);
+          return null;
+        })
+        .catch(() => undefined);
+    }
     return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
 }
