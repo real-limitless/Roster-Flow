@@ -39,7 +39,7 @@ import { attachPtyServer } from "./pty.mjs";
 import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
 import { createChannel, patchChannel } from "./channels.mjs";
-import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
+import { postMessage, resetChatRuntime, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { attachConnector, listConnectors, publicConnector, removeConnector, searchKnowledge } from "./knowledge.mjs";
@@ -525,6 +525,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const st = resetState();
+      resetChatRuntime();
       try {
         syncBotAgents(st.seats, st.teams);
       } catch {

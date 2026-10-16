@@ -311,6 +311,11 @@ function repliers(results) {
 
 const implicitInflight = new Map();
 
+export function resetChatRuntime() {
+  implicitInflight.clear();
+  followingSeats.clear();
+}
+
 function queueImplicit(channelId, text) {
   const slot = implicitInflight.get(channelId);
   slot.queued.push(text);
@@ -331,7 +336,8 @@ function runImplicit(channelId, text, from, target) {
       return results;
     })
     .finally(() => {
-      if (implicitInflight.get(channelId) === slot) implicitInflight.delete(channelId);
+      if (implicitInflight.get(channelId) !== slot) return;
+      implicitInflight.delete(channelId);
       if (!slot.queued.length) return;
       const woke = slot.seatId;
       const follow = slot.queued.length === 1 ? slot.queued[0] : `Follow-up messages:\n${slot.queued.map((t) => `- ${t}`).join("\n")}`;
@@ -512,7 +518,7 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
       });
     }
   } finally {
-    followingSeats.delete(channelId);
+    if (followingSeats.get(channelId) === seats) followingSeats.delete(channelId);
   }
   return replies;
 }

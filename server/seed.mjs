@@ -434,6 +434,7 @@ export function migrateState(state) {
       topic: ch.topic || "",
       teamIds: teamIds.length ? teamIds : seeded.teamIds,
       seatIds: [...new Set((seatIds.length ? seatIds : seeded.seatIds).concat(["channel"]))],
+      leadSeatId: ch.leadSeatId ? String(ch.leadSeatId) : null,
     };
   });
   migrateCompanyLoop(next);

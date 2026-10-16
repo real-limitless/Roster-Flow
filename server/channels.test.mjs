@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emptyState } from "./seed.mjs";
+import { emptyState, migrateState } from "./seed.mjs";
 import { createChannel, dropStaleLead, patchChannel, resolveMembers, responderCandidates } from "./channels.mjs";
 import { fireSeat } from "./seats.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
@@ -76,4 +76,11 @@ test("dropStaleLead clears a lead that is not a bot member", () => {
   const state = emptyState();
   const ch = { id: "x", seatIds: ["you"], teamIds: [], leadSeatId: "build" };
   assert.equal(dropStaleLead(ch, state).leadSeatId, null);
+});
+
+test("migrateState keeps a channel lead across a reload", () => {
+  const state = emptyState();
+  patchChannel(state, "ship", { leadSeatId: "qa" });
+  const reloaded = migrateState(JSON.parse(JSON.stringify(state)));
+  assert.equal(reloaded.channels.find((c) => c.id === "ship").leadSeatId, "qa");
 });
