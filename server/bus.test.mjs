@@ -158,6 +158,58 @@ function restoreBuild(model) {
   });
 }
 
+test("an explicitly assigned model is not swapped for a loaded one", async () => {
+  const prev = { ...deps };
+  const prevKey = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = "test-key";
+  let prompted = 0;
+  let priorModel;
+  let priorFallback;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_assigned" });
+  deps.loadedModels = async () => [{ providerID: "demo-llm", modelID: "demo-small" }];
+  deps.promptSession = async () => {
+    prompted += 1;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    const team = (s.teams || []).find((t) => t.id === "eng");
+    if (team) {
+      priorFallback = team.fallbackModel;
+      team.fallbackModel = "";
+    }
+    if (seat) {
+      seat.status = "idle";
+      seat.fallbackModel = "";
+      priorModel = seat.model;
+      seat.model = "featherless/not-loaded-model";
+    }
+  });
+  const before = getState().messages.length;
+  try {
+    const result = await wakeSeat("build", "ship it", { from: "product", channel: "ship" });
+    assert.equal(prompted, 0);
+    assert.equal(result.started, false);
+    assert.equal(result.code, "PROVIDER_NOT_LOADED");
+    assert.match(result.error, /featherless\/not-loaded-model is not loaded by the company OpenCode harness \(loaded: demo-llm\)/);
+    const run = (getState().runs || []).find((r) => r.id === result.runId);
+    assert.equal(run?.status, "blocked");
+    const added = getState().messages.slice(before);
+    assert.ok(added.some((m) => m.channel === "ship" && m.system && /featherless\/not-loaded-model is not loaded by the company OpenCode harness \(loaded: demo-llm\)/.test(m.text)));
+  } finally {
+    Object.assign(deps, prev);
+    if (prevKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = prevKey;
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      const team = (s.teams || []).find((t) => t.id === "eng");
+      if (seat && priorModel !== undefined) seat.model = priorModel;
+      if (team) team.fallbackModel = priorFallback;
+    });
+  }
+});
+
 test("wakeSeat refuses a model the serve did not load instead of a silent prompt", async () => {
   const prev = { ...deps };
   let priorModel;

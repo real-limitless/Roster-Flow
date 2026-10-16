@@ -1180,13 +1180,21 @@ const server = createServer(async (req, res) => {
       }
       const msg = await postRoomMessage(id, body.who || "You", body.kind || "human", text, extras, githubHint(body));
       const routed = text
-        ? await routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
-        : { mentions: [], wakes: [], notify: [] };
+        ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
+        : { mentions: [], wakes: [], notify: [], pending: Promise.resolve([]) };
+      const wakeResults = (await routed.pending || []).map((row) => ({
+        seat: row?.seat || null,
+        runId: row?.runId || null,
+        started: Boolean(row?.started),
+      }));
       json(res, 201, {
         ...msg,
         mentions: routed.mentions,
         wakes: routed.wakes,
         notify: routed.notify,
+        runId: wakeResults[0]?.runId ?? null,
+        started: wakeResults.length ? wakeResults.every((row) => row.started) : false,
+        wakeResults,
         messages: getState().messages.filter((m) => m.channel === id),
       });
       return;

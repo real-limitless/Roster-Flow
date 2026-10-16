@@ -133,29 +133,31 @@ export function providerHint(seat, loaded = null) {
     return `No API key for ${st.providerID}. ${name} cannot call ${st.modelID || model}. Add the key in Settings, then send again.`;
   }
   const have = (st.loadedProviders || []).join(", ") || "none";
-  if (st.providerLoaded === false) {
-    return `${st.providerID} is in Settings, but the OpenCode harness did not load it (loaded: ${have}). Restart the harness, then send again.`;
+  if (st.providerLoaded === false || st.loaded === false) {
+    return `${model} is not loaded by the harness (loaded: ${have}).`;
   }
-  return `${st.providerID} is loaded, but OpenCode has no model ${st.modelID || model}. Add it to ${st.providerID} in Settings, then send again.`;
+  return `${name} cannot use ${model}. Check Settings → Providers, then send again.`;
 }
 
 export function seatModelPlan(seat, loaded = null) {
-  const assigned = seat?.model || "";
+  const assigned = String(seat?.model || "").trim();
   const st = deps.keyStatus(assigned, loaded);
-  if (isUsable(st)) return { ok: true, model: assigned, hint: null, fallback: false };
+  if (assigned) {
+    if (isUsable(st)) return { ok: true, model: assigned, hint: null, fallback: false };
+    return { ok: false, model: assigned, hint: providerHint(seat, loaded), fallback: false };
+  }
   const fb = deps.fallbackModel?.(loaded);
   if (fb?.providerID && fb?.modelID) {
     const ref = `${fb.providerID}/${fb.modelID}`;
     const name = seat?.name || "This seat";
-    const why = st.connected && st.loaded === false ? "which OpenCode did not load" : "which is not connected";
     return {
       ok: true,
       model: ref,
       fallback: true,
-      hint: `${name} is set to ${assigned || "no model"}, ${why}. Using ${ref} instead.`,
+      hint: `${name} has no model assigned. Using ${ref}.`,
     };
   }
-  return { ok: false, model: assigned, hint: providerHint(seat, loaded), fallback: false };
+  return { ok: false, model: "", hint: providerHint(seat, loaded), fallback: false };
 }
 
 function looksLikeWakePrompt(text) {
@@ -228,7 +230,7 @@ async function runWakes(channelId, text, from, targets) {
       });
     }
     if (!plan.ok) {
-      results.push({ seat: seatId, error: plan.hint, nokey: true });
+      results.push({ seat: seatId, error: plan.hint, nokey: true, runId: null, started: false });
       continue;
     }
     emit({
