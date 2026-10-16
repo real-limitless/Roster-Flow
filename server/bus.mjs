@@ -11,6 +11,8 @@ import {
   describeOpenCodeError,
   lastAssistantFailure,
   turnUsage,
+  sessionChildren,
+  sessionAgent,
 } from "./harness.mjs";
 import { isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
@@ -20,13 +22,15 @@ import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
 import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
-import { applyTurnUsage, estimateTokens, meterWake } from "./budget.mjs";
+import { applyTurnUsage, estimateTokens, meterChildSession, meterWake, seatOverBudget } from "./budget.mjs";
+import { delegateReports } from "./agents.mjs";
 import { dropRoomSession, liveRoomSession, roomContext, roomSessionTitle, setRoomSession } from "./room-sessions.mjs";
 
 export const deps = {
   createSession,
   promptSession,
   sessionMessages,
+  sessionChildren,
   harnessStatus,
   loadedModels,
 };
@@ -179,6 +183,26 @@ export function roomReplyLines(meta = {}) {
   return [...hop, `Reply in plain text. Roster-flow posts your text to ${room}.`, mention];
 }
 
+/** Supervisors are told which direct reports they can run through the `task` tool right now. */
+export function delegationLines(seat, state = getState()) {
+  const reports = delegateReports(seat, state);
+  if (!reports.length) return [];
+  const seats = state.seats || [];
+  const awake = [];
+  const away = [];
+  for (const id of reports) {
+    const s = seats.find((x) => x.id === id);
+    if (s.status === "paused" || seatOverBudget(s)) away.push(`${id} (${s.pauseReason === "budget" || seatOverBudget(s) ? "over budget" : "paused"})`);
+    else awake.push(id);
+  }
+  return [
+    awake.length
+      ? `You can delegate inside this turn with the task tool. Set subagent_type to the seat id of a direct report: ${awake.join(", ")}. Their work is metered against their own budgets.`
+      : "None of your direct reports can take a task right now.",
+    away.length ? `Do not delegate to: ${away.join(", ")}.` : "",
+  ];
+}
+
 export function promptBody(seat, to, text, meta, model) {
   const pack = goalPackLines(getState(), { seat, runId: meta.runId });
   return {
@@ -199,6 +223,7 @@ export function promptBody(seat, to, text, meta, model) {
           seat.instructions ? `Instructions:\n${seat.instructions}` : "",
           `Allow: ${(seat.tools || []).join(", ")}. Deny: ${(seat.deny || []).join(", ") || "—"}.`,
           meta.via ? `This mail was addressed to ${meta.via}.` : "",
+          ...delegationLines(seat),
           meta.jobId
             ? `Job ${meta.jobId}. Finish with roster_report jobId=${meta.jobId}. Park with roster_ask_human jobId=${meta.jobId}.`
             : "",
@@ -483,6 +508,50 @@ export async function meterTurn(to, { sessionId = null, since = 0, runId = null 
       detail: { runId, tokens: out.row.tokens, cost: usage.cost, messages: usage.messages },
     });
   }
+  return out;
+}
+
+/** Strip OpenCode's " (@agent subagent)" suffix from a task session title. */
+export function taskTitle(title) {
+  return String(title || "").replace(/\s*\(@[^)]*subagent\)\s*$/, "").trim();
+}
+
+/**
+ * Meter the subagent sessions a seat's turn started (`GET /session/:id/children`)
+ * against the seats they ran as. Returns one entry per child session.
+ */
+export async function meterChildren(to, { sessionId = null, since = 0, runId = null, channelId = null, threadId = null } = {}) {
+  const parent = seatById(to);
+  if (!parent || !runId) return [];
+  const id = sessionFor(parent, sessionId);
+  if (!id) return [];
+  const kind = harnessKindForSeat(parent);
+  const children = await deps.sessionChildren(id, kind);
+  const out = [];
+  for (const child of children || []) {
+    const created = Number(child?.time?.created || 0);
+    if (!child?.id || (since && created && created < since)) continue;
+    const msgs = await deps.sessionMessages(child.id, kind);
+    const agent = sessionAgent(msgs);
+    const seat = agent ? seatById(agent) : null;
+    const asSeat = seat?.kind === "bot";
+    // Built-in subagents (explore, general) are not seats; their tokens are the parent's.
+    const billed = asSeat ? seat.id : to;
+    const usage = turnUsage(msgs, 0);
+    let res = null;
+    mutate((s) => {
+      res = meterChildSession(s, { seatId: billed, runId: `${runId}:${child.id}`, usage, channelId, threadId, parentSeatId: to });
+    });
+    out.push({
+      childSessionId: child.id,
+      agent,
+      seatId: asSeat ? seat.id : null,
+      title: taskTitle(child.title),
+      tokens: res?.row?.tokens || 0,
+      paused: Boolean(res?.seat && (res.seat.pauseReason === "budget" || res.over)),
+    });
+  }
+  if (out.length) emit({ scope: "chat", step: "seat.delegated", seat: to, channel: channelId, detail: { runId, children: out } });
   return out;
 }
 

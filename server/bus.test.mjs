@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deps, isPass, meterTurn, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
+import { delegationLines, deps, isPass, meterChildren, meterTurn, pendingWake, postBus, promptBody, roomReplyLines, taskTitle, wakeSeat } from "./bus.mjs";
 import { meterWake } from "./budget.mjs";
 import { getState, mutate } from "./store.mjs";
 
@@ -419,6 +419,84 @@ test("meterTurn corrects the wake's usage row from the session's reported tokens
     mutate((s) => {
       s.seats = s.seats.map((x) => (x.id === "build" ? was : x));
       s.usage = (s.usage || []).filter((r) => r.runId !== runId);
+    });
+  }
+});
+
+test("supervisor prompts list the direct reports they can task and the ones they cannot", () => {
+  const state = {
+    seats: [
+      { id: "sup", name: "Sup", role: "Supervisor", kind: "bot", seatType: "supervisor", job: "Route", tools: [], deny: [] },
+      { id: "a", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "idle" },
+      { id: "b", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "paused", pauseReason: "budget" },
+      { id: "c", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "idle", tokenBudget: 10, spent: 10 },
+      { id: "d", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "paused", pauseReason: "manual" },
+    ],
+  };
+  const lines = delegationLines(state.seats[0], state).filter(Boolean);
+  assert.match(lines[0], /delegate inside this turn with the task tool\. Set subagent_type to the seat id of a direct report: a\./);
+  assert.equal(lines[1], "Do not delegate to: b (over budget), c (over budget), d (paused).");
+  assert.deepEqual(delegationLines(state.seats[1], state), []);
+  const sup = getState().seats.find((s) => s.id === "eng-supervisor");
+  const text = promptBody(sup, "eng-supervisor", "fix it", { from: "you", kind: "implicit", channel: "team-eng" }, null).parts[0].text;
+  assert.match(text, /task tool/);
+  assert.match(text, /build/);
+  const spec = getState().seats.find((s) => s.id === "build");
+  assert.doesNotMatch(promptBody(spec, "build", "fix it", { from: "you", kind: "implicit", channel: "ship" }, null).parts[0].text, /task tool/);
+});
+
+test("taskTitle drops OpenCode's subagent suffix", () => {
+  assert.equal(taskTitle("Fix flaky webhook test (@build subagent)"), "Fix flaky webhook test");
+  assert.equal(taskTitle("Plain"), "Plain");
+  assert.equal(taskTitle(null), "");
+});
+
+test("meterChildren meters each subagent session against the seat it ran as", async () => {
+  const prev = { ...deps };
+  const runId = `run-child-${Date.now()}`;
+  const was = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "build")));
+  const wasSup = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "eng-supervisor")));
+  const now = Date.now();
+  deps.sessionChildren = async (id) => {
+    assert.equal(id, "ses-parent");
+    return [
+      { id: "ses-kid", parentID: "ses-parent", title: "Fix flaky webhook test (@build subagent)", time: { created: now } },
+      { id: "ses-old", parentID: "ses-parent", title: "Earlier (@build subagent)", time: { created: now - 60_000 } },
+      { id: "ses-ghost", parentID: "ses-parent", title: "Explore (@explore subagent)", time: { created: now } },
+    ];
+  };
+  deps.sessionMessages = async (id) => {
+    if (id === "ses-ghost") return [{ info: { role: "assistant", agent: "explore", time: { created: now }, tokens: { input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] }];
+    return [{ info: { role: "assistant", agent: "build", time: { created: now }, cost: 0.001, tokens: { input: 400, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] }];
+  };
+  mutate((s) => {
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.tokenBudget = 0;
+  });
+  try {
+    const out = await meterChildren("eng-supervisor", { sessionId: "ses-parent", since: now - 1000, runId, channelId: "team-eng" });
+    assert.deepEqual(
+      out.map((c) => [c.childSessionId, c.seatId, c.title, c.tokens]),
+      [
+        ["ses-kid", "build", "Fix flaky webhook test", 500],
+        ["ses-ghost", null, "Explore", 10],
+      ],
+    );
+    const ghost = getState().usage.filter((r) => r.runId === `${runId}:ses-ghost`);
+    assert.deepEqual(ghost.map((r) => [r.seatId, r.tokens]), [["eng-supervisor", 10]]);
+    const rows = getState().usage.filter((r) => r.runId === `${runId}:ses-kid`);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].source, "task");
+    assert.equal(rows[0].seatId, "build");
+    assert.equal(rows[0].parentSeatId, "eng-supervisor");
+    await meterChildren("eng-supervisor", { sessionId: "ses-parent", since: now - 1000, runId, channelId: "team-eng" });
+    assert.equal(getState().usage.filter((r) => r.runId === `${runId}:ses-kid`).length, 1);
+    assert.deepEqual(await meterChildren("eng-supervisor", { sessionId: "ses-parent", runId: null }), []);
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      s.seats = s.seats.map((x) => (x.id === "build" ? was : x.id === "eng-supervisor" ? wasSup : x));
+      s.usage = (s.usage || []).filter((r) => !String(r.runId || "").startsWith(runId));
     });
   }
 });

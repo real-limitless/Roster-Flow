@@ -7,6 +7,7 @@ import {
   budgetWarn,
   currentBudgetPeriod,
   listUsage,
+  meterChildSession,
   meterWake,
   nextUtcMidnight,
   roomSpentToday,
@@ -231,4 +232,24 @@ test("roomSpentToday sums the room's usage rows for the current UTC day", () => 
   };
   assert.equal(roomSpentToday(state, "ship", now), 150);
   assert.equal(nextUtcMidnight(now), "2026-10-17T00:00:00.000Z");
+});
+
+test("meterChildSession books a subagent session against the seat it ran as, once per child", () => {
+  const state = migrateState(emptyState());
+  const build = state.seats.find((s) => s.id === "build");
+  build.spent = 0;
+  build.tokenBudget = 0;
+  const usage = { input: 800, output: 150, reasoning: 50, cacheRead: 0, cacheWrite: 0, cost: 0.002, messages: 1 };
+  const out = meterChildSession(state, { seatId: "build", runId: "run-p:ses_child", usage, channelId: "team-eng", threadId: "msg-9", parentSeatId: "eng-supervisor" });
+  assert.equal(out.row.source, "task");
+  assert.equal(out.row.tokens, 1000);
+  assert.equal(out.row.parentSeatId, "eng-supervisor");
+  assert.equal(out.row.channelId, "team-eng");
+  assert.equal(out.row.threadId, "msg-9");
+  assert.equal(build.spent, 1000);
+  meterChildSession(state, { seatId: "build", runId: "run-p:ses_child", usage: { ...usage, output: 350 } });
+  assert.equal(state.usage.filter((r) => r.runId === "run-p:ses_child").length, 1);
+  assert.equal(build.spent, 1200);
+  assert.equal(meterChildSession(state, { seatId: "build", runId: null, usage }), null);
+  assert.equal(meterChildSession(state, { seatId: "you", runId: "run-p:ses_h", usage }), null);
 });

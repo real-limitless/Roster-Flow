@@ -609,6 +609,22 @@ export function serveBaseUrl(kind = COMPANY) {
   return inst?.healthy && inst.baseUrl ? inst.baseUrl : null;
 }
 
+/** Sessions OpenCode started from this one (the `task` tool's subagent runs). */
+export async function sessionChildren(sessionId, kind = COMPANY) {
+  const data = await ocFetch(`/session/${sessionId}/children`, {}, kind);
+  return Array.isArray(data) ? data : [];
+}
+
+/** The agent a session ran as: `info.agent` (OpenCode 1.19) or `info.mode` (older assistant messages). */
+export function sessionAgent(messages) {
+  for (const msg of messages || []) {
+    const info = msg.info || msg;
+    const agent = info.agent || (info.role === "assistant" ? info.mode : null);
+    if (agent) return String(agent);
+  }
+  return null;
+}
+
 export async function sessionMessages(sessionId, kind = COMPANY) {
   const data = await ocFetch(`/session/${sessionId}/message`, {}, kind);
   return Array.isArray(data) ? data : data?.messages || [];
