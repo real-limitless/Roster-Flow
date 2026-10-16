@@ -1,13 +1,13 @@
-import { serveBaseUrl } from "./harness.mjs";
+import { serveBaseUrl, subscribeServeEvents } from "./harness.mjs";
 import { emit } from "./trace.mjs";
 
 /**
- * One `GET /event` SSE stream per OpenCode serve. Followers wait on it instead
- * of sleeping a fixed tick, and `session.idle` runs hooks such as metering.
+ * Followers wait on the serve's shared `GET /event` subscription instead of
+ * sleeping a fixed tick, and `session.idle` runs hooks such as metering.
  */
 export const deps = {
   baseUrl: serveBaseUrl,
-  fetch: (...args) => fetch(...args),
+  subscribe: subscribeServeEvents,
   retryMs: 1000,
   maxRetryMs: 15_000,
 };
@@ -80,40 +80,19 @@ export function eventsConnected(kind) {
   return Boolean(streams.get(kind)?.connected);
 }
 
-/** Split SSE text into complete `data:` payloads; returns the parsed events and the unfinished tail. */
-export function parseSse(buffer) {
-  const events = [];
-  const blocks = buffer.split(/\r?\n\r?\n/);
-  const rest = blocks.pop() ?? "";
-  for (const block of blocks) {
-    const data = block
-      .split(/\r?\n/)
-      .filter((l) => l.startsWith("data:"))
-      .map((l) => l.slice(5).replace(/^ /, ""))
-      .join("\n");
-    if (!data) continue;
-    try {
-      events.push(JSON.parse(data));
-    } catch {
-      /* not JSON: ignore */
-    }
-  }
-  return { events, rest };
-}
-
 async function readStream(kind, st, base) {
-  const res = await deps.fetch(`${base}/event`, { headers: { accept: "text/event-stream" }, signal: st.abort.signal });
-  if (!res.ok || !res.body) throw new Error(`GET /event ${res.status}`);
-  st.connected = true;
-  st.retry = deps.retryMs;
-  emit({ scope: "harness", step: "events.connected", detail: { kind } });
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for await (const chunk of res.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const parsed = parseSse(buffer);
-    buffer = parsed.rest;
-    for (const evt of parsed.events) dispatchEvent(evt);
+  const sub = deps.subscribe(kind, dispatchEvent, base);
+  if (!sub) throw new Error("no serve");
+  st.sub = sub;
+  try {
+    if (!(await sub.opened)) throw new Error("GET /event failed");
+    st.connected = true;
+    st.retry = deps.retryMs;
+    emit({ scope: "harness", step: "events.connected", detail: { kind } });
+    await Promise.race([sub.closed, new Promise((r) => st.abort.signal.addEventListener("abort", r, { once: true }))]);
+  } finally {
+    sub.unsubscribe();
+    st.sub = null;
   }
 }
 

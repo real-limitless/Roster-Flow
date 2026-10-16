@@ -9,6 +9,7 @@ import { providerTurnVerdict } from "./harness.mjs";
 import { blockLatestRun } from "./bus.mjs";
 import { deps, isPass, meterTurn, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
 import { meterWake } from "./budget.mjs";
+import { liveRoomSession } from "./room-sessions.mjs";
 import { getState, mutate } from "./store.mjs";
 
 test("promptBody tells the seat which job to finish", () => {
@@ -107,15 +108,21 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
     state,
   );
   assert.equal(open, null);
+  providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "stub-reply-ok", messageID: "a1" } } },
+    "s1",
+    state,
+  );
   const done = providerTurnVerdict(
     {
       type: "message.updated",
-      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, providerID: "stub", modelID: "stub-model" } },
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop", providerID: "stub", modelID: "stub-model" } },
     },
     "s1",
     state,
   );
   assert.equal(done.reached, true);
+  assert.equal(done.text, "stub-reply-ok");
   const failed = providerTurnVerdict(
     {
       type: "message.updated",
@@ -164,6 +171,68 @@ test("wakeSeat starts a run id and puts it on the prompt", async () => {
     const run = (getState().runs || []).find((r) => r.id === result.runId);
     assert.equal(run?.status, "running");
     assert.equal(run?.seatId, "build");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a followed room wake leaves the reply to the follow loop; an unfollowed one posts it", async () => {
+  const prev = { ...deps };
+  const channel = `posted-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_posted" });
+  deps.promptSession = async () => undefined;
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "Room reply." }), { cancel() {} });
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  const posted = () => getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.").length;
+  try {
+    const followed = await wakeSeat("build", "status?", { from: "you", kind: "mention-seat", channel, followed: true });
+    assert.equal(followed.started, true);
+    assert.equal(posted(), 0);
+    await wakeSeat("build", "status?", { from: "product", kind: "handoff", channel });
+    assert.equal(posted(), 1);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a serve restart for a late hire reopens the room's session, not the DM", async () => {
+  const prev = { ...deps };
+  const created = [];
+  const prompted = [];
+  const restarts = [];
+  let restart = false;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async (title) => {
+    const id = `ses_restart_${created.length + 1}`;
+    created.push({ id, title: typeof title === "string" ? title : title?.title });
+    return { id };
+  };
+  deps.promptSession = async (id) => prompted.push(id);
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "ok" }), { cancel() {} });
+  deps.agentNeedsServeRestart = () => restart;
+  deps.ensure = async (opts) => restarts.push(opts);
+  const dm = getState().sessions?.build;
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+    if (s.roomSessions?.build) delete s.roomSessions.build.ship;
+  });
+  try {
+    await wakeSeat("build", "first", { from: "you", kind: "mention-seat", channel: "ship", followed: true });
+    const before = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
+    restart = true;
+    await wakeSeat("build", "second", { from: "you", kind: "mention-seat", channel: "ship", followed: true });
+    const after = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
+    assert.equal(restarts.length, 1);
+    assert.equal(restarts[0].forceRestart, true);
+    assert.notEqual(after, before);
+    assert.equal(prompted.at(-1), after);
+    assert.equal(getState().sessions?.build, dm);
   } finally {
     Object.assign(deps, prev);
   }

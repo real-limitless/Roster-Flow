@@ -103,7 +103,11 @@ export async function startFakeOpenCode(opts: {
         const now = Date.now();
         const used = answer ? opts.usage?.(prompt) || null : null;
         const info = { id: `msg_a_${++n}`, sessionID: ses.id, role: "assistant", time: { created: now, completed: now }, ...(used || {}) };
-        if (answer) ses.messages.push({ info, parts: [{ type: "text", text: answer }] });
+        if (answer) {
+          ses.messages.push({ info, parts: [{ type: "text", text: answer }] });
+          const part = { id: `prt_${++n}`, sessionID: ses.id, messageID: info.id, type: "text", text: answer };
+          publish({ type: "message.part.updated", properties: { sessionID: ses.id, part } });
+        }
         publish({ type: "message.updated", properties: { sessionID: ses.id, info } });
         publish({ type: "session.idle", properties: { sessionID: ses.id } });
       }, delay);

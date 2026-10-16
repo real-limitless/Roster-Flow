@@ -40,8 +40,19 @@ export async function bootCore(env) {
     base,
     async stop() {
       child.kill("SIGTERM");
-      await new Promise((r) => child.once("exit", r));
-      rmSync(dir, { recursive: true, force: true });
+      await Promise.race([
+        new Promise((r) => child.once("exit", r)),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+      if (child.exitCode == null) child.kill("SIGKILL");
+      for (let i = 0; i < 5; i++) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+          break;
+        } catch {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
     },
   };
 }

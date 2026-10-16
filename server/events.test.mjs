@@ -8,20 +8,12 @@ import {
   eventSessionId,
   eventsConnected,
   onSessionIdle,
-  parseSse,
   stopEventStreams,
   waitForSessions,
 } from "./events.mjs";
+import { subscribeServeEvents } from "./harness.mjs";
 
 after(() => stopEventStreams());
-
-test("parseSse keeps an unfinished block for the next chunk", () => {
-  const first = parseSse('data: {"type":"a","properties":{"sessionID":"s1"}}\n\ndata: {"type":"b"');
-  assert.deepEqual(first.events.map((e) => e.type), ["a"]);
-  const second = parseSse(`${first.rest},"properties":{}}\n\n: comment\n\ndata: not json\n\n`);
-  assert.deepEqual(second.events.map((e) => e.type), ["b"]);
-  assert.equal(second.rest, "");
-});
 
 test("eventSessionId reads the session from every event shape", () => {
   assert.equal(eventSessionId({ properties: { sessionID: "a" } }), "a");
@@ -78,4 +70,43 @@ test("ensureEventStream reads GET /event from the serve and dispatches its event
     await new Promise((r) => server.close(r));
   }
   assert.equal(eventsConnected("company"), false);
+});
+
+test("followers and provider-turn watchers share one GET /event connection per serve, and it reconnects", async () => {
+  let connections = 0;
+  let client = null;
+  const server = createServer((req, res) => {
+    if (req.url !== "/event") return res.writeHead(404).end();
+    connections += 1;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ type: "server.connected", properties: {} })}\n\n`);
+    client = res;
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const prev = { ...deps };
+  deps.baseUrl = (kind) => (kind === "company" ? base : null);
+  deps.retryMs = 10;
+  const seen = [];
+  try {
+    ensureEventStream("company");
+    for (let i = 0; i < 100 && !eventsConnected("company"); i++) await new Promise((r) => setTimeout(r, 10));
+    const watcher = subscribeServeEvents("company", (ev) => seen.push(ev.type), base);
+    assert.equal(await watcher.opened, true);
+    const waiting = waitForSessions(["ses-shared"], 5000);
+    client.write(`data: ${JSON.stringify({ type: "session.idle", properties: { sessionID: "ses-shared" } })}\n\n`);
+    assert.equal(await waiting, "event");
+    assert.deepEqual(seen, ["session.idle"]);
+    assert.equal(connections, 1);
+    watcher.unsubscribe();
+    assert.equal(eventsConnected("company"), true);
+    client.end();
+    for (let i = 0; i < 200 && connections < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(connections, 2);
+  } finally {
+    await stopEventStreams();
+    Object.assign(deps, prev);
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+  }
 });
