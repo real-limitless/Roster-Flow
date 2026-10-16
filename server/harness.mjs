@@ -292,6 +292,7 @@ async function adoptIfHealthy(kind) {
     healthy: true,
     version: String(h.version || ""),
     loaded: null,
+    startedAt: Date.now(),
   };
   await reconcileSessions(k).catch(() => undefined);
   await loadedModels(k);
@@ -493,6 +494,7 @@ async function ensureOnce({ forceRestart = false, kind = COMPANY } = {}) {
     healthy: false,
     version: null,
     loaded: null,
+    startedAt: Date.now(),
     config: { file: env.OPENCODE_CONFIG, dir: env.OPENCODE_CONFIG_DIR },
   };
 
@@ -605,57 +607,75 @@ export function parseRosterTitle(title) {
  * Decide whether one SSE event shows that this session's provider turn
  * finished or failed. User echoes are ignored. `state.userIds` collects them.
  */
+export function serveStartedAt(kind = COMPANY) {
+  return instances[harnessKind(kind)]?.startedAt || 0;
+}
+
 export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() }) {
   const props = ev?.properties || {};
-  if (props.sessionID && props.sessionID !== sessionId) return null;
+  if (!props.sessionID || props.sessionID !== sessionId) return null;
   if (ev?.type === "message.updated") {
     const info = props.info || {};
     if (info.role === "user" && info.id) state.userIds.add(info.id);
     if (info.role !== "assistant") return null;
     if (info.id) state.assistantIds = state.assistantIds || new Set();
     if (info.id) state.assistantIds.add(info.id);
+    if (info.id && state.parts?.get(info.id)) state.text = state.parts.get(info.id);
     if (info.error) {
       const described = describeOpenCodeError(info.error, {
         model: info.providerID ? `${info.providerID}/${info.modelID || ""}` : "",
       });
       return { reached: false, error: described.message, code: described.code };
     }
-    if (info.time?.completed) return { reached: true };
+    if (info.time?.completed && state.text) return { reached: true, text: state.text };
     return null;
   }
   if (ev?.type === "message.part.updated") {
     const part = props.part || {};
     if (part.messageID && state.userIds?.has(part.messageID)) return null;
+    if (part.messageID && part.text) {
+      state.parts = state.parts || new Map();
+      state.parts.set(part.messageID, `${state.parts.get(part.messageID) || ""}${part.text}`);
+    }
     const assistant = part.messageID && state.assistantIds?.has(part.messageID);
-    if (assistant && (part.text || part.type === "tool" || part.type === "reasoning")) return { reached: true };
+    if (assistant && state.parts?.get(part.messageID)) state.text = state.parts.get(part.messageID);
+    if (assistant && state.text) return { reached: true, text: state.text };
   }
+  if (state.text && state.assistantIds?.size) return { reached: true, text: state.text };
   return null;
 }
 
-/**
- * Watch `GET /event` until the provider returns or the timeout elapses.
- * When this process is not running a serve, the prompt mock is the signal.
- */
-export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(process.env.ROSTER_PROVIDER_TURN_MS) || 6000) {
-  const inst = instances[harnessKind(kind)];
-  if (!inst?.baseUrl || !sessionId) return Object.assign(Promise.resolve({ reached: true, unwatched: true }), { cancel() {} });
+const eventStreams = new Map();
+
+function closeEventStream(entry) {
+  if (!entry || entry.closed) return;
+  entry.closed = true;
+  entry.ac.abort();
+  entry.reader?.cancel().catch(() => undefined);
+  if (eventStreams.get(entry.baseUrl) === entry) eventStreams.delete(entry.baseUrl);
+}
+
+function eventStream(kind) {
+  const k = harnessKind(kind);
+  const inst = instances[k];
+  if (!inst?.baseUrl) return null;
+  for (const [url, old] of eventStreams) {
+    if (old.kind === k && url !== inst.baseUrl) closeEventStream(old);
+  }
+  const existing = eventStreams.get(inst.baseUrl);
+  if (existing && !existing.closed) return existing;
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  const state = { userIds: new Set(), assistantIds: new Set() };
-  const promise = (async () => {
-    let res;
+  const entry = { kind: k, baseUrl: inst.baseUrl, ac, listeners: new Set(), reader: null, closed: false };
+  eventStreams.set(inst.baseUrl, entry);
+  entry.task = (async () => {
     try {
-      res = await fetch(`${inst.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream" } });
-    } catch (err) {
-      if (err.name === "AbortError") return { reached: false, timeout: true };
-      return { reached: false, error: err.message || "event stream failed" };
-    }
-    if (!res.ok || !res.body) return { reached: false, error: `event stream HTTP ${res.status}` };
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    try {
-      while (true) {
+      const res = await fetch(`${entry.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream" } });
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      entry.reader = reader;
+      const dec = new TextDecoder();
+      let buf = "";
+      while (!entry.closed) {
         const { value, done } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
@@ -675,20 +695,53 @@ export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(
           } catch {
             continue;
           }
-          const verdict = providerTurnVerdict(ev, sessionId, state);
-          if (verdict) {
-            await reader.cancel().catch(() => undefined);
-            return verdict;
-          }
+          for (const listener of [...entry.listeners]) listener(ev);
         }
       }
-    } catch (err) {
-      if (err.name === "AbortError") return { reached: false, timeout: true };
-      return { reached: false, error: err.message || "event stream failed" };
+    } catch {
+      /* aborted when the last watcher leaves or the serve restarts */
+    } finally {
+      closeEventStream(entry);
     }
-    return { reached: false, timeout: true };
-  })().finally(() => clearTimeout(timer));
-  promise.cancel = () => ac.abort();
+  })();
+  return entry;
+}
+
+/**
+ * Watch `GET /event` until the provider returns or the timeout elapses.
+ * When this process is not running a serve, the prompt mock is the signal.
+ */
+export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(process.env.ROSTER_PROVIDER_TURN_MS) || 6000) {
+  const inst = instances[harnessKind(kind)];
+  if (!inst?.baseUrl || !sessionId) return Object.assign(Promise.resolve({ reached: true, unwatched: true }), { cancel() {} });
+  const entry = eventStream(kind);
+  const state = { userIds: new Set(), assistantIds: new Set(), text: "" };
+  let timer;
+  let listener;
+  let settled = false;
+  const promise = new Promise((resolve) => {
+    const finish = (verdict) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      entry.listeners.delete(listener);
+      if (!entry.listeners.size) closeEventStream(entry);
+      resolve(verdict);
+    };
+    timer = setTimeout(() => finish({ reached: false, timeout: true }), timeoutMs);
+    listener = (ev) => {
+      const verdict = providerTurnVerdict(ev, sessionId, state);
+      if (verdict) finish(verdict.text ? verdict : { ...verdict, text: state.text || "" });
+    };
+    entry.listeners.add(listener);
+  });
+  promise.cancel = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    entry.listeners.delete(listener);
+    if (!entry.listeners.size) closeEventStream(entry);
+  };
   return promise;
 }
 
