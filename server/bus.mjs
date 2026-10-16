@@ -25,6 +25,7 @@ import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
 import { applyTurnUsage, estimateTokens, meterChildSession, meterWake, seatOverBudget } from "./budget.mjs";
 import { delegateReports } from "./agents.mjs";
 import { dropRoomSession, liveRoomSession, roomContext, roomSessionTitle, setRoomSession } from "./room-sessions.mjs";
+import { syncSeatAgent } from "./agents.mjs";
 
 export const deps = {
   createSession,
@@ -272,7 +273,18 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
   }
   let lastErr = null;
   for (const model of refs) {
-    const body = promptBody(seat, to, text, meta, model);
+    const ref = modelRef(model);
+    if (ref) {
+      try {
+        syncSeatAgent({ ...seat, model: ref });
+      } catch {
+        /* the prompt still carries the model if the agent file cannot be written */
+      }
+    }
+    const body = promptBody(seat, to, text, meta, {
+      providerID: model.providerID,
+      modelID: model.modelID,
+    });
     try {
       await deps.promptSession(sessionId, body, kind);
       emit({
