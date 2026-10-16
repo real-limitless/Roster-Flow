@@ -11,7 +11,8 @@
  * ROSTER_PROVIDER_BASE_URL
  * ROSTER_PROVIDER_API_KEY_ENV   env var name written as {env:NAME}
  * ROSTER_PROVIDER_MODELS        comma-separated model ids
- * ROSTER_DISABLE_HARNESS_AUTOSTART=1  skip ensure (provider seed still runs)
+ * ROSTER_HARNESS_AUTOSTART      auto (default), 1 (skip the provider check), 0 (never)
+ * ROSTER_DISABLE_HARNESS_AUTOSTART=1  alias for ROSTER_HARNESS_AUTOSTART=0 (provider seed still runs)
  */
 import { getState } from "./store.mjs";
 import { hasProviderKey, listProviders, upsertProvider } from "./providers.mjs";
@@ -51,9 +52,20 @@ export function providerConfigured(env = process.env) {
   }
 }
 
+/** `auto` (default), `1` (always try once an owner exists), or `0` (never). */
+export function harnessAutostartMode(env = process.env) {
+  if (String(env.ROSTER_DISABLE_HARNESS_AUTOSTART || "") === "1") return "0";
+  const raw = String(env.ROSTER_HARNESS_AUTOSTART || "").trim().toLowerCase();
+  if (["0", "false", "off", "no", "never"].includes(raw)) return "0";
+  if (["1", "true", "on", "yes", "always"].includes(raw)) return "1";
+  return "auto";
+}
+
 export function shouldAutostartHarness(state, env = process.env, configured = providerConfigured(env)) {
-  if (String(env.ROSTER_DISABLE_HARNESS_AUTOSTART || "") === "1") return false;
+  const mode = harnessAutostartMode(env);
+  if (mode === "0") return false;
   if (!(state?.users || []).length) return false;
+  if (mode === "1") return true;
   return Boolean(configured);
 }
 

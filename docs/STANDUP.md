@@ -61,7 +61,7 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_API_TOKEN_NAME` | `bootstrap` | Label stored on the token. |
 | `ROSTER_CALLBACK_ALLOWLIST` | unset | Job `callbackUrl` hosts allowed to resolve to private or loopback addresses. Comma-separated `host` or `host:port`, exact and case-insensitive, ASCII (punycode) only. Never opens link-local or metadata addresses. See [API.md](API.md#jobs). |
 | `ROSTER_CALLBACK_SECRET` | generated | HMAC key for job callback signatures. Unset: CORE generates one and serves it at `GET /api/v1/jobs/callback-secret`. |
-| `ROSTER_HARNESS_AUTOSTART` | `auto` | `auto`, `1` (always try), or `0` (never). Forwarded for harness auto-start. |
+| `ROSTER_HARNESS_AUTOSTART` | `auto` | `auto` (start serves once an owner exists and a provider is configured), `1` (start once an owner exists, provider or not), or `0` (never). See [Harness autostart](#harness-autostart). |
 | `ROSTER_PROVIDER_ID` | unset | Provider id to seed, for example `featherless`. |
 | `ROSTER_PROVIDER_NAME` | the id | Display name. |
 | `ROSTER_PROVIDER_NPM` | unset | Optional provider package. |
@@ -241,7 +241,7 @@ ROSTER_PROVIDER_API_KEY_ENV=FEATHERLESS_API_KEY
 ROSTER_PROVIDER_MODELS=model-a,model-b
 ```
 
-`ROSTER_DISABLE_HARNESS_AUTOSTART=1` skips the serve start. The provider seed still runs. An existing provider key (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`) or a model already written in `opencode.json` also counts as configured.
+`ROSTER_HARNESS_AUTOSTART=0` (or the older `ROSTER_DISABLE_HARNESS_AUTOSTART=1`) skips the serve start; `ROSTER_HARNESS_AUTOSTART=1` starts it without the provider check. The provider seed still runs. An existing provider key (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`) or a model already written in `opencode.json` also counts as configured.
 
 ## Seed / demo data
 

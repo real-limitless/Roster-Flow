@@ -45,6 +45,16 @@ test("shouldAutostartHarness needs an owner, a provider, and no kill switch", ()
   assert.equal(shouldAutostartHarness({ users: [{ id: "u" }] }, env, true), true);
 });
 
+test("ROSTER_HARNESS_AUTOSTART selects auto, always, or never", () => {
+  const owner = { users: [{ id: "u" }] };
+  assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "0" }, true), false);
+  assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "auto" }, false), false);
+  assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "auto" }, true), true);
+  assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "1" }, false), true);
+  assert.equal(shouldAutostartHarness({ users: [] }, { ROSTER_HARNESS_AUTOSTART: "1" }, true), false);
+  assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "1", ROSTER_DISABLE_HARNESS_AUTOSTART: "1" }, true), false);
+});
+
 test("fresh container with owner and provider reports harness ready", async () => {
   const company = await listen((req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
