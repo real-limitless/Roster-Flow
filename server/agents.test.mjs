@@ -114,7 +114,8 @@ test("syncSeatAgent writes .opencode/agents/<id>.md", () => {
   });
   assert.ok(file && existsSync(file));
   const text = readFileSync(file, "utf8");
-  assert.match(text, /model: xai\/grok-4/);
+  assert.doesNotMatch(text, /grok-4/);
+  assert.doesNotMatch(text, /^model:/m);
 });
 
 test("system seats write into the System workspace pack", () => {

@@ -103,7 +103,7 @@ export function serveEnv(kind = COMPANY, base = process.env) {
 
 export function whichOpenCode() {
   const envBin = process.env.OPENCODE_BIN;
-  if (envBin && existsSync(envBin)) return envBin;
+  if (envBin) return existsSync(envBin) ? envBin : null;
   const path = process.env.PATH || "";
   for (const dir of path.split(":")) {
     const cand = join(dir, "opencode");
@@ -607,6 +607,97 @@ export function parseRosterTitle(title) {
 export function serveBaseUrl(kind = COMPANY) {
   const inst = instances[harnessKind(kind)];
   return inst?.healthy && inst.baseUrl ? inst.baseUrl : null;
+}
+
+/**
+ * Decide whether one SSE event shows that this session's provider turn
+ * finished or failed. User echoes are ignored. `state.userIds` collects them.
+ */
+export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() }) {
+  const props = ev?.properties || {};
+  if (props.sessionID && props.sessionID !== sessionId) return null;
+  if (ev?.type === "message.updated") {
+    const info = props.info || {};
+    if (info.role === "user" && info.id) state.userIds.add(info.id);
+    if (info.role !== "assistant") return null;
+    if (info.id) state.assistantIds = state.assistantIds || new Set();
+    if (info.id) state.assistantIds.add(info.id);
+    if (info.error) {
+      const described = describeOpenCodeError(info.error, {
+        model: info.providerID ? `${info.providerID}/${info.modelID || ""}` : "",
+      });
+      return { reached: false, error: described.message, code: described.code };
+    }
+    if (info.time?.completed) return { reached: true };
+    return null;
+  }
+  if (ev?.type === "message.part.updated") {
+    const part = props.part || {};
+    if (part.messageID && state.userIds?.has(part.messageID)) return null;
+    const assistant = part.messageID && state.assistantIds?.has(part.messageID);
+    if (assistant && (part.text || part.type === "tool" || part.type === "reasoning")) return { reached: true };
+  }
+  return null;
+}
+
+/**
+ * Watch `GET /event` until the provider returns or the timeout elapses.
+ * When this process is not running a serve, the prompt mock is the signal.
+ */
+export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(process.env.ROSTER_PROVIDER_TURN_MS) || 6000) {
+  const inst = instances[harnessKind(kind)];
+  if (!inst?.baseUrl || !sessionId) return Object.assign(Promise.resolve({ reached: true, unwatched: true }), { cancel() {} });
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const state = { userIds: new Set(), assistantIds: new Set() };
+  const promise = (async () => {
+    let res;
+    try {
+      res = await fetch(`${inst.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream" } });
+    } catch (err) {
+      if (err.name === "AbortError") return { reached: false, timeout: true };
+      return { reached: false, error: err.message || "event stream failed" };
+    }
+    if (!res.ok || !res.body) return { reached: false, error: `event stream HTTP ${res.status}` };
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let cut;
+        while ((cut = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, cut);
+          buf = buf.slice(cut + 2);
+          const data = block
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim())
+            .join("\n");
+          if (!data) continue;
+          let ev;
+          try {
+            ev = JSON.parse(data);
+          } catch {
+            continue;
+          }
+          const verdict = providerTurnVerdict(ev, sessionId, state);
+          if (verdict) {
+            await reader.cancel().catch(() => undefined);
+            return verdict;
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name === "AbortError") return { reached: false, timeout: true };
+      return { reached: false, error: err.message || "event stream failed" };
+    }
+    return { reached: false, timeout: true };
+  })().finally(() => clearTimeout(timer));
+  promise.cancel = () => ac.abort();
+  return promise;
 }
 
 export async function sessionMessages(sessionId, kind = COMPANY) {

@@ -11,6 +11,7 @@ import {
   describeOpenCodeError,
   lastAssistantFailure,
   turnUsage,
+  watchProviderTurn,
 } from "./harness.mjs";
 import { isBuiltinProvider, isLoadedModel, loadedProviderIds, modelAllowedInConfig, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
@@ -30,6 +31,7 @@ export const deps = {
   sessionMessages,
   harnessStatus,
   loadedModels,
+  watchProviderTurn,
 };
 
 function modelRef(model) {
@@ -45,9 +47,12 @@ const pendingWakes = new WeakMap();
 
 export function blockLatestRun(seatId, reason) {
   const runs = getState().runs || [];
-  const run = [...runs].reverse().find((r) => r.seatId === seatId && (r.status === "running" || r.status === "starting"));
-  if (run) noteRun(run.id, seatId, "blocked", reason || "did not start");
-  return run?.id || null;
+  // A run that already reached the provider stays running. Only an in-flight
+  // start can be blocked from here.
+  const run = [...runs].reverse().find((r) => r.seatId === seatId && r.status === "starting");
+  if (!run) return null;
+  noteRun(run.id, seatId, "blocked", reason || "did not start");
+  return run.id;
 }
 
 function noteRun(runId, seatId, status, reason) {
@@ -277,8 +282,16 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
       providerID: model.providerID,
       modelID: model.modelID,
     });
+    const watch = (deps.watchProviderTurn || watchProviderTurn)(sessionId, kind);
     try {
       await deps.promptSession(sessionId, body, kind);
+      const outcome = await watch;
+      if (!outcome?.reached || outcome.error) {
+        const err = new Error(outcome?.error || "the provider did not respond in time");
+        err.code = outcome?.error ? outcome.code || "PROVIDER_ERROR" : "PROVIDER_TIMEOUT";
+        err.status = 502;
+        throw err;
+      }
       emit({
         scope: "chat",
         step: "seat.prompted",
@@ -288,9 +301,10 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
       });
       return { sessionId, seat: to, model, harness: kind };
     } catch (err) {
+      watch.cancel?.();
       if (err.status === 404) throw err;
       const described = describeOpenCodeError(err, { model: modelRef(model), kind });
-      lastErr = Object.assign(new Error(described.message), { status: described.status, code: described.code, cause: err });
+      lastErr = Object.assign(new Error(described.message), { status: described.status, code: described.code || err.code, cause: err });
     }
   }
   if (lastErr) throw lastErr;

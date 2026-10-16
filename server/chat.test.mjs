@@ -550,6 +550,26 @@ test("followChannel ignores assistant messages created before the wake and posts
   }
 });
 
+test("a reply that session sync already posted in the room still answers the wake", async () => {
+  const prev = { ...deps };
+  const channel = `synced-${Date.now()}`;
+  const reply = { id: `msg-synced-${Date.now()}`, text: "Synced first.", created: Date.now() + 5 };
+  mirrorTranscript(channel, "channel", [{ ...reply, role: "assistant" }]);
+  deps.pullAssistant = async () => [reply];
+  deps.pullFailure = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = () => ({ providerID: "x", modelID: "m", configured: true, connected: true, loaded: null });
+  deps.followDelayMs = 0;
+  try {
+    assert.equal(await followChannel(channel, ["channel"], 2, { since: Date.now() }), 1);
+    const room = getState().messages.filter((m) => m.channel === channel);
+    assert.deepEqual(room.map((m) => m.text), ["Synced first."]);
+    assert.equal(await followChannel(`${channel}-other`, ["channel"], 1, { since: 0 }), 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("messages sent while the responder is answering are queued and delivered as one follow-up", async () => {
   const prev = { ...deps };
   let release;
@@ -696,6 +716,33 @@ test("a bot reply that @mentions a room member wakes it at hop 1 and captions it
     assert.deepEqual(buildReply.thread, { threadId: `root-${stamp}`, hop: 1, from: "product", maxHops: 4, botWakes: 1, maxBotWakes: 8 });
     const productReply = getState().messages.find((m) => m.sessionId === `p-hop-${stamp}`);
     assert.equal(productReply.thread.hop, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a reply session sync posted before the follow read it still routes its @mentions once", async () => {
+  const prev = { ...deps };
+  const stamp = Date.now();
+  const replies = {
+    product: [{ id: `p-sync-${stamp}`, text: "@build is the deploy done?", created: stamp + 1000 }],
+    build: [{ id: `b-sync-${stamp}`, text: "Done.", created: stamp + 1000 }],
+  };
+  const calls = [];
+  stubAwake({
+    pullAssistant: async (seat) => replies[seat] || [],
+    wakeSeat: async (to, text, meta) => {
+      calls.push({ to, text, meta });
+      if (to === "product") mirrorTranscript("ship", "product", [{ ...replies.product[0], role: "assistant" }]);
+      return { sessionId: `ses-${to}`, seat: to, runId: `run-sync-${calls.length}`, started: true };
+    },
+  });
+  try {
+    await routeChannelMessage({ channelId: "ship", text: "@product deploy?", messageId: `root-sync-${stamp}` }).pending;
+    await until(() => getState().messages.find((m) => m.sessionId === `b-sync-${stamp}`));
+    assert.deepEqual(calls.map((c) => c.to), ["product", "build"]);
+    assert.equal(calls[1].meta.thread.from, "product");
+    assert.equal(getState().messages.filter((m) => m.sessionId === `p-sync-${stamp}`).length, 1);
   } finally {
     Object.assign(deps, prev);
   }
