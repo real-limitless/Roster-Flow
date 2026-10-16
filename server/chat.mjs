@@ -230,7 +230,15 @@ async function runWakes(channelId, text, from, targets) {
       });
     }
     if (!plan.ok) {
-      results.push({ seat: seatId, error: plan.hint, nokey: true, runId: null, started: false });
+      const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
+      results.push({
+        ...woke,
+        seat: woke?.seat || seatId,
+        error: woke?.error || plan.hint,
+        nokey: true,
+        runId: woke?.runId || null,
+        started: false,
+      });
       continue;
     }
     emit({
@@ -253,7 +261,7 @@ async function runWakes(channelId, text, from, targets) {
     results.push(woke);
   }
   const seats = results
-    .filter((w) => w && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human)))
+    .filter((w) => w && w.started !== false && !w.nokey && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human)))
     .map((w) => w.seat)
     .filter(Boolean);
   if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since });
