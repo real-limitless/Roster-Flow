@@ -15,7 +15,7 @@ CORE default bind is `http://127.0.0.1:8790`. Auth:
 
 - `ROSTER_SKIP_ONBOARDING=1` (local / Playwright): `/mcp` is open
 - Otherwise a CORE login bearer from `POST /api/v1/auth/login`
-- Or a scoped API token (`rf_…`, see [API.md](API.md)) with the `write` scope. Invalid, expired, or revoked tokens get 401; read-only tokens get 403
+- Or a scoped API token (`rf_…`, see [API.md](API.md)). Invalid, expired, or revoked tokens get 401. A `read` token can connect, list, and read; tools that post or change state (`roster_join`, `roster_send_message`, `roster_handoff`, `roster_report`, `roster_ask_human`, and the job write tools) return `isError: "write scope required"`. A token bound to a seat (`seatId`) uses that seat for the job tools
 - Optional dedicated `ROSTER_MCP_TOKEN` (harness token). When set, `/mcp` requires `Authorization: Bearer <token>`
 
 Claude Code / Cursor (illustrative):
@@ -59,6 +59,8 @@ Same bus verbs as `packages/roster-flow-opencode`, plus reads so a guest can loo
 | `roster_report` | Structured result on the originating thread |
 | `roster_ask_human` | Park on `reports_to` (never `#general`) |
 | `roster_inbox` | Bus inbox for the guest (or another seat id) |
+
+The same endpoint also lists the job tools mcp-flow proxies (`list_seats`, `list_teams`, `submit_task`, `get_task`, `wait_task`, `cancel_task`, `put_file`, `get_file`, `send_message`, `list_models`). They act as the caller's seat: a seat-bound token, the login's seat, or `mcp-guest` for `ROSTER_MCP_TOKEN` and skip-onboarding callers. See [API.md](API.md#mcp-backend).
 
 Posts land on `/api/v1/bus` and in the Room. Waking an OpenCode seat still goes through the existing bus. Waking `mcp-guest` notifies the chair (`guest: true`) and does **not** start `opencode serve`.
 

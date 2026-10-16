@@ -208,3 +208,43 @@ test("POST /mcp accepts a bearer token and submits a job", async () => {
     await core.stop();
   }
 });
+
+test("one /mcp lists room and job tools; a read token cannot write through either", async () => {
+  const token = "rf_mcp_readonly_token_000001";
+  const core = await bootCore({
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_OWNER_TEMPLATE: "starter",
+    ROSTER_API_TOKEN: token,
+    ROSTER_API_TOKEN_SCOPES: "read",
+    OPENCODE_BIN: "/nonexistent/opencode",
+    OPENCODE_PORT: "1",
+    OPENCODE_SYSTEM_PORT: "1",
+  });
+  const rpc = async (id, method, params) => {
+    const res = await fetch(`${core.base}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+    });
+    assert.equal(res.status, 200);
+    return (await res.json()).result;
+  };
+  try {
+    const names = (await rpc(1, "tools/list", {})).tools.map((t) => t.name);
+    for (const name of ["roster_send_message", "roster_list_seats", "submit_task", "list_seats"]) {
+      assert.ok(names.includes(name), name);
+    }
+    assert.equal(new Set(names).size, names.length);
+    const send = await rpc(2, "tools/call", { name: "roster_send_message", arguments: { to: "build", text: "hi" } });
+    assert.equal(send.isError, true);
+    assert.match(send.content[0].text, /write scope/);
+    const submit = await rpc(3, "tools/call", { name: "submit_task", arguments: { target: "build", brief: "x" } });
+    assert.equal(submit.isError, true);
+    assert.match(submit.content[0].text, /write scope/);
+    const seats = await rpc(4, "tools/call", { name: "roster_list_seats", arguments: {} });
+    assert.ok(!seats.isError);
+  } finally {
+    await core.stop();
+  }
+});
