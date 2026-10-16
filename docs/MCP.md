@@ -15,6 +15,7 @@ CORE default bind is `http://127.0.0.1:8790`. Auth:
 
 - `ROSTER_SKIP_ONBOARDING=1` (local / Playwright): `/mcp` is open
 - Otherwise a CORE login bearer from `POST /api/v1/auth/login`
+- Or a scoped API token (`rf_…`, see [API.md](API.md)) with the `write` scope. Invalid, expired, or revoked tokens get 401; read-only tokens get 403
 - Optional dedicated `ROSTER_MCP_TOKEN` (harness token). When set, `/mcp` requires `Authorization: Bearer <token>`
 
 Claude Code / Cursor (illustrative):

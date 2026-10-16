@@ -26,8 +26,8 @@ Package: `packages/roster-flow-opencode`
 | `roster_list_seats` | Who is on the chart |
 | `roster_send_message` | Peer or channel mail |
 | `roster_handoff` | Close my phase, open yours |
-| `roster_report` | Structured result to the originating thread |
-| `roster_ask_human` | Park on `reports_to` (never `#general`) |
+| `roster_report` | Structured result to the originating thread. `jobId` completes that job (`done`, `failed`, or `needs_human`) |
+| `roster_ask_human` | Park on `reports_to` (never `#general`). `jobId` sets that job to `needs_human` |
 | `roster_propose_org` | Architect OrgPlan (does not apply) |
 
 Hooks:
@@ -36,6 +36,10 @@ Hooks:
 - `experimental.chat.system.transform` — inject roster + mailbox so the model knows its job and peers.
 
 Configured in `.opencode/opencode.json` (company) and `.roster-flow/system/.opencode/opencode.json` (System) as `"plugin": ["roster-flow-opencode"]`. The System serve sets `NODE_PATH` at the repo `node_modules` so the plugin still resolves.
+
+Each serve is spawned with `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` pointing at its config: `ROSTER_OPENCODE_DIR/opencode.json` for company (`/data/opencode` in Compose) and `.roster-flow/system/.opencode/` for System. OpenCode only discovers `.opencode/` by walking up from cwd, so without this a `ROSTER_OPENCODE_DIR` outside the repo would be ignored and only the built-in `opencode` provider would load. A non-empty `OPENCODE_CONFIG` in CORE's env is loaded first by the company serve; the `ROSTER_OPENCODE_DIR` file still applies on top. Every `{env:VAR}` a provider block references is passed through to the serve.
+
+Provider writes (`PUT /api/v1/providers`, key, delete) restart a running serve so it reloads. Before a wake, CORE reads `GET /config/providers` from the serve and only sends a model OpenCode loaded; the fallback model and the `Waking <seat> (<model>)…` line use the same list. A provider that is missing, or a turn the provider rejects (for example 401), is posted to the room as a System line instead of an opaque 500 or a silent no-reply. `harness`, `loadedProviders`, and setup `harnessReady` all come from a live health check.
 
 ## Settings (`/app/settings`)
 
@@ -60,7 +64,7 @@ Provider contract:
 - Built-in-style ids: `anthropic`, `openai`, `xai`, `google`, plus **Other / Custom** (npm `@ai-sdk/openai-compatible`, `baseURL`, model list, optional headers).
 - API key as `{env:VAR}` in `opencode.json` when possible; literal keys only in `.roster-flow/auth.json` (gitignored).
 - Per-seat model is a Roster-flow field stored as `provider/model`. Hire/patch writes `.opencode/agents/<seatId>.md` (frontmatter `model`, `mode`, `permissions`; body = persona + instructions) and the matching `agents` block in `opencode.json`. Attach/wake send `{ providerID, modelID }` plus that agent id.
-- Team Supervisor agents are `mode: primary`. Generic and specialists are `mode: all`. Mail to `team:<id>` wakes the Supervisor.
+- Team Supervisor agents are `mode: primary`. Generic and specialists are `mode: all`. Mail to `team:<id>` wakes the Supervisor. Jobs use an explicit routing mode (`supervisor`, `round_robin`, or a named specialist) instead of always waking the Supervisor.
 - Each staffed team also writes an OpenCode alias agent (`eng`, `services`, …) so harness `@eng` works. The Channel conductor is agent `channel` (`@channel`).
 - Model pickers read the live `opencode serve` catalog when the harness is up, otherwise workspace + `~/.config/opencode`. Seats have default + fallback; teams can use `random`, `round_robin`, or `fuse`.
 
@@ -77,4 +81,32 @@ ROSTER_OPENCODE_DIR=.opencode
 ROSTER_WORKSPACE=.roster-flow/workspace
 ROSTER_STATIC_DIR=          # set to dist/ so CORE serves the UI
 ROSTER_MCP_TOKEN=            # optional dedicated bearer for POST /mcp
+WIKIFLOW_URL=               # wiki-flow base URL (wikiflow_* tools)
+WIKIFLOW_TOKEN=             # wiki-flow Bearer token; never commit it
+FEATHERLESS_API_KEY=        # used by scripts/setup-wiki-team.mjs seats via {env:...}
 ```
+
+## OpenCode config schema
+
+Roster writes `opencode.json` using OpenCode's documented keys only ([config schema](https://opencode.ai/config.json)):
+`provider` (blocks with `npm`, `name`, `options.{baseURL,apiKey}`, `models`), `agent` (entries with `prompt`, `mode`, `model`, `permission`),
+and agent Markdown frontmatter `permission:` (`edit: deny`, `bash: deny`, or a bash pattern map). OpenCode keeps the last matching bash rule, so `"*": allow` is written before `"deploy *": deny`.
+Older configs with `providers` / `agents` / `settings` / `package` / `system` / `permissions` are folded into that shape on the next write (`normalizeOpenCodeConfig` in `server/providers.mjs`).
+
+## wiki-flow tools
+
+The `roster-flow-opencode` plugin adds three tools that call wiki-flow with `Authorization: Bearer $WIKIFLOW_TOKEN` against `$WIKIFLOW_URL`:
+
+| Tool | Request |
+| --- | --- |
+| `wikiflow_read_source {owner, repo, paths?}` | `GET /api/v1/repos/:owner/:repo/sources[?paths=a,b]` → `{sources:[{path,language,bytes}]}` (content added for `paths`) |
+| `wikiflow_search {owner, repo, q}` | `GET /api/v1/repos/:owner/:repo/sources/search?q=` → `{results:[{path,line,snippet}]}` |
+| `wikiflow_put_page {owner, repo, slug, runId, title, markdown, sources, agent}` | `PUT /api/v1/repos/:owner/:repo/pages/:slug` with body `{runId, title, markdown, sources, agent}` |
+
+`runId` must name an existing wiki-flow run (404 if unknown, 409 if the run is complete). `WIKIFLOW_TOKEN` is the wiki-flow service token (`WIKIFLOW_API_TOKEN` on the wiki-flow side). `sources` is a JSON array of `{path, startLine?, endLine?}` (1-based lines, `endLine >= startLine`); other shapes or extra keys are rejected before the request; `agent` defaults to the calling OpenCode agent. If `WIKIFLOW_TOKEN` or `WIKIFLOW_URL` is missing, the tool fails with a message naming the variable. Non-2xx responses surface as `wiki-flow <status>: <error>`.
+
+Both variables are passed to `opencode serve` by `serveChildEnv` (`server/providers.mjs`) and to the container by `docker-compose.yml` (`WIKIFLOW_URL`, `WIKIFLOW_TOKEN` from the host env).
+
+### Wiki team
+
+`FEATHERLESS_API_KEY=... ROSTER_API_TOKEN=rf_... npm run setup:wiki` (CORE must be running; the token needs write scope) registers the Featherless provider (`https://api.featherless.ai/v1`, key by `{env:FEATHERLESS_API_KEY}`), creates the `wiki-flow-docs` project, and staffs `@wiki` with `wiki-architect`, `wiki-scribe`, `wiki-diagrammer`, and `wiki-editor` on `featherless/<model>` (override with `WIKI_MODEL`). Re-running is safe: existing project/team return 409 and only missing specialists are hired.

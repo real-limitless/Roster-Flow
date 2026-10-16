@@ -2,6 +2,10 @@
 
 Goal: an AI agent can install, seed, open the site, and bug-test Room / Harness / Chart / Settings end to end.
 
+Clone: this file is on the product tree. `git clone` of the GitHub URL should yield `npm run standup` once GitHub’s default branch is `DEVELOPMENT` (admin setting). If the clone is docs-only, `git checkout DEVELOPMENT`. Details: [INSTALLATION.md](../INSTALLATION.md), [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Container install (official)
+
 ## Container install (official)
 
 Needs Docker Compose v2 or Podman Compose, plus a clone of this repo. No host Node or OpenCode CLI.
@@ -15,25 +19,71 @@ docker compose up --build
 
 | Process | URL | Role |
 |---|---|---|
-| Product (static UI + CORE) | http://127.0.0.1:5173 | Marketing, `/setup`, `/app`; `/api` on the same origin |
-| CORE API (host / family port) | http://127.0.0.1:8790/api/v1/health | Same API published beside mcp-flow's 8787 |
-| Room MCP | http://127.0.0.1:8790/mcp | Streamable HTTP room gateway (not mcp-flow) |
-| CORE API (same process) | http://127.0.0.1:5173/api/v1/health | Teams, bots, bus, setup/auth, harness wrapper |
+| Product inside the container | `http://127.0.0.1:${ROSTER_API_PORT:-8790}` | Static UI + CORE on one port. Exposed on the compose network, not published on the host. |
+| Room MCP | `http://127.0.0.1:${ROSTER_API_PORT:-8790}/mcp` | Streamable HTTP room gateway (not mcp-flow) |
+| Web UI port | `ROSTER_WEB_PORT`, default `5175` | Exposed on the compose network, not published on the host. `ROSTER_PUBLIC_URL` follows this. 8787 is mcp-flow, not Roster. |
 | Company OpenCode | inside the container (`127.0.0.1:14180`) | Product-bot sessions |
 | System OpenCode | inside the container (`127.0.0.1:14181`) | Architect / Channel |
 
 The image is production-ish: `vite build` plus `node server/index.mjs` serving `dist/`. OpenCode is installed in the image; CORE still starts in harness-offline mode if the binary is missing. State, auth sidecar, workspaces, harness logs, and `.opencode` live in the **`roster-data`** volume at `/data` (`ROSTER_DATA_DIR`). `compose down` / `up` keeps `/setup` completion.
 
-Health:
+Health from another container on the compose network (`roster-flow:8790`). Compose does not publish 8790 or 5175 on the host:
 
 ```bash
-curl -s http://127.0.0.1:5173/api/v1/health
-curl -s http://127.0.0.1:5173/setup
+curl -s http://roster-flow:8790/api/v1/health
+curl -s http://roster-flow:8790/setup
 ```
 
-First run: http://127.0.0.1:5173/setup. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`.
+First run is `/setup` on that origin. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`. `GET /api/v1/setup/status` without a session returns booleans (`hasOwner`, `setupClosed`, and the checklist flags) and does not include the owner's email or name.
 
-If 5173 is busy: `ROSTER_HTTP_PORT=8080 docker compose up --build`. Family API port is 8790 (mcp-flow keeps 8787).
+Family API port is **8790**. **8787 belongs to mcp-flow** and is not Roster's port. The web UI port in Compose is **5175**. Family health must not treat Roster’s own SPA or `/api/v1/health` as mcp-flow: a `/health` 200 only counts when it returns JSON that is not Roster CORE. Both ports are overridable:
+
+```bash
+ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
+```
+
+`ROSTER_API` inside the container follows `ROSTER_API_PORT`. `ROSTER_PUBLIC_URL` follows `ROSTER_WEB_PORT` (`http://127.0.0.1:$ROSTER_WEB_PORT`). Compose `expose`s both ports on the compose network and does not publish them on the host. `npm run dev` still binds `ROSTER_WEB_PORT` (default 5175) on the machine, and `npm run api` binds `ROSTER_API_PORT` (default 8790). If that API port is already taken, CORE prints `ROSTER_API_PORT <port> is already in use` and exits.
+
+### Compose environment
+
+`docker-compose.yml` forwards these from the shell or `.env`. Empty means unset.
+
+| Variable | Compose default | Purpose |
+|---|---|---|
+| `ROSTER_API_PORT` | `8790` | Port CORE listens on. Exposed on the compose network (not published on the host) and used by the healthcheck. |
+| `ROSTER_WEB_PORT` | `5175` | Web UI port. Exposed the same way. Drives `ROSTER_PUBLIC_URL`. |
+| `ROSTER_BOOTSTRAP_TOKEN` | unset | When set, `POST /api/v1/setup/first-user` requires it. |
+| `ROSTER_OWNER_EMAIL` | unset | Seed the owner on first boot. |
+| `ROSTER_OWNER_PASSWORD` | unset | Plaintext password for that owner. |
+| `ROSTER_OWNER_PASSWORD_HASH` | unset | `scrypt$<salt>$<hash>` from `scripts/create-owner.mjs --hash`. Use this or the plaintext password. |
+| `ROSTER_OWNER_NAME` | email local-part | Display name. |
+| `ROSTER_OWNER_TEMPLATE` | `empty` | `empty` or `starter`. |
+| `ROSTER_API_TOKEN` | unset | Register this `rf_…` token once an owner exists. |
+| `ROSTER_API_TOKEN_SCOPES` | all scopes | Comma-separated `read`, `write`, `admin`. |
+| `ROSTER_API_TOKEN_NAME` | `bootstrap` | Label stored on the token. |
+| `ROSTER_CALLBACK_ALLOWLIST` | unset | Job `callbackUrl` hosts allowed to resolve to private or loopback addresses. Comma-separated `host` or `host:port`, exact and case-insensitive, ASCII (punycode) only. Never opens link-local or metadata addresses. See [API.md](API.md#jobs). |
+| `ROSTER_CALLBACK_SECRET` | generated | HMAC key for job callback signatures. Unset: CORE generates one and serves it at `GET /api/v1/jobs/callback-secret`. |
+| `ROSTER_HARNESS_AUTOSTART` | `auto` | `auto`, `1` (always try), or `0` (never). Forwarded for harness auto-start. |
+| `ROSTER_PROVIDER_ID` | unset | Provider id to seed, for example `featherless`. |
+| `ROSTER_PROVIDER_NAME` | the id | Display name. |
+| `ROSTER_PROVIDER_NPM` | unset | Optional provider package. |
+| `ROSTER_PROVIDER_BASE_URL` | unset | OpenAI-compatible base URL. |
+| `ROSTER_PROVIDER_API_KEY_ENV` | unset | **Name** of the env var that holds the key. The key is not written into config. |
+| `ROSTER_PROVIDER_MODELS` | unset | Comma-separated model ids. |
+| `OPENCODE_CONFIG` | empty | Optional extra OpenCode config file for the company serve. Empty means only `ROSTER_OPENCODE_DIR/opencode.json`, which the serve always loads (it applies on top of this file). |
+| `FEATHERLESS_API_KEY` | unset | Key for the `featherless` provider that `roster-setup` writes as `{env:FEATHERLESS_API_KEY}`. Passed through to both OpenCode serves. |
+
+`ROSTER_OWNER_*`, `ROSTER_BOOTSTRAP_TOKEN`, and `ROSTER_API_TOKEN` / `ROSTER_API_TOKEN_SCOPES` are applied on boot. See [Headless bootstrap](#headless-bootstrap-no-setup-screen) below.
+
+### Dokploy
+
+```bash
+docker compose -f docker-compose.dokploy.yml up --build
+```
+
+The file joins the external network `dokploy-network` and registers aliases `roster-flow` and `roster`. It exposes 8790 and 5175 and does not publish them on the host. wiki-flow should call Roster at `http://roster-flow:8790` (or whatever `ROSTER_API_PORT` is). `ROSTER_PUBLIC_URL` defaults to `http://127.0.0.1:8790` on this file because CORE serves the UI on the API port; override it with the public hostname.
+
+`roster-setup` is a one-shot that runs `scripts/setup-wiki-team.mjs` after CORE is healthy. It uses `ROSTER_API_TOKEN` (needs `write`) against `http://roster-flow:$ROSTER_API_PORT`. Set the same token on the app service so boot registers it, and set `ROSTER_OWNER_*` so an owner exists before the one-shot runs. If `ROSTER_API_TOKEN` is unset, the one-shot skips. `WIKI_MODEL` and `WIKI_PROJECT_ID` are optional (`Qwen/Qwen2.5-Coder-32B-Instruct`, `wiki-flow-docs`). Its provider write lands in `/data/opencode/opencode.json`; CORE restarts any running OpenCode serve so the provider is live, and `GET /api/v1/health` lists it under `loadedProviders`.
 
 Optional bind mount instead of the named volume (Fedora/Podman SELinux: add `:Z`):
 
@@ -44,6 +94,27 @@ services:
     volumes:
       - ./.roster-flow:/data:Z
 ```
+
+### Data volume ownership
+
+CORE and the OpenCode servers it starts run as the image's `node` user. Volumes created by older images, a root `docker exec`, or a host bind mount can leave root-owned entries anywhere under `/data`, and CORE then fails with `EACCES`. Two examples:
+
+- `EACCES: permission denied, open '/data/opencode/opencode.json'` when `roster-setup` registers a provider.
+- `EACCES` on `mkdir /data/home/.local` when `opencode serve` creates its XDG dirs.
+
+The container starts as root, and on every start `docker/entrypoint.sh` repairs ownership before it drops to `node`:
+
+- It creates `/data/home` (`HOME`), `/data/system`, `/data/workspace` (`ROSTER_WORKSPACE`), and `/data/opencode` (`ROSTER_OPENCODE_DIR`) if they're missing.
+- It walks all of `/data` recursively and chowns only entries whose uid or gid is not `node`'s. That includes `/data` itself, every existing subfolder (for example `home/.local`, `workspace/*/.git`, and `lost+found`), and every file. Starts where everything is already owned by `node` change nothing. They still pay for one stat walk of `/data`.
+- It never follows symlinks below `/data`. A symlink is chowned as a link (`chown -h`) and its target is left alone. If one of the four directories is a symlink that resolves outside `/data`, it is neither created nor repaired. The exception is `ROSTER_DATA_DIR` itself: if it is a symlink, it is resolved, and its target directory and everything under it are repaired as `/data`.
+- It doesn't walk into other mounts inside `/data` (from `/proc/self/mountinfo`, with `find -xdev` as a fallback). A host bind mount at, say, `/data/workspace/repo` is not chowned, not even its mount point, and isn't checked. The exception is when `/data/home`, `/data/system`, `/data/workspace`, or `/data/opencode` is itself a separate mount. Each of those is walked and repaired as its own tree.
+- As `node`, it creates the remaining directories (`system/.opencode/agents`, `opencode/agents`, and `home/.local/{share,state}`, `home/.config`, `home/.cache` for OpenCode). It then checks that those directories are readable and writable. It also checks the config and state files CORE rewrites in place. Anywhere under `/data`, it flags directories it can't read or enter, files it can't read, and entries it can't write that it doesn't own. Only after that check passes does it start `node server/index.mjs`.
+
+If the container is started without root (a `user:` override in Compose or Dokploy), the entrypoint can't repair anything. It only runs the check. If anything fails the check, it exits 1 and lists each path with its owner and mode (at most 25). An unreadable subfolder is one of the reported paths; it doesn't make the script exit silently., and CORE never starts and never hits `EACCES`. The fix is to drop the override, or to `chown -R` the volume to the container uid once from the host. If the check still fails after a root repair (a read-only mount, NFS `root_squash`, or a symlink out of `/data`), the entrypoint exits 1 and says so.
+
+Neither Compose file sets `user:`, so both run the entrypoint as root. `roster-setup` doesn't mount `/data`. It writes through CORE's API, so CORE's entrypoint covers it. If CORE still answers with `EACCES` or `EPERM`, `scripts/setup-wiki-team.mjs` exits 1 and points at this section.
+
+The entrypoint passes any arguments through as the command to run, so one-off commands get the same repair and privilege drop: `docker compose run --rm roster-flow node scripts/create-token.mjs …`. `docker/entrypoint.test.mjs` covers the behavior. Its root cases run only when the test runs as root, for example `sudo node --test docker/entrypoint.test.mjs`.
 
 Do not put secrets in the image or a committed Compose override. Host `npm run standup` below stays supported for development.
 
@@ -62,7 +133,7 @@ npm run start:static   # http://127.0.0.1:8790/setup
 - Optional: [OpenCode CLI](https://opencode.ai) on `PATH`, or `OPENCODE_BIN=/path/to/opencode`
 - Optional provider keys in the environment (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …)
 
-First run: open http://127.0.0.1:5173/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds.
+First run: open http://127.0.0.1:5175/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds.
 
 ## Host install
 
@@ -84,38 +155,63 @@ This starts:
 | Process | URL | Role |
 |---|---|---|
 | CORE API | http://127.0.0.1:8790 | Teams, bots, bus, harness wrapper |
-| Vite | http://127.0.0.1:5173 | Marketing + `/setup` + `/app` workspace |
+| Vite | http://127.0.0.1:5175 | Marketing + `/setup` + `/app` workspace |
 
 Or separately:
 
 ```bash
 npm run api          # :8790
-npm run dev          # :5173, proxies /api → :8790
+npm run dev          # :5175, proxies /api → :8790
 ```
 
 Health check:
 
 ```bash
 curl -s http://127.0.0.1:8790/api/v1/health
-curl -s http://127.0.0.1:5173/app
+curl -s http://127.0.0.1:5175/app
 ```
 
 ## URLs an agent should use
 
 | URL | What to test |
 |---|---|
-| http://127.0.0.1:5173/ | Marketing home |
-| http://127.0.0.1:5173/setup | First-run wizard (skipped when `ROSTER_SKIP_ONBOARDING=1`) |
-| http://127.0.0.1:5173/login | Owner sign-in after setup |
-| http://127.0.0.1:5173/app | Live workspace (Room default) |
-| http://127.0.0.1:5173/app?mode=chart | Org chart |
-| http://127.0.0.1:5173/app/settings | Providers / models |
-| http://127.0.0.1:5173/org | Marketing org page + mock |
-| http://127.0.0.1:5173/access | Access form |
+| http://127.0.0.1:5175/ | Marketing home |
+| http://127.0.0.1:5175/setup | First-run wizard (skipped when `ROSTER_SKIP_ONBOARDING=1`) |
+| http://127.0.0.1:5175/login | Owner sign-in after setup |
+| http://127.0.0.1:5175/app | Live workspace (Room default) |
+| http://127.0.0.1:5175/app?mode=chart | Org chart |
+| http://127.0.0.1:5175/app/settings | Providers / models |
+| http://127.0.0.1:5175/org | Marketing org page + mock |
+| http://127.0.0.1:5175/access | Access form |
 
 ## Auth
 
 Local owner after `/setup`. Playwright sets `ROSTER_SKIP_ONBOARDING=1`; then `Authorization: Bearer roster-demo` is still accepted. Do not invent other tokens.
+
+## Headless bootstrap (no setup screen)
+
+For unattended deploys, set the owner in env and CORE creates it on first boot, finishes onboarding (empty org by default), and closes `/setup`:
+
+```
+ROSTER_OWNER_EMAIL=ops@example.com
+ROSTER_OWNER_PASSWORD=...            # or ROSTER_OWNER_PASSWORD_HASH=scrypt$<salt>$<hash>
+ROSTER_OWNER_NAME=Ops                # optional
+ROSTER_OWNER_TEMPLATE=empty          # or starter
+```
+
+Generate a hash so the plaintext never sits in env: `ROSTER_OWNER_PASSWORD=... node scripts/create-owner.mjs --hash`.
+CLI alternative (writes to `ROSTER_DATA_DIR`, run before CORE starts): `ROSTER_OWNER_PASSWORD=... node scripts/create-owner.mjs --email ops@example.com`.
+
+If you keep the interactive flow on a reachable host, set `ROSTER_BOOTSTRAP_TOKEN`. `POST /api/v1/setup/first-user` then requires it (header `x-roster-bootstrap-token`, or the Bootstrap token field on `/setup`). Once an owner exists, `first-user` returns 409 regardless. `POST /api/v1/setup/start-over` can reopen setup after that, but only with a valid owner session or the owner's password, and the same bootstrap token when it is set. Missing or wrong proof is 401, including a wrong email from an anonymous caller. A mismatched owner email is 403 only after the session or password has authenticated.
+
+### API tokens for automation
+
+Scripts should use a scoped API token instead of a login session. Create one in **Settings → API tokens**, with `POST /api/v1/tokens` (admin scope), or headlessly:
+
+- `ROSTER_API_TOKEN=rf_<at least 21 more chars>` in env registers that token (all scopes; narrow with `ROSTER_API_TOKEN_SCOPES=read,write`) on boot once an owner exists. Set it alongside `ROSTER_OWNER_*` for a fully unattended deploy.
+- `node scripts/create-token.mjs --name ci --scopes read,write [--days 90]` prints a new token once.
+
+Revoked or expired tokens get 401; a token without the needed scope gets 403. `scripts/setup-wiki-team.mjs` requires `ROSTER_API_TOKEN`.
 
 ## Seed / demo data
 

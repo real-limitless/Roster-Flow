@@ -1,3 +1,4 @@
+import { applyBudgetSideEffects, budgetFieldsFromBody, rolloverSeatBudget, seatOverBudget } from "./budget.mjs";
 import { normalizeModelId, normalizeSeat, slugify } from "./seed.mjs";
 import { attachSeatToTeam } from "./teams.mjs";
 import { removeSeatAgent } from "./agents.mjs";
@@ -50,7 +51,12 @@ export function hireSeat(state, body = {}) {
     skills: body.skills,
     job: body.job || "New seat.",
     status: "idle",
+    ...budgetFieldsFromBody(body),
   });
+  if (seat.kind === "bot") {
+    seat.spent = seat.spent || 0;
+    applyBudgetSideEffects(seat);
+  }
   state.seats = [...(state.seats || []), seat];
   if (teamId) attachSeatToTeam(state, teamId, seat.id);
   if (projectId && body.asPm) {
@@ -99,11 +105,12 @@ function fail(status, message) {
   throw err;
 }
 
-export function pauseSeat(state, id) {
+export function pauseSeat(state, id, reason = "owner") {
   const seat = (state.seats || []).find((s) => s.id === id);
   if (!seat) fail(404, "seat not found");
   if (seat.id === "you" || seat.kind === "human") fail(400, "cannot pause this seat");
   seat.status = "paused";
+  if (reason === "budget" || seat.pauseReason !== "budget") seat.pauseReason = reason;
   return seat;
 }
 
@@ -111,8 +118,27 @@ export function resumeSeat(state, id) {
   const seat = (state.seats || []).find((s) => s.id === id);
   if (!seat) fail(404, "seat not found");
   if (seat.id === "you" || seat.kind === "human") fail(400, "cannot resume this seat");
-  if (seat.status === "paused") seat.status = "idle";
+  rolloverSeatBudget(seat);
+  if (seatOverBudget(seat)) fail(400, "raise tokenBudget first");
+  if (seat.status === "paused") {
+    seat.status = "idle";
+    seat.pauseReason = undefined;
+  }
   return seat;
+}
+
+export function patchSeat(state, id, body = {}) {
+  const seat = (state.seats || []).find((s) => s.id === id);
+  if (!seat) return null;
+  const budget = budgetFieldsFromBody(body);
+  const next = { ...seat, ...body, id, ...budget };
+  if (body.model) next.model = normalizeModelId(body.model);
+  if (body.fallbackModel !== undefined) next.fallbackModel = normalizeModelId(body.fallbackModel) || undefined;
+  const updated = normalizeSeat(next);
+  if (updated.kind === "bot") applyBudgetSideEffects(updated);
+  state.seats = (state.seats || []).map((s) => (s.id === id ? updated : s));
+  if (updated.team) attachSeatToTeam(state, updated.team, updated.id);
+  return updated;
 }
 
 export function pauseTeam(state, id) {
@@ -123,6 +149,7 @@ export function pauseTeam(state, id) {
     const seat = (state.seats || []).find((s) => s.id === sid);
     if (seat?.kind === "bot") {
       seat.status = "paused";
+      if (seat.pauseReason !== "budget") seat.pauseReason = "owner";
       seats.push(seat);
     }
   }
@@ -137,7 +164,14 @@ export function killRun(state, runId) {
 }
 
 export function wakeBlocked(state, seat, meta = {}) {
-  if (seat?.status === "paused") return { paused: true, reason: "seat" };
+  if (!seat) return { paused: true, reason: "seat" };
+  rolloverSeatBudget(seat);
+  if (seatOverBudget(seat)) {
+    seat.status = "paused";
+    seat.pauseReason = "budget";
+    return { paused: true, reason: "budget" };
+  }
+  if (seat.status === "paused") return { paused: true, reason: seat.pauseReason === "budget" ? "budget" : "seat" };
   const runId = meta.runId;
   if (runId && (state.pausedRunIds || []).includes(runId)) return { paused: true, reason: "run" };
   return null;

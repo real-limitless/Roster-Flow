@@ -21,6 +21,7 @@ import {
   type SeatKind,
   type SeatType,
   type ModelStrategy,
+  type Task,
   type Team,
 } from "../data";
 import { OrgChart } from "../components/OrgChart";
@@ -32,6 +33,7 @@ import { ConversationHeader } from "../components/chat/ConversationHeader";
 import { FilesLinksPane } from "../components/chat/ConversationPanes";
 import { SearchModal } from "../components/chat/SearchModal";
 import { MessageRow } from "../components/chat/MessageRow";
+import { TaskBoard } from "../components/chat/TaskBoard";
 import { ArchitectDock, type ArchitectMsg } from "../components/chart/ArchitectDock";
 import { ChartSplitter, loadDock, saveDock, useNarrowChart, type DockLayout } from "../components/chart/ChartSplitter";
 import { previewFromPlan, type OrgPlan } from "../components/chart/planPreview";
@@ -49,6 +51,7 @@ import {
   type RoomTab,
 } from "../lib/conversation";
 import type { SearchHit } from "../lib/search";
+import { budgetPaused, budgetRemaining, budgetWarn, summarizeUsage } from "../lib/budget";
 
 type CreateKind = "channel" | "project" | "team" | "seat";
 
@@ -70,6 +73,7 @@ export function Workspace() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [inboxUnread, setInboxUnread] = useState<Record<string, number>>({});
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [architectMsgs, setArchitectMsgs] = useState<ArchitectMsg[]>([]);
   const [architectBusy, setArchitectBusy] = useState(false);
@@ -127,6 +131,7 @@ export function Workspace() {
         if (Array.isArray(st.goals)) setGoals(st.goals);
         if (st.inboxUnread) setInboxUnread(st.inboxUnread);
         if (Array.isArray(st.approvals)) setApprovals(st.approvals);
+        if (Array.isArray(st.tasks)) setTasks(st.tasks as Task[]);
         const [t, m, p] = await Promise.all([
           api.teams().catch(() => []),
           api.models().catch(() => []),
@@ -271,6 +276,7 @@ export function Workspace() {
     projects?: Project[];
     goals?: Goal[];
     approvals?: Approval[];
+    tasks?: Task[];
     inboxUnread?: Record<string, number>;
   }) {
     if (Array.isArray(st.seats) && st.seats.length) setRoster(st.seats);
@@ -281,6 +287,7 @@ export function Workspace() {
     if (Array.isArray(st.goals)) setGoals(st.goals);
     if (st.inboxUnread) setInboxUnread(st.inboxUnread);
     if (Array.isArray(st.approvals)) setApprovals(st.approvals);
+    if (Array.isArray(st.tasks)) setTasks(st.tasks);
   }
 
   function openSearch() {
@@ -562,7 +569,12 @@ export function Workspace() {
     setRoster((r) => r.map((s) => (s.id === id ? { ...s, ...body } : s)));
     void api
       .patchSeat(id, body)
-      .then(() => api.teams())
+      .then((seat) => {
+        if (seat && typeof seat === "object" && "id" in (seat as Seat)) {
+          setRoster((r) => r.map((s) => (s.id === id ? (seat as Seat) : s)));
+        }
+        return api.teams();
+      })
       .then((t) => {
         if (Array.isArray(t)) setTeamList(t);
       })
@@ -790,6 +802,26 @@ export function Workspace() {
                 <div className={`room-split ${debugOpen ? "has-debug" : ""}`}>
                   <div className="room-col">
                     <div className="main thread">
+                      <BudgetBanners seats={[selected, ...members]} />
+                      <TaskBoard
+                        tasks={tasks}
+                        onClaim={(id) => {
+                          void api
+                            .claimTask(id, selectedId)
+                            .then((row) => setTasks((cur) => cur.map((t) => (t.id === row.id ? row : t))))
+                            .catch(() => undefined);
+                        }}
+                        onComplete={(id) => {
+                          void api
+                            .completeTask(id, selectedId)
+                            .then((row) =>
+                              setTasks((cur) =>
+                                cur.map((t) => (t.id === row.id ? row : t)),
+                              ),
+                            )
+                            .catch(() => undefined);
+                        }}
+                      />
                       {visible.length === 0 && <p className="micro">No messages in {title}. Say something.</p>}
                       {visible.map((m) => (
                         <MessageRow
@@ -865,6 +897,7 @@ export function Workspace() {
               onArchitectRevise={() => sendArchitect("Revise that plan. Keep it smaller.")}
               onToggleDebug={toggleDebug}
               unreadBySeat={inboxUnread}
+              claimedSeatIds={tasks.filter((t) => t.status === "claimed" && t.claimedBy).map((t) => t.claimedBy as string)}
               pendingApprovals={approvals.filter((a) => a.status === "pending")}
               onApprovePending={approvePending}
             />
@@ -1115,6 +1148,7 @@ function ChartPane({
   onArchitectRevise,
   onToggleDebug,
   unreadBySeat = {},
+  claimedSeatIds = [],
   pendingApprovals = [],
   onApprovePending,
 }: {
@@ -1142,12 +1176,27 @@ function ChartPane({
   onArchitectRevise: () => void;
   onToggleDebug?: () => void;
   unreadBySeat?: Record<string, number>;
+  claimedSeatIds?: string[];
   pendingApprovals?: Approval[];
   onApprovePending?: (id: string) => void;
 }) {
   const [layoutResetKey, setLayoutResetKey] = useState(0);
   const [dock, setDock] = useState<DockLayout>(loadDock);
   const narrow = useNarrowChart();
+  const [usageChip, setUsageChip] = useState("Usage · unmetered");
+  useEffect(() => {
+    void api
+      .usage()
+      .then((rows) => {
+        const sum = summarizeUsage(Array.isArray(rows) ? rows : []);
+        if (!sum.wakes) {
+          setUsageChip("Usage · unmetered");
+          return;
+        }
+        setUsageChip(`Usage · ${sum.tokens} tok · $${sum.usd}`);
+      })
+      .catch(() => setUsageChip("Usage · unmetered"));
+  }, []);
   return (
     <div className={`chart-workspace ${narrow ? "is-narrow" : ""} ${dock.collapsed ? "dock-collapsed" : ""}`}>
       <div className="chart-canvas" style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
@@ -1162,6 +1211,9 @@ function ChartPane({
           <button className="pill-btn primary" data-testid="hire-seat-chart" type="button" onClick={onStartHire}>
             Hire seat
           </button>
+          <Link to="/app/settings?pane=usage" className="pill-btn" data-testid="usage-chip">
+            {usageChip}
+          </Link>
           {onToggleDebug && (
             <button
               type="button"
@@ -1204,6 +1256,7 @@ function ChartPane({
           onAttach={onAttach}
           resetLayoutKey={layoutResetKey}
           unreadBySeat={unreadBySeat}
+          claimedSeatIds={claimedSeatIds}
         />
       </div>
       {!dock.collapsed && <ChartSplitter dock={dock} onChange={setDock} narrow={narrow} />}
@@ -1283,6 +1336,7 @@ function HireForm({
   const [instructions, setInstructions] = useState("");
   const [model, setModel] = useState(models[0] ? modelValue(models[0]) : "");
   const [fallback, setFallback] = useState("");
+  const [tokenBudget, setTokenBudget] = useState("");
   const humans = roster.filter((s) => s.kind === "human");
   const managers = roster.filter((s) => !s.system);
   const picked = staffed.find((t) => t.id === team);
@@ -1309,6 +1363,7 @@ function HireForm({
       fallbackModel: kind === "bot" ? fallback || undefined : undefined,
       persona: kind === "bot" ? persona.trim() || undefined : undefined,
       instructions: kind === "bot" ? instructions.trim() || undefined : undefined,
+      tokenBudget: kind === "bot" && tokenBudget.trim() !== "" ? Number(tokenBudget) : undefined,
       job: job.trim() || (kind === "human" ? "Human seat on the org chart." : "Specialist OpenCode agent."),
       status: "idle",
     });
@@ -1400,6 +1455,17 @@ function HireForm({
                   </option>
                 ))}
               </select>
+            </label>
+            <label>
+              Monthly tokenBudget
+              <input
+                data-testid="hire-token-budget"
+                type="number"
+                min={0}
+                value={tokenBudget}
+                onChange={(e) => setTokenBudget(e.target.value)}
+                placeholder="Unlimited"
+              />
             </label>
           </>
         )}
@@ -1643,6 +1709,30 @@ function CreateProjectForm({
   );
 }
 
+function BudgetBanners({ seats }: { seats: Seat[] }) {
+  const seen = new Set<string>();
+  const unique = seats.filter((s) => {
+    if (!s?.id || seen.has(s.id)) return false;
+    seen.add(s.id);
+    return true;
+  });
+  const paused = unique.filter((s) => budgetPaused(s));
+  const warned = unique.filter((s) => budgetWarn(s));
+  if (!paused.length && !warned.length) return null;
+  return (
+    <div className="budget-banner" data-testid="budget-banner">
+      {paused.map((s) => (
+        <p key={s.id} data-testid={`budget-banner-${s.id}`}>
+          {s.name} is paused — monthly tokenBudget exhausted.
+        </p>
+      ))}
+      {warned.map((s) => (
+        <p key={`warn-${s.id}`}>{s.name} is at 80% of tokenBudget.</p>
+      ))}
+    </div>
+  );
+}
+
 function Inspector({
   seat,
   roster,
@@ -1706,6 +1796,68 @@ function Inspector({
         <span>Status</span>
         <b data-testid="seat-status">{seat.status}</b>
       </div>
+      {seat.kind === "bot" && (
+        <>
+          <label className="kv-label">
+            Monthly tokenBudget
+            <input
+              data-testid="seat-token-budget"
+              type="number"
+              min={0}
+              defaultValue={seat.tokenBudget ?? ""}
+              key={`${seat.id}-tokenBudget-${seat.tokenBudget ?? "none"}`}
+              placeholder="Unlimited"
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                onPatch({ tokenBudget: v === "" ? null : Number(v) });
+              }}
+            />
+          </label>
+          <div className="kv">
+            <span>Remaining</span>
+            <b data-testid="seat-budget-remaining">
+              {seat.tokenBudget == null ? "unmetered" : `${budgetRemaining(seat)} / ${seat.tokenBudget} tokens`}
+            </b>
+          </div>
+          {budgetPaused(seat) && (
+            <p className="micro" data-testid="budget-paused-note">
+              Paused — monthly tokenBudget exhausted. Raise the cap to wake this seat.
+            </p>
+          )}
+          {budgetWarn(seat) && (
+            <p className="micro" data-testid="budget-warn">
+              At or over 80% of tokenBudget.
+            </p>
+          )}
+          <label className="kv-label">
+            Heartbeat (minutes)
+            <input
+              data-testid="seat-heartbeat-minutes"
+              type="number"
+              min={0}
+              defaultValue={seat.heartbeatMinutes ?? 0}
+              key={`${seat.id}-heartbeat-${seat.heartbeatMinutes ?? 0}`}
+              onBlur={(e) => {
+                const n = Number(e.target.value);
+                onPatch({ heartbeatMinutes: Number.isFinite(n) && n > 0 ? n : 0 });
+              }}
+            />
+          </label>
+          {(seat.heartbeatMinutes || 0) > 0 && (
+            <button
+              className="pill-btn"
+              type="button"
+              data-testid="disable-heartbeat"
+              onClick={() => onPatch({ heartbeatMinutes: 0 })}
+            >
+              Disable heartbeat
+            </button>
+          )}
+          {(seat.tools || []).includes("deploy") && (
+            <p className="micro">Deploy seats stay event-driven. Heartbeats will not auto-run them.</p>
+          )}
+        </>
+      )}
       {seat.team && (
         <div className="kv">
           <span>Team</span>

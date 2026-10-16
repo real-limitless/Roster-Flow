@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const webPort = process.env.ROSTER_WEB_PORT || "5175";
+
 export default defineConfig({
   testDir: "tests/e2e",
   fullyParallel: false,
@@ -8,7 +10,7 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: `http://127.0.0.1:${webPort}`,
     trace: "retain-on-failure",
   },
   webServer: [
@@ -25,7 +27,7 @@ export default defineConfig({
     },
     {
       command: "npm run dev",
-      url: "http://127.0.0.1:5173",
+      url: `http://127.0.0.1:${webPort}`,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
     },
