@@ -2,10 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync, existsSync } from "node:fs";
 import { agentMarkdown, permissionFor, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
+import { hireSeat } from "./seats.mjs";
+import { emptyState } from "./seed.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("hiring with model '' does not store xai/grok-4", () => {
+  const seat = hireSeat(emptyState(), { name: "Blank Model", model: "", job: "Unset." });
+  assert.notEqual(seat.model, "xai/grok-4");
+  if (seat.model) assert.match(String(seat.model), /\//);
+});
+
+test("agentMarkdown does not invent xai/grok-4 when the seat has no model", () => {
+  const md = agentMarkdown({
+    id: "open",
+    name: "Open",
+    role: "Specialist",
+    kind: "bot",
+    seatType: "specialist",
+    model: "",
+    job: "Unset model.",
+    tools: ["read"],
+    deny: [],
+  });
+  assert.doesNotMatch(md, /grok-4/);
+  assert.doesNotMatch(md, /^model:/m);
+});
 
 test("agentMarkdown uses provider/model and persona", () => {
   const md = agentMarkdown({
