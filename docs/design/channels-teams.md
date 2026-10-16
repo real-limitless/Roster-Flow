@@ -291,3 +291,15 @@ Acceptance on the live app: with a usable model loaded on the System serve, `Any
 - **The conductor's role changes** from router only to fallback responder. Its seed instructions need a matching line, or it will keep answering through tools.
 - **Company vs System serve:** bot-to-bot routing across the two serves goes through CORE, which is fine for option B. It is one more reason not to build on `task` across seats.
 - **Busy sessions:** OpenCode version differences in how a prompt to a busy session is handled (queued or rejected) are avoided by CORE's one-in-flight-per-(seat, room) rule. PR 5 adds a check of `GET /session/status`.
+
+## 6. Changes made during the build
+
+### Phase 1
+- **A responder needs a usable model.** `ea725ed` (#77) refuses a wake when the seat's assigned model is not loaded, instead of swapping in another model. The responder pick therefore skips seats whose model is not usable, along with paused and over-budget seats, and posts one `Skipped …` line. If no candidate is usable, the first one is woken anyway so its provider hint explains why; nothing is sent to OpenCode. In `#general` with the seed roster, the conductor is the only candidate, so its model must be loaded, or the owner sets a lead with a working model.
+- **The fallback order lives in `responderCandidates()`** (`server/channels.mjs`). `implicitTargets()` keeps the `team-*`, `project-*` and `dm-*` rules.
+- **Un-mentioned posts in `#ship` now go to Product, not the conductor.** Product is the first bot reporting to a human member. Existing tests that meant the conductor now post to `#general`.
+- **`POST /channels/:id/messages` returns once the wakes start.** It no longer waits for the reply loop; the route awaits the new `started` promise, and `pending` still resolves after the follow.
+- **Adapter seats (webhook, claude-code, codex) are woken directly from rooms.** Before, they went through the OpenCode harness check and model plan, which always refused them.
+- **Reply dedupe is by OpenCode message id across all rooms** (`alreadyMirrored`), and the follow loop ignores assistant messages created before the wake. `assistantText()` now returns `created`.
+- **`chat.test.mjs` seeds the starter company** when the shared test store is empty. Before, it only passed after an e2e run had seeded `.roster-flow/state.json`.
+- **e2e uses a fake OpenCode serve** (`tests/e2e/fake-opencode.ts`). CORE adopts any healthy serve on 14180 or 14181, so wakes run end to end without the binary.

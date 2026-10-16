@@ -185,9 +185,9 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 |---|---|---|
 | GET | `/api/v1/channels` | Channels plus membership |
 | POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
-| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats |
+| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`). A bad lead is a 400 and changes nothing |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
-| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken |
+| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken. It returns once the wakes have started, not when the reply arrives. `queued: true` means the room's responder is still answering and the message will follow |
 | GET | `/api/v1/threads` | Thread index |
 | GET | `/api/v1/threads/:id` | One thread |
 
@@ -205,6 +205,8 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 ```
 
 `text` may be empty when at least one of `skills`, `files`, `attachments`, or `blocks` is present. Mentions wake the bus: `@build` a seat, `@eng` the team Supervisor, `@channel` notifies members and wakes the Channel conductor.
+
+A message with no mention, from a human, wakes one responder for the room. The order is: the channel's `leadSeatId`; the supervisors of member teams; bot members that report to a human member; other bot members; the Channel conductor. Seats that are paused, over budget, or whose model is not usable are skipped, and the room gets one `Skipped …` line. When nobody can answer, the first seat reports why. The responder is told to answer in plain text, and its reply is posted to the same room. A message from a bot seat with no mention wakes nobody. Team rooms (`team-<id>`) still wake the Supervisor, project rooms the PM, and DMs the bot.
 
 ## Bot / team messaging
 
