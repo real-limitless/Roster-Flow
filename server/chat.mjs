@@ -380,7 +380,7 @@ function runImplicit(channelId, text, from, target) {
   const pending = started
     .then(async (results) => {
       const { seats, sessions } = repliers(results);
-    if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since, sessions, own: true });
+      if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since, sessions });
       return results;
     })
     .finally(() => {
@@ -657,7 +657,7 @@ export function routeBotReply(channelId, seatId, msg) {
   const since = Date.now();
   const pending = startWakes(channelId, msg.text, seatId, plan.wakes).then(async (results) => {
     const { seats, sessions } = repliers(results);
-    if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since, sessions });
+    if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since, sessions, own: true });
     return results;
   });
   pending.catch(() => undefined);
