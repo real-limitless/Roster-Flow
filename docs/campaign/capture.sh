@@ -13,7 +13,7 @@ if [[ ! -d node_modules/playwright ]]; then
   npx playwright install chromium
 fi
 
-export BASE_URL="${BASE_URL:-http://127.0.0.1:5173}"
+export BASE_URL="${BASE_URL:-http://127.0.0.1:${ROSTER_WEB_PORT:-5175}}"
 
 if ! curl -sf "${BASE_URL}/" >/dev/null; then
   echo "Nothing is listening on ${BASE_URL}."

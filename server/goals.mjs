@@ -1,4 +1,5 @@
 import { slugify } from "./seed.mjs";
+import { knowledgePointerLines } from "./knowledge.mjs";
 
 function fail(status, message) {
   const err = new Error(message);
@@ -68,6 +69,7 @@ export function goalPackLines(state, { seat = null, runId = null } = {}) {
   const project = pack.project || (state.projects || []).find((p) => p.id === "billing") || (state.projects || [])[0];
   if (project?.brief) lines.push(`Project brief: ${project.brief}`);
   if (project?.constitution) lines.push(`Constitution: ${project.constitution}`);
+  for (const line of knowledgePointerLines(state, seat)) lines.push(line);
   if (runId) lines.push(`Run: ${runId}`);
-  return lines.filter(Boolean).slice(0, 10);
+  return lines.filter(Boolean).slice(0, 14);
 }
