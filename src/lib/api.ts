@@ -1,20 +1,65 @@
 const base = (import.meta.env.VITE_API_URL as string | undefined) || "";
 const TOKEN_KEY = "roster-flow-token";
 
+export type SetupStep = "install" | "first_user" | "login" | "harness" | "welcome" | "done";
+
 export type SetupStatus = {
   skip: boolean;
   hasUser: boolean;
+  hasOwner: boolean;
+  setupClosed: boolean;
   authenticated: boolean;
   harnessReady: boolean;
+  bootstrapTokenRequired?: boolean;
   complete: boolean;
-  step: "install" | "first_user" | "login" | "harness" | "welcome" | "done";
-  checks: { api: boolean; opencode: boolean; providerKeys: boolean; dataDir: boolean };
-  binary: string | null;
+  installSeen?: boolean;
+  harnessSeen?: boolean;
+  harnessSkipped?: boolean;
+  step?: SetupStep;
+  checks: { api: boolean; opencode: boolean; harness?: boolean; providerKeys: boolean; dataDir: boolean };
+  binary?: string | null;
   email?: string | null;
   name?: string | null;
 };
 
+/** Wizard step from the public boolean payload. Authenticated responses may include `step`. */
+export function deriveSetupStep(status: SetupStatus | null | undefined): SetupStep {
+  if (!status) return "install";
+  if (status.step) return status.step;
+  if (status.skip || status.complete) return "done";
+  if (!status.installSeen) return "install";
+  if (!status.hasOwner && !status.hasUser) return "first_user";
+  if (!status.authenticated) return "login";
+  if (!status.harnessSeen && !status.harnessSkipped) return "harness";
+  return "welcome";
+}
+
+export type ApiToken = {
+  id: string;
+  name: string;
+  scopes: string[];
+  prefix: string;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+};
+
 export type AuthUser = { id: string; name: string; email: string; role: string; seatId: string };
+
+export type AccessRequest = {
+  id: string;
+  name: string;
+  email: string;
+  company: string;
+  role?: string;
+  size?: string;
+  replace?: string;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+  updated?: boolean;
+};
 
 export function getAuthToken() {
   try {
@@ -59,6 +104,8 @@ export const api = {
       routines?: import("../data").Routine[];
       inboxUnread?: Record<string, number>;
       inboxCursors?: Record<string, string>;
+      usage?: import("../data").UsageRow[];
+      tasks?: import("../data").Task[];
     }>("/api/v1/state"),
   goals: () => req<import("../data").Goal[]>("/api/v1/goals"),
   createGoal: (body: unknown) =>
@@ -83,6 +130,24 @@ export const api = {
     req<{ runId: string; paused: boolean }>(`/api/v1/runs/${encodeURIComponent(runId)}/kill`, {
       method: "POST",
       body: "{}",
+    }),
+  tasks: (query: { projectId?: string; runId?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.projectId) params.set("projectId", query.projectId);
+    if (query.runId) params.set("runId", query.runId);
+    const q = params.toString();
+    return req<import("../data").Task[]>(`/api/v1/tasks${q ? `?${q}` : ""}`);
+  },
+  createTask: (body: unknown) => req<import("../data").Task>("/api/v1/tasks", { method: "POST", body: JSON.stringify(body) }),
+  claimTask: (id: string, seatId: string) =>
+    req<import("../data").Task>(`/api/v1/tasks/${encodeURIComponent(id)}/claim`, {
+      method: "POST",
+      body: JSON.stringify({ seatId }),
+    }),
+  completeTask: (id: string, seatId?: string) =>
+    req<import("../data").Task>(`/api/v1/tasks/${encodeURIComponent(id)}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ seatId }),
     }),
   approvals: (status?: string) =>
     req<import("../data").Approval[]>(`/api/v1/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`),
@@ -112,6 +177,21 @@ export const api = {
     req<import("../data").Project>("/api/v1/projects", { method: "POST", body: JSON.stringify(body) }),
   patchProject: (id: string, body: unknown) =>
     req<import("../data").Project>(`/api/v1/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  projectConnectors: (id: string) =>
+    req<import("../data").KnowledgeConnector[]>(`/api/v1/projects/${id}/connectors`),
+  attachConnector: (id: string, body: { kind: string; path?: string; remote?: string; root?: string }) =>
+    req<import("../data").KnowledgeConnector>(`/api/v1/projects/${id}/connectors`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  detachConnector: (projectId: string, connectorId: string) =>
+    req<import("../data").KnowledgeConnector>(`/api/v1/projects/${projectId}/connectors/${connectorId}`, {
+      method: "DELETE",
+    }),
+  searchKnowledge: (id: string, q: string, seatId?: string) =>
+    req<{ source: string; projectId: string; q: string; hits: Array<{ path: string; snippet: string }> }>(
+      `/api/v1/projects/${id}/knowledge?q=${encodeURIComponent(q)}${seatId ? `&seatId=${encodeURIComponent(seatId)}` : ""}`,
+    ),
   createTeam: (body: unknown) =>
     req<{ team: import("../data").Team; seats: import("../data").Seat[] }>("/api/v1/teams", {
       method: "POST",
@@ -147,6 +227,8 @@ export const api = {
       skills?: import("../data").MsgSkill[];
       files?: import("../data").MsgFile[];
       blocks?: import("roster-flow-blocks").Block[];
+      prUrl?: string;
+      branch?: string;
     } = {},
   ) =>
     req<{ id?: string; messages?: import("../data").Msg[]; text?: string }>(
@@ -161,15 +243,33 @@ export const api = {
           skills: extra.skills,
           files: extra.files,
           blocks: extra.blocks,
+          prUrl: extra.prUrl,
+          branch: extra.branch,
         }),
       },
     ),
   blockAction: (body: { messageId: string; actionId: string; value?: string; userId?: string }) =>
     req("/api/v1/block-actions", { method: "POST", body: JSON.stringify(body) }),
+  githubStatus: () =>
+    req<{ connected: boolean; env: string | null; api: string }>("/api/v1/github"),
+  githubCard: (messageId: string) =>
+    req<{ github: import("../data").GithubCard; message: import("../data").Msg }>(
+      `/api/v1/messages/${messageId}/github`,
+    ),
   hire: (seat: unknown) => req("/api/v1/seats", { method: "POST", body: JSON.stringify(seat) }),
   fire: (id: string) => req<{ id: string; reparentedTo?: string }>(`/api/v1/seats/${id}`, { method: "DELETE" }),
   patchSeat: (id: string, body: unknown) =>
     req(`/api/v1/seats/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  usage: (query: { projectId?: string; teamId?: string; seatId?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (query.projectId) qs.set("projectId", query.projectId);
+    if (query.teamId) qs.set("teamId", query.teamId);
+    if (query.seatId) qs.set("seatId", query.seatId);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return req<import("../data").UsageRow[]>(`/api/v1/usage${suffix}`);
+  },
+  recordUsage: (body: unknown) =>
+    req<import("../data").UsageRow>("/api/v1/usage", { method: "POST", body: JSON.stringify(body) }),
   architectChat: (message: string, history: Array<{ role: string; text: string }> = []) =>
     req<{
       reply: string;
@@ -260,7 +360,7 @@ export const api = {
   },
   setupStatus: () => req<SetupStatus>("/api/v1/setup/status"),
   setupInstall: () => req<SetupStatus>("/api/v1/setup/install", { method: "POST", body: "{}" }),
-  setupFirstUser: (body: { name: string; email: string; password: string }) =>
+  setupFirstUser: (body: { name: string; email: string; password: string; bootstrapToken?: string }) =>
     req<{ user: AuthUser }>("/api/v1/setup/first-user", { method: "POST", body: JSON.stringify(body) }),
   setupHarness: (skipped = false) =>
     req<SetupStatus>("/api/v1/setup/harness", { method: "POST", body: JSON.stringify({ skipped }) }),
@@ -269,6 +369,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ template }),
     }),
+  setupStartOver: (body: { email: string; confirm: boolean; password?: string; bootstrapToken?: string }) =>
+    req<SetupStatus>("/api/v1/setup/start-over", { method: "POST", body: JSON.stringify(body) }),
   login: (email: string, password: string) =>
     req<{ token: string; user: AuthUser }>("/api/v1/auth/login", {
       method: "POST",
@@ -292,10 +394,16 @@ export const api = {
         channel: string | null;
       }>;
     }>("/api/v1/harness/sessions"),
+  listTokens: () => req<ApiToken[]>("/api/v1/tokens"),
+  createToken: (body: { name: string; scopes: string[]; expiresInDays?: number }) =>
+    req<{ token: string; record: ApiToken }>("/api/v1/tokens", { method: "POST", body: JSON.stringify(body) }),
+  revokeToken: (id: string) => req<ApiToken>(`/api/v1/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
   familyStatus: () =>
     req<{
       mcpFlow: { url: string; ok: boolean; status?: number; error?: string; admin: boolean };
       skillFlow: { url: string; bin: string; ok: boolean; status?: number; error?: string };
+      slack?: { connected: boolean; env: string | null; shipChannel?: string | null };
+      github?: { connected: boolean; env: string | null; api: string };
     }>("/api/v1/family/status"),
   familySkillAudit: (source: string) =>
     req<{ ok: boolean; json?: unknown; stderr?: string; error?: string }>("/api/v1/family/skills/audit", {
@@ -314,4 +422,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  requestAccess: (body: {
+    name: string;
+    email: string;
+    company: string;
+    role?: string;
+    size?: string;
+    replace?: string;
+    note?: string;
+  }) => req<AccessRequest>("/api/v1/access", { method: "POST", body: JSON.stringify(body) }),
+  accessRequests: () => req<{ requests: AccessRequest[] }>("/api/v1/access"),
 };

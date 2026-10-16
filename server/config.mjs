@@ -6,8 +6,12 @@ export function apiPort() {
   return Number(process.env.ROSTER_API_PORT || 8790);
 }
 
+export function webPort() {
+  return Number(process.env.ROSTER_WEB_PORT || 5175);
+}
+
 export function publicUrl() {
-  return process.env.ROSTER_PUBLIC_URL || "http://127.0.0.1:5173";
+  return process.env.ROSTER_PUBLIC_URL || `http://127.0.0.1:${webPort()}`;
 }
 
 export function opencodeHostname() {

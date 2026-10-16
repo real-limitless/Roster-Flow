@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { fileTestId, seatForMessage, type Msg, type Seat } from "../../data";
 import { SeatAvatar } from "../SeatAvatar";
+import { GitHubPrCard } from "./GitHubPrCard";
 import { MessageBlocks, shouldHideFallback, type BlockAction } from "./MessageBlocks";
 
 export function MessageRow({
@@ -48,6 +49,7 @@ export function MessageRow({
           <span className="meta">{msg.time}</span>
         </div>
         {msg.text && !shouldHideFallback(msg) && <div className="body">{renderMentions(msg.text)}</div>}
+        <GitHubPrCard msg={msg} />
         <MessageBlocks msg={msg} onAction={onBlockAction ? (action) => onBlockAction(msg, action) : undefined} />
         <MessageChips msg={msg} />
         {extra}
@@ -73,9 +75,15 @@ function MessageChips({ msg }: { msg: Msg }) {
   const skills = msg.skills || [];
   const files = msg.files || [];
   const attachments = msg.attachments || [];
-  if (!skills.length && !files.length && !attachments.length) return null;
+  const viaSlack = Boolean(msg.slack?.inbound);
+  if (!skills.length && !files.length && !attachments.length && !viaSlack) return null;
   return (
     <div className="msg-chips">
+      {viaSlack && (
+        <span className="chip" data-testid={`chip-slack-${msg.id}`}>
+          via Slack
+        </span>
+      )}
       {skills.map((s) => (
         <span className="chip ok" key={s.id} data-testid={`chip-skill-${s.id}`}>
           skill:{s.name}

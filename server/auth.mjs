@@ -1,6 +1,7 @@
 import { randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { DEMO_TOKEN, skipOnboarding } from "./flags.mjs";
+import { isApiToken, resolveApiToken } from "./tokens.mjs";
 
 const scrypt = promisify(scryptCb);
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -88,6 +89,7 @@ export function userFromToken(state, token) {
     const owner = (state.users || [])[0];
     return owner || { id: "demo", name: "You", email: "demo@localhost", role: "owner", seatId: "you" };
   }
+  if (isApiToken(token)) return resolveApiToken(state, token)?.user || null;
   const rec = (state.authSessions || []).find((s) => s.token === token);
   if (!rec) return null;
   if (new Date(rec.expiresAt).getTime() <= Date.now()) return null;

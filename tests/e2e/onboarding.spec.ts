@@ -116,5 +116,16 @@ test.describe("first-run onboarding", () => {
     await page.getByTestId("setup-login-password").fill("password2");
     await page.getByTestId("setup-login-submit").click();
     await expect(page).toHaveURL(/\/app/);
+
+    await page.evaluate(() => localStorage.removeItem("roster-flow-token"));
+    await page.goto("/login");
+    await expect(page.getByTestId("login-page")).toBeVisible();
+    await page.getByTestId("login-start-over").click();
+    await page.getByTestId("start-over-email").fill("chen@example.com");
+    await page.getByTestId("start-over-password").fill("password2");
+    await page.getByTestId("start-over-confirm").click();
+    await expect(page).toHaveURL(/\/setup/);
+    await expect(page.getByTestId("setup-page")).toBeVisible();
+    await expect(page.getByTestId("setup-step-install")).toBeVisible();
   });
 });
