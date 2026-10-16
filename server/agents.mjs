@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { normalizeModelId } from "./seed.mjs";
 import { opencodeDir, systemWorkspace } from "./paths.mjs";
 import { normalizeOpenCodeConfig, readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
+import { getState } from "./store.mjs";
 
 const agentsDir = join(opencodeDir, "agents");
 const systemRoot = systemWorkspace;
@@ -26,8 +27,25 @@ function yamlEscape(value) {
   return s;
 }
 
+function opencodeSeat(seat) {
+  const adapter = String(seat?.adapter || "opencode").toLowerCase();
+  return seat?.kind === "bot" && !seat.mcpGuest && (!adapter || adapter === "opencode");
+}
+
+/**
+ * Seats a supervisor may call through OpenCode's `task` tool: its direct bot
+ * reports on the company serve. Supervisors are `mode: primary`, so they cannot
+ * be subagents, and System seats live on the other serve.
+ */
+export function delegateReports(seat, state = getState()) {
+  if (!seat || seat.seatType !== "supervisor" || seat.system || !opencodeSeat(seat)) return [];
+  return (state?.seats || [])
+    .filter((s) => s.reportsTo === seat.id && opencodeSeat(s) && !s.system && s.seatType !== "supervisor")
+    .map((s) => s.id);
+}
+
 /** OpenCode `permission` object (https://opencode.ai/docs/permissions). */
-export function permissionFor(seat) {
+export function permissionFor(seat, { reports = null } = {}) {
   const deny = new Set(seat.deny || []);
   const permission = {};
   if (deny.has("edit") || seat.seatType === "supervisor") permission.edit = "deny";
@@ -36,6 +54,10 @@ export function permissionFor(seat) {
     // OpenCode uses the last matching bash rule. The catch-all allow must come
     // before the deploy deny, or `deploy *` is allowed.
     permission.bash = { "*": "allow", "deploy *": "deny" };
+  }
+  if (seat.seatType === "supervisor") {
+    const allowed = reports ?? delegateReports(seat);
+    permission.task = { "*": "deny", ...Object.fromEntries(allowed.map((id) => [id, "allow"])) };
   }
   return permission;
 }
@@ -68,10 +90,10 @@ export function agentSteps(seat = {}) {
   return seat.id === "channel" || seat.seatType === "supervisor" ? 4 : 8;
 }
 
-export function agentMarkdown(seat) {
+export function agentMarkdown(seat, ctx = {}) {
   const mode = seat.seatType === "supervisor" ? "primary" : "all";
   const model = normalizeModelId(seat.model) || "xai/grok-4";
-  const perm = permissionFor(seat);
+  const perm = permissionFor(seat, ctx);
   return [
     "---",
     `description: ${yamlEscape(seat.job || seat.name)}`,
@@ -85,14 +107,15 @@ export function agentMarkdown(seat) {
   ].join("\n");
 }
 
-function agentConfigEntry(seat) {
+function agentConfigEntry(seat, ctx = {}) {
+  const permission = permissionFor(seat, ctx);
   return {
     description: seat.job || seat.name,
     mode: seat.seatType === "supervisor" ? "primary" : "all",
     model: normalizeModelId(seat.model) || "xai/grok-4",
     steps: agentSteps(seat),
     prompt: agentBody(seat).trim(),
-    ...(Object.keys(permissionFor(seat)).length ? { permission: permissionFor(seat) } : {}),
+    ...(Object.keys(permission).length ? { permission } : {}),
   };
 }
 
@@ -132,6 +155,11 @@ export function syncSeatAgent(seat) {
   cfg.agent = { ...(cfg.agents || {}), ...(cfg.agent || {}) };
   delete cfg.agents;
   cfg.agent[seat.id] = agentConfigEntry(seat);
+  // A hire, fire, or reportsTo change alters some supervisor's task allowlist, so rewrite every supervisor.
+  for (const sup of (getState()?.seats || []).filter((s) => s.seatType === "supervisor" && s.id !== seat.id && opencodeSeat(s) && !s.system)) {
+    writeFileSync(join(agentsDir, `${sup.id}.md`), agentMarkdown(sup));
+    cfg.agent[sup.id] = agentConfigEntry(sup);
+  }
   writeOpenCodeConfig(cfg);
   return file;
 }
@@ -143,6 +171,13 @@ export function removeSeatAgent(id) {
   const cfg = readOpenCodeConfig();
   if (cfg.agents) delete cfg.agents[id];
   if (cfg.agent) delete cfg.agent[id];
+  const state = getState();
+  for (const sup of (state?.seats || []).filter((s) => s.seatType === "supervisor" && s.id !== id && opencodeSeat(s) && !s.system)) {
+    const reports = delegateReports(sup, state).filter((r) => r !== id);
+    if (!existsSync(join(agentsDir, `${sup.id}.md`))) continue;
+    writeFileSync(join(agentsDir, `${sup.id}.md`), agentMarkdown(sup, { reports }));
+    if (cfg.agent) cfg.agent[sup.id] = agentConfigEntry(sup, { reports });
+  }
   writeOpenCodeConfig(cfg);
   if (existsSync(systemOcPath)) {
     const sys = normalizeOpenCodeConfig(readJson(systemOcPath, { agent: {} }));

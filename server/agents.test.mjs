@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync, existsSync } from "node:fs";
 import { agentMarkdown, permissionFor, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
 import { join, dirname } from "node:path";
+import { emptyState } from "./seed.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -122,4 +123,44 @@ test("agent files cap tool steps: 4 for the conductor and supervisors, 8 for spe
   assert.equal(agentSteps({ id: "channel" }), 4);
   assert.equal(agentSteps({ id: "x", steps: 12 }), 12);
   assert.equal(agentSteps({ id: "x", steps: 0 }), 8);
+});
+
+test("supervisors may task only their direct bot reports; specialists get no task rule", async () => {
+  const { delegateReports } = await import("./agents.mjs");
+  const state = {
+    seats: [
+      { id: "sup", kind: "bot", seatType: "supervisor" },
+      { id: "a", kind: "bot", seatType: "specialist", reportsTo: "sup" },
+      { id: "g", kind: "bot", seatType: "generic", reportsTo: "sup" },
+      { id: "h", kind: "human", seatType: "human", reportsTo: "sup" },
+      { id: "guest", kind: "bot", seatType: "harness", reportsTo: "sup", mcpGuest: true },
+      { id: "sys", kind: "bot", seatType: "specialist", reportsTo: "sup", system: true },
+      { id: "ext", kind: "bot", seatType: "specialist", reportsTo: "sup", adapter: "claude-code" },
+      { id: "sub", kind: "bot", seatType: "supervisor", reportsTo: "sup" },
+      { id: "other", kind: "bot", seatType: "specialist", reportsTo: "elsewhere" },
+    ],
+  };
+  assert.deepEqual(delegateReports(state.seats[0], state), ["a", "g"]);
+  assert.deepEqual(delegateReports(state.seats[1], state), []);
+
+  const base = { kind: "bot", role: "r", job: "j", tools: [], deny: [] };
+  const sup = { ...base, id: "sup", name: "Sup", seatType: "supervisor" };
+  assert.deepEqual(permissionFor(sup, { reports: ["a", "g"] }).task, { "*": "deny", a: "allow", g: "allow" });
+  const md = agentMarkdown(sup, { reports: ["a", "g"] });
+  assert.match(md, /\n  task:\n    "\*": deny\n    "a": allow\n    "g": allow\n/);
+
+  assert.deepEqual(permissionFor({ ...base, id: "nobody-reports-here", name: "@x", seatType: "supervisor" }).task, { "*": "deny" });
+  assert.equal(permissionFor({ ...base, id: "build", name: "B", seatType: "specialist" }).task, undefined);
+});
+
+test("the seeded eng supervisor's agent config allows tasks to eng reports and the team alias denies all", async () => {
+  const { delegateReports } = await import("./agents.mjs");
+  const state = emptyState();
+  const sup = state.seats.find((s) => s.id === "eng-supervisor");
+  const perm = permissionFor(sup, { reports: delegateReports(sup, state) });
+  assert.equal(perm.task["*"], "deny");
+  for (const id of ["build", "review", "eng-generic"]) assert.equal(perm.task[id], "allow");
+  assert.equal(perm.task.qa, undefined);
+  const alias = teamAgentSeat(state.teams.find((t) => t.id === "eng"));
+  assert.deepEqual(permissionFor(alias, { reports: delegateReports(alias, state) }).task, { "*": "deny" });
 });
