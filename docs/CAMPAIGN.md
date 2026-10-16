@@ -58,7 +58,7 @@ Channel compiles a run. Product writes acceptance. Eng.Build and Eng.Review work
 
 ## Offer
 
-Invite-only while we scale agent computers. No credit card. “We’ll reply within one business day: usually with a 20-minute walkthrough of Room and Harness on the same bot.”
+Invite-only while we scale agent computers. No credit card. `/access` stores the request in CORE for the operator. Do not promise a reply SLA until mail is actually sent.
 
 ## Family
 

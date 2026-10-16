@@ -46,6 +46,7 @@ export function tryServeStatic(req, res, pathname) {
   const method = req.method || "GET";
   if (method !== "GET" && method !== "HEAD") return false;
   if (String(pathname || "").startsWith("/api")) return false;
+  if (pathname === "/mcp") return false;
   const rootDir = staticRoot();
   if (!rootDir) return false;
   const file = resolveStaticFile(rootDir, pathname);
