@@ -5,6 +5,8 @@ import { mkdirSync } from "node:fs";
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Staff an org of agents");
+  await expect(page.getByText("SSO ready")).toHaveCount(0);
+  await expect(page.getByText("Local owner account")).toBeVisible();
 });
 
 test("workspace room send and block kit seed", async ({ page, request }) => {
@@ -218,6 +220,15 @@ test("org chart connectors survive narrow viewport", async ({ page }) => {
   await expect(page.getByTestId("seat-you")).toBeVisible();
 });
 
+test("family mcp-flow is not up when the ping is Roster HTML", async ({ page }) => {
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-family").click();
+  await expect(page.getByTestId("settings-family")).toBeVisible();
+  const status = page.getByTestId("family-mcp-status");
+  await expect(status).toBeVisible();
+  await expect(status).not.toContainText(" · up ·");
+});
+
 test("settings writes a provider through the API", async ({ page, request }) => {
   await page.goto("/app/settings");
   await expect(page.getByTestId("settings-providers")).toBeVisible();
@@ -419,8 +430,18 @@ test("related pages still render chart/room", async ({ page }) => {
   await page.goto("/org");
   await expect(page.getByRole("heading", { name: /org chart is the control plane/i })).toBeVisible();
   await expect(page.getByTestId("org-chart")).toBeVisible();
+  await expect(page.getByText(/yaml export is not shipped/i)).toBeVisible();
+  await expect(page.getByText("multi-team.yaml")).toHaveCount(0);
   await page.goto("/product");
   await expect(page.getByRole("heading", { name: /the room, the org, the harness/i })).toBeVisible();
+  await expect(page.getByTestId("clone-note")).toContainText("git checkout DEVELOPMENT");
+  await expect(page.getByTestId("clone-note")).not.toContainText("default is CORE");
+  await expect(page.getByText(/huddles/i)).toHaveCount(0);
+  await page.goto("/orchestration");
+  await expect(page.getByText("send_message")).toBeVisible();
+  await expect(page.getByText("share_memory")).toHaveCount(0);
+  await expect(page.getByText("roster_task_claim")).toBeVisible();
+  await expect(page.getByText("depend_on")).toBeVisible();
 });
 
 test("pause pip and blocked attach", async ({ page, request }) => {
@@ -455,6 +476,139 @@ test("inbox mark-read clears unread on Chart", async ({ page, request }) => {
   await page.getByTestId("inbox-mark-read").click();
   await expect(page.getByTestId("seat-inbox")).toContainText("Caught up");
   await expect(page.getByTestId("inbox-count-build")).toHaveCount(0);
+});
+
+test("org hire copy names tokenBudget", async ({ page }) => {
+  await page.goto("/org");
+  await expect(page.getByTestId("org-hire-copy")).toContainText("tokenBudget");
+});
+
+test("seat tokenBudget pause is distinct from idle", async ({ page, request }) => {
+  await resetApi(request);
+  const hired = await request.post("http://127.0.0.1:8790/api/v1/seats", {
+    data: { name: "Budget.Bot", team: "eng", tokenBudget: 1000, job: "Metered specialist." },
+  });
+  expect(hired.ok()).toBeTruthy();
+  const seat = (await hired.json()) as { id: string; tokenBudget?: number; spent?: number };
+  expect(seat.id).toBe("budget-bot");
+  expect(seat.tokenBudget).toBe(1000);
+  const patched = await request.patch("http://127.0.0.1:8790/api/v1/seats/budget-bot", { data: { spent: 1000 } });
+  const after = (await patched.json()) as { status?: string; pauseReason?: string; spent?: number };
+  expect(after.status).toBe("paused");
+  expect(after.pauseReason).toBe("budget");
+  expect(after.spent).toBe(1000);
+  const attach = await request.post("http://127.0.0.1:8790/api/v1/seats/budget-bot/attach", { data: {} });
+  const attachBody = (await attach.json()) as { paused?: boolean; reason?: string };
+  expect(attachBody.paused).toBeTruthy();
+  expect(attachBody.reason).toBe("budget");
+  const bus = await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "budget-bot", text: "should not wake", wake: true },
+  });
+  expect(bus.ok()).toBeTruthy();
+  const listed = await request.get("http://127.0.0.1:8790/api/v1/seats");
+  const seats = (await listed.json()) as Array<{ id: string; status?: string; pauseReason?: string }>;
+  expect(seats.find((s) => s.id === "budget-bot")?.pauseReason).toBe("budget");
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await page.getByTestId("seat-budget-bot").first().click({ force: true });
+  await expect(page.getByTestId("seat-inspector")).toContainText("Budget.Bot");
+  await expect(page.getByTestId("seat-status")).toHaveText("paused");
+  await expect(page.getByTestId("seat-budget-remaining")).toContainText("0 / 1000");
+  await expect(page.getByTestId("budget-paused-note")).toBeVisible();
+  await expect(page.getByTestId("seat-budget-bot").first()).toHaveAttribute("data-budget-paused", "1");
+  await expect(page.getByTestId("pip-budget-bot").first()).toHaveClass(/budget/);
+  await page.getByTestId("mode-room").click();
+  await expect(page.getByTestId("budget-banner")).toBeVisible();
+  await expect(page.getByTestId("budget-banner-budget-bot")).toContainText("tokenBudget exhausted");
+});
+
+test("settings usage filters and pricing is honest about the meter", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app/settings?pane=usage");
+  await expect(page.getByTestId("settings-usage")).toBeVisible();
+  await expect(page.getByTestId("usage-empty")).toContainText(/unmetered|harness-offline|No meter events/i);
+  await request.post("http://127.0.0.1:8790/api/v1/usage", {
+    data: { seatId: "channel", inputTokens: 120, outputTokens: 40, source: "wake" },
+  });
+  await request.post("http://127.0.0.1:8790/api/v1/usage", {
+    data: { seatId: "build", inputTokens: 300, outputTokens: 80, runId: "ship-train" },
+  });
+  await page.goto("/app/settings?pane=usage");
+  await expect(page.getByTestId("usage-seat-channel")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("settings-usage")).not.toContainText("sk-");
+  await expect(page.getByTestId("usage-key-leak")).toHaveCount(0);
+  await page.getByTestId("usage-filter-project").selectOption("billing");
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-channel")).toHaveCount(0);
+  await page.getByTestId("usage-filter-project").selectOption("");
+  await page.getByTestId("usage-filter-team").selectOption("eng");
+  await expect(page.getByTestId("usage-seat-build")).toBeVisible();
+  await expect(page.getByTestId("usage-seat-channel")).toHaveCount(0);
+  const csv = await request.get("http://127.0.0.1:8790/api/v1/usage?format=csv");
+  const text = await csv.text();
+  expect(text).toMatch(/seatId/);
+  expect(text).not.toMatch(/apiKey|sk-/);
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("usage-chip")).toContainText(/tok/);
+
+  await page.goto("/pricing");
+  await expect(page.getByRole("heading", { name: /tokens on the meter/i })).toBeVisible();
+  await expect(page.getByText(/not a billed bot-hour product/i)).toBeVisible();
+  await expect(page.getByText("Shared bot-hours")).toHaveCount(0);
+});
+
+test("heartbeat wakes unread inbox and inspector disables it", async ({ page, request }) => {
+  await resetApi(request);
+  await request.patch("http://127.0.0.1:8790/api/v1/seats/product", { data: { heartbeatMinutes: 15 } });
+  await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "product", text: "heartbeat please", wake: false },
+  });
+  const tick = await request.post("http://127.0.0.1:8790/api/v1/heartbeats/tick", { data: {} });
+  const body = (await tick.json()) as { due?: Array<{ seatId?: string; coalesced?: boolean }> };
+  expect(body.due?.some((d) => d.seatId === "product")).toBeTruthy();
+  await request.patch("http://127.0.0.1:8790/api/v1/seats/devops", { data: { heartbeatMinutes: 5 } });
+  await request.post("http://127.0.0.1:8790/api/v1/bus/send", {
+    data: { from: "you", to: "devops", text: "deploy ping", wake: false },
+  });
+  const deployTick = await request.post("http://127.0.0.1:8790/api/v1/heartbeats/tick", { data: {} });
+  const deployBody = (await deployTick.json()) as { due?: Array<{ seatId?: string }> };
+  expect(deployBody.due?.some((d) => d.seatId === "devops")).toBeFalsy();
+
+  await page.goto("/app");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-product").first()).toHaveAttribute("data-heartbeat", "1");
+  await page.getByTestId("roster-product").click();
+  await expect(page.getByTestId("seat-inspector")).toContainText("Product");
+  await expect(page.getByTestId("disable-heartbeat")).toBeVisible();
+  await page.getByTestId("disable-heartbeat").click();
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-product").first()).toHaveAttribute("data-heartbeat", "0");
+});
+
+test("access form persists on CORE and Settings lists it", async ({ page, request }) => {
+  await resetApi(request);
+  const email = `playwright-${Date.now()}@example.com`;
+  await page.goto("/access");
+  await page.getByLabel("Name").fill("Playwright Visitor");
+  await page.getByLabel("Work email").fill(email);
+  await page.getByLabel("Company").fill("Helix");
+  await page.getByRole("button", { name: "Request access" }).click();
+  await expect(page.getByTestId("access-success")).toBeVisible();
+  const listed = await request.get("http://127.0.0.1:8790/api/v1/access");
+  expect(listed.ok()).toBeTruthy();
+  const body = (await listed.json()) as { requests: Array<{ email: string; company: string }> };
+  expect(body.requests.some((row) => row.email === email && row.company === "Helix")).toBeTruthy();
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-access").click();
+  await expect(page.getByTestId("settings-access")).toBeVisible();
+  await expect(page.getByText(email)).toBeVisible();
 });
 
 test("settings routine test-run posts bus mail", async ({ page, request }) => {
@@ -536,4 +690,89 @@ test("webhook adapter wake and report land in #ship", async ({ page, request }) 
   } finally {
     await new Promise<void>((resolve) => mock.close(() => resolve()));
   }
+});
+
+test("mcp guest posts onto the bus and appears on the chart", async ({ page, request }) => {
+  mkdirSync("/tmp/walkthrough", { recursive: true });
+  await resetApi(request);
+  const init = await request.post("http://127.0.0.1:8790/mcp", {
+    data: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-03-26", clientInfo: { name: "playwright" } },
+    },
+  });
+  expect(init.ok()).toBeTruthy();
+  const initBody = (await init.json()) as { result?: { serverInfo?: { name?: string } } };
+  expect(initBody.result?.serverInfo?.name).toBe("roster-flow");
+  expect(init.headers()["mcp-session-id"]).toBeTruthy();
+
+  const listed = await request.post("http://127.0.0.1:8790/mcp", {
+    data: { jsonrpc: "2.0", id: 2, method: "tools/list" },
+  });
+  const listedBody = (await listed.json()) as { result?: { tools?: Array<{ name: string }> } };
+  const names = (listedBody.result?.tools || []).map((t) => t.name);
+  expect(names).toContain("roster_send_message");
+  expect(names).toContain("roster_inbox");
+
+  const sent = await request.post("http://127.0.0.1:8790/mcp", {
+    data: {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "roster_send_message",
+        arguments: { to: "channel:ship", text: "hello from MCP guest" },
+      },
+    },
+  });
+  expect(sent.ok()).toBeTruthy();
+  const bus = await request.get("http://127.0.0.1:8790/api/v1/bus");
+  const entries = (await bus.json()) as Array<{ from?: string; text?: string }>;
+  expect(entries.some((e) => e.from === "mcp-guest" && /hello from MCP guest/.test(e.text || ""))).toBeTruthy();
+
+  await page.goto("/app");
+  await expect(page.getByText("hello from MCP guest").first()).toBeVisible();
+  await page.screenshot({ path: "/tmp/walkthrough/room-mcp-guest.png" });
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-mcp-guest")).toBeVisible();
+  await expect(page.getByTestId("seat-mcp-guest")).toHaveAttribute("data-mcp-guest", "1");
+  await expect(page.getByTestId("seat-mcp-guest")).toContainText("mcp");
+  await page.getByTestId("seat-mcp-guest").first().click({ force: true });
+  await expect(page.getByTestId("seat-inspector")).toContainText("MCP Guest");
+  await expect(page.getByTestId("mcp-guest-note")).toBeVisible();
+  await expect(page.getByTestId("attach-harness")).toHaveCount(0);
+  await page.screenshot({ path: "/tmp/walkthrough/chart-mcp-guest.png" });
+
+  await page.goto("/app/settings");
+  await page.getByTestId("settings-nav-family").click();
+  await expect(page.getByTestId("roster-mcp-snippet")).toBeVisible();
+  await expect(page.getByTestId("roster-mcp-url")).toContainText("127.0.0.1:8790/mcp");
+  await page.getByTestId("roster-mcp-snippet").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "/tmp/walkthrough/family-mcp-room.png" });
+});
+
+test("task claim lock and depend_on", async ({ page, request }) => {
+  await resetApi(request);
+  const blocked = await request.post("http://127.0.0.1:8790/api/v1/tasks/task-eng-implement/claim", {
+    data: { seatId: "build" },
+  });
+  expect(blocked.status()).toBe(409);
+  await request.post("http://127.0.0.1:8790/api/v1/tasks/task-product-brief/complete", { data: { seatId: "product" } });
+  const first = await request.post("http://127.0.0.1:8790/api/v1/tasks/task-eng-implement/claim", {
+    data: { seatId: "build" },
+  });
+  const second = await request.post("http://127.0.0.1:8790/api/v1/tasks/task-eng-implement/claim", {
+    data: { seatId: "review" },
+  });
+  expect(first.ok()).toBeTruthy();
+  expect(second.status()).toBe(409);
+  await page.goto("/app");
+  await expect(page.getByTestId("task-board")).toBeVisible();
+  await expect(page.getByTestId("task-row-task-eng-implement")).toHaveAttribute("data-status", "claimed");
+  await page.getByTestId("mode-chart").click();
+  await expect(page.getByTestId("org-chart")).toHaveAttribute("data-fitted", "1");
+  await expect(page.getByTestId("seat-build").first()).toHaveAttribute("data-claimed", "1");
 });

@@ -6,7 +6,14 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { serveChildEnv, readOpenCodeConfig, readGlobalOpenCodeConfig, ensureAuthProviders } from "./providers.mjs";
+import {
+  normalizeOpenCodeConfig,
+  serveChildEnv,
+  readOpenCodeConfig,
+  readGlobalOpenCodeConfig,
+  ensureAuthProviders,
+  loadedProviderIds,
+} from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
 import { opencodeHostname, rosterApiUrl } from "./config.mjs";
@@ -14,6 +21,7 @@ import { companyWorkspace, dataDir, opencodeDir, root, systemWorkspace } from ".
 
 const HEALTH = "/global/health";
 const instances = { company: null, system: null };
+const inflight = { company: null, system: null };
 
 export const COMPANY = "company";
 export const SYSTEM = "system";
@@ -55,6 +63,40 @@ export function spec(kind) {
 
 export function workspacePath(kind = COMPANY) {
   return spec(kind).workspace;
+}
+
+/**
+ * The config each serve must load. Company is the file Settings and
+ * roster-setup write through providers.mjs (ROSTER_OPENCODE_DIR); System is
+ * its own `.opencode` dir. OpenCode only discovers `.opencode/` by walking up
+ * from cwd, which misses ROSTER_OPENCODE_DIR outside the repo (e.g. /data).
+ */
+export function configPaths(kind = COMPANY) {
+  const dir = harnessKind(kind) === SYSTEM ? join(systemWorkspace, ".opencode") : opencodeDir;
+  return { dir, file: join(dir, "opencode.json") };
+}
+
+/**
+ * Env for `opencode serve`: provider keys, plugin env, and the config to load.
+ * A non-empty OPENCODE_CONFIG is an operator override for the company serve.
+ * OpenCode loads it before OPENCODE_CONFIG_DIR/opencode.json, so the providers
+ * Settings and roster-setup write still apply on top. Compose passes "" when
+ * unset, which means "use the default".
+ */
+export function serveEnv(kind = COMPANY, base = process.env) {
+  const k = harnessKind(kind);
+  const s = spec(k);
+  const { dir, file } = configPaths(k);
+  const override = k === COMPANY ? String(base.OPENCODE_CONFIG || "").trim() : "";
+  return {
+    ...serveChildEnv(base),
+    OPENCODE_CONFIG: override || file,
+    // Also scanned for opencode.json and agents/*.md.
+    OPENCODE_CONFIG_DIR: dir,
+    OPENCODE_CLIENT: s.client,
+    NODE_PATH: [join(root, "node_modules"), base.NODE_PATH].filter(Boolean).join(":"),
+    ROSTER_API: rosterApiUrl(),
+  };
 }
 
 export function whichOpenCode() {
@@ -104,8 +146,8 @@ export async function healthCheck(port, timeoutMs = 1500) {
 
 function writeCompanyConfig() {
   mkdirSync(companyWorkspace, { recursive: true });
-  mkdirSync(opencodeDir, { recursive: true });
-  const dest = join(opencodeDir, "opencode.json");
+  const { dir, file: dest } = configPaths(COMPANY);
+  mkdirSync(dir, { recursive: true });
   const global = readGlobalOpenCodeConfig();
   let cfg = {
     $schema: "https://opencode.ai/config.json",
@@ -125,22 +167,20 @@ function writeCompanyConfig() {
   }
   cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}) };
   cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}) };
-  writeFileSync(dest, JSON.stringify(cfg, null, 2));
+  writeFileSync(dest, JSON.stringify(normalizeOpenCodeConfig(cfg), null, 2));
 }
 
 function writeSystemConfig() {
-  const ocDir = join(systemWorkspace, ".opencode");
+  const { dir: ocDir, file: dest } = configPaths(SYSTEM);
   mkdirSync(systemWorkspace, { recursive: true });
   mkdirSync(join(ocDir, "agents"), { recursive: true });
-  const dest = join(ocDir, "opencode.json");
   const company = readOpenCodeConfig();
   const global = readGlobalOpenCodeConfig();
   let cfg = {
     $schema: "https://opencode.ai/config.json",
     plugin: ["roster-flow-opencode"],
     provider: {},
-    providers: {},
-    agents: {},
+    agent: {},
   };
   if (existsSync(dest)) {
     try {
@@ -152,7 +192,7 @@ function writeSystemConfig() {
   cfg.plugin = ["roster-flow-opencode"];
   cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}), ...(company.provider || {}) };
   cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}), ...(company.providers || {}) };
-  writeFileSync(dest, JSON.stringify(cfg, null, 2));
+  writeFileSync(dest, JSON.stringify(normalizeOpenCodeConfig(cfg), null, 2));
 }
 
 export function status(kind = COMPANY) {
@@ -166,6 +206,8 @@ export function status(kind = COMPANY) {
     port: inst?.port ?? null,
     version: inst?.version ?? null,
     workspace: s.workspace,
+    config: inst?.config?.file || configPaths(k).file,
+    loadedProviders: inst?.healthy ? loadedProviderIds(inst.loaded) : [],
     plugin: "roster-flow-opencode",
     pid: inst?.pid ?? null,
   };
@@ -177,6 +219,64 @@ export function combinedStatus() {
     ...company,
     systemHarness: status(SYSTEM),
   };
+}
+
+/** Re-probe a known serve so `harness` reflects whether it answers right now. */
+export async function refreshHealth(kind = COMPANY) {
+  const k = harnessKind(kind);
+  const inst = instances[k];
+  if (!inst) return status(k);
+  if (inst.child && inst.child.exitCode != null) {
+    instances[k] = null;
+    return status(k);
+  }
+  const h = await healthCheck(inst.port);
+  if (instances[k] !== inst) return status(k);
+  inst.healthy = Boolean(h);
+  if (h) inst.version = String(h.version || inst.version || "");
+  return status(k);
+}
+
+export async function liveCombinedStatus() {
+  await Promise.all([refreshHealth(COMPANY), refreshHealth(SYSTEM)]);
+  return combinedStatus();
+}
+
+/**
+ * `{ providerID, modelID }` for every model the serve loaded (built-ins plus
+ * config providers), from `GET /config/providers`. Null when unknown.
+ */
+export function flattenConfigProviders(data) {
+  const list = Array.isArray(data?.providers) ? data.providers : Array.isArray(data) ? data : null;
+  if (!list) return null;
+  const out = [];
+  for (const p of list) {
+    const providerID = p?.id;
+    if (!providerID) continue;
+    const models = p.models && typeof p.models === "object" ? p.models : {};
+    const ids = Array.isArray(models) ? models.map((m) => m?.id || m) : Object.keys(models);
+    for (const modelID of ids) if (modelID) out.push({ providerID, modelID: String(modelID) });
+  }
+  return out;
+}
+
+export async function loadedModels(kind = COMPANY) {
+  const k = harnessKind(kind);
+  const inst = instances[k];
+  if (!inst?.healthy) return null;
+  try {
+    const loaded = flattenConfigProviders(await ocFetch("/config/providers", {}, k));
+    if (instances[k] === inst) inst.loaded = loaded;
+    return loaded;
+  } catch {
+    return inst.loaded ?? null;
+  }
+}
+
+/** Last list fetched by `loadedModels`, without a round trip. */
+export function knownLoadedModels(kind = COMPANY) {
+  const inst = instances[harnessKind(kind)];
+  return inst?.healthy ? inst.loaded ?? null : null;
 }
 
 async function adoptIfHealthy(kind) {
@@ -191,8 +291,10 @@ async function adoptIfHealthy(kind) {
     pid: null,
     healthy: true,
     version: String(h.version || ""),
+    loaded: null,
   };
   await reconcileSessions(k).catch(() => undefined);
+  await loadedModels(k);
   return status(k);
 }
 
@@ -216,15 +318,105 @@ export async function ocFetch(path, init = {}, kind = COMPANY) {
     }
   }
   if (!res.ok) {
-    const err = new Error(typeof data === "object" && data?.message ? data.message : res.statusText);
+    const err = new Error(openCodeErrorText(data) || res.statusText || `HTTP ${res.status}`);
     err.status = res.status;
     err.detail = data;
+    if (data && typeof data === "object" && typeof data.name === "string") err.name = data.name;
     throw err;
   }
   return data;
 }
 
-export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
+/** OpenCode errors are `{ name, data: { message } }`; older ones use `message`. */
+export function openCodeErrorText(data) {
+  if (typeof data === "string") return data.trim().slice(0, 500);
+  if (!data || typeof data !== "object") return "";
+  return String(data.data?.message || data.message || data.error || data.name || "").trim();
+}
+
+function errorStatus(err) {
+  const d = err?.data || err?.detail?.data || err?.detail || {};
+  return Number(err?.statusCode || d.statusCode || err?.status || 0) || null;
+}
+
+/**
+ * Turn an OpenCode prompt failure (an HTTP error from the serve, or an
+ * assistant message's `info.error`) into a message a user can act on.
+ */
+export function describeOpenCodeError(err, { model = "", kind = COMPANY } = {}) {
+  const providerID = String(model).split("/")[0] || "the provider";
+  const label = harnessKind(kind) === SYSTEM ? "System" : "company";
+  const raw = [err?.message, openCodeErrorText(err?.detail), openCodeErrorText(err), err?.name].filter(Boolean).join(" ");
+  const status = errorStatus(err);
+  if (/ProviderModelNotFound|ProviderNotFound|Model not found|provider .*not found/i.test(raw)) {
+    return {
+      code: "PROVIDER_NOT_LOADED",
+      status: 409,
+      message: `${model || "That model"} is not loaded by the ${label} OpenCode harness. Check ${providerID} in Settings → Providers, then restart the harness.`,
+    };
+  }
+  if (status === 401 || status === 403 || /ProviderAuthError|unauthori[sz]ed|invalid api key|incorrect api key|signed in|forbidden/i.test(raw)) {
+    const detail = openCodeErrorText(err?.detail) || openCodeErrorText(err) || err?.message || "";
+    return {
+      code: "PROVIDER_AUTH",
+      status: 502,
+      message: `${providerID} rejected the API key${status ? ` (${status})` : ""}${detail ? `: ${detail}` : ""}. Update the key in Settings → Providers, then send again.`,
+    };
+  }
+  const detail = openCodeErrorText(err?.detail) || err?.message || "unknown error";
+  return {
+    code: "OPENCODE_ERROR",
+    status: status && status >= 400 && status < 500 ? status : 502,
+    message: `OpenCode could not run ${model || "the prompt"}${status ? ` (${status}${err?.name && err.name !== "Error" ? ` ${err.name}` : ""})` : ""}: ${detail}`,
+  };
+}
+
+/**
+ * The failure of the latest turn, when the session ends in an assistant
+ * message with `info.error` created at or after `since` (ms). Older errors
+ * are history, not the turn the caller is waiting on.
+ */
+export function lastAssistantFailure(messages, { since = 0, kind = COMPANY } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const last = list[list.length - 1];
+  const info = last?.info || last;
+  if (!info || (info.role || "") !== "assistant" || !info.error) return null;
+  const created = Number(info.time?.created || 0);
+  if (since && created && created < since) return null;
+  const model = info.providerID ? `${info.providerID}/${info.modelID || ""}` : "";
+  const { code, message } = describeOpenCodeError(info.error, { model, kind });
+  return { id: `${info.id || "msg"}:error`, error: true, code, text: message };
+}
+
+export function ensure(opts = {}) {
+  const k = harnessKind(opts.kind);
+  const run = (inflight[k] || Promise.resolve())
+    .catch(() => undefined)
+    .then(() => ensureOnce({ ...opts, kind: k }));
+  inflight[k] = run;
+  run.then(
+    () => {
+      if (inflight[k] === run) inflight[k] = null;
+    },
+    () => {
+      if (inflight[k] === run) inflight[k] = null;
+    },
+  );
+  return run;
+}
+
+/** Restart serves that are up so they pick up provider or key changes. */
+export function restartForProviderChange() {
+  const kinds = [COMPANY, SYSTEM].filter((k) => instances[k]?.healthy);
+  for (const k of kinds) {
+    ensure({ kind: k, forceRestart: true }).catch((err) => {
+      emit({ level: "error", scope: "harness", step: "restart.error", detail: { kind: k, error: String(err.message || err) } });
+    });
+  }
+  return kinds;
+}
+
+async function ensureOnce({ forceRestart = false, kind = COMPANY } = {}) {
   const k = harnessKind(kind);
   const s = spec(k);
   emit({ scope: "harness", step: "ensure.start", detail: { kind: k, forceRestart: Boolean(forceRestart) } });
@@ -270,14 +462,10 @@ export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
   mkdirSync(s.workspace, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
 
+  const env = serveEnv(k);
   const child = spawn(binary, ["serve", "--hostname", opencodeHostname(), "--port", String(port)], {
     cwd: s.cwd,
-    env: {
-      ...serveChildEnv(),
-      OPENCODE_CLIENT: s.client,
-      NODE_PATH: [join(root, "node_modules"), process.env.NODE_PATH].filter(Boolean).join(":"),
-      ROSTER_API: rosterApiUrl(),
-    },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
   });
@@ -290,6 +478,11 @@ export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
   };
   child.stdout?.on("data", onLog);
   child.stderr?.on("data", onLog);
+  child.on("exit", (code) => {
+    if (instances[k]?.child !== child) return;
+    instances[k] = null;
+    emit({ level: "warn", scope: "harness", step: "serve.exit", detail: { kind: k, code } });
+  });
 
   instances[k] = {
     port,
@@ -298,6 +491,8 @@ export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
     pid: child.pid,
     healthy: false,
     version: null,
+    loaded: null,
+    config: { file: env.OPENCODE_CONFIG, dir: env.OPENCODE_CONFIG_DIR },
   };
 
   const deadline = Date.now() + 25000;
@@ -314,7 +509,12 @@ export async function ensure({ forceRestart = false, kind = COMPANY } = {}) {
       instances[k].healthy = true;
       instances[k].version = String(h.version || "");
       await reconcileSessions(k).catch(() => undefined);
-      emit({ scope: "harness", step: "ensure.up", detail: { kind: k, port } });
+      const loaded = await loadedModels(k);
+      emit({
+        scope: "harness",
+        step: "ensure.up",
+        detail: { kind: k, port, config: env.OPENCODE_CONFIG, providers: loadedProviderIds(loaded) },
+      });
       return status(k);
     }
     await new Promise((r) => setTimeout(r, 250));

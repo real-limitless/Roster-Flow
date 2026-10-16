@@ -3,7 +3,16 @@ import test from "node:test";
 import { emptyState } from "./seed.mjs";
 import { getState } from "./store.mjs";
 import { assistantText, sessionTranscript, bindSessionMeta } from "./harness.mjs";
-import { collectWakeTargets, implicitTargets, mirrorTranscript, providerHint, routeChannelMessage, deps } from "./chat.mjs";
+import {
+  collectWakeTargets,
+  followChannel,
+  implicitTargets,
+  mirrorTranscript,
+  providerHint,
+  routeChannelMessage,
+  seatModelPlan,
+  deps,
+} from "./chat.mjs";
 import { emit, listTrace, resetTrace } from "./trace.mjs";
 
 test("implicit targets cover channel, team, project, and DM rooms", () => {
@@ -115,6 +124,140 @@ test("routeChannelMessage falls back to a connected OpenCode model", async () =>
     const added = getState().messages.slice(before);
     assert.ok(added.some((m) => /Using infiniterouter-dev\/big-pickle/.test(m.text) && m.system));
     assert.ok(added.some((m) => m.text === "Fallback supervisor is awake."));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+const BUILTIN_ONLY = [{ providerID: "opencode", modelID: "big-pickle" }];
+
+/** keyStatus for a seat whose provider has a key; `loaded` decides the rest. */
+function keyedStatus(providerID, modelID) {
+  return (_model, loaded) => {
+    const have = Array.isArray(loaded) ? loaded : null;
+    return {
+      providerID,
+      modelID,
+      configured: true,
+      connected: true,
+      loaded: have ? have.some((m) => m.providerID === providerID && m.modelID === modelID) : null,
+      providerLoaded: have ? have.some((m) => m.providerID === providerID) : null,
+      loadedProviders: have ? [...new Set(have.map((m) => m.providerID))] : [],
+    };
+  };
+}
+
+test("seatModelPlan falls back only to a model the serve loaded, and labels it", () => {
+  const prev = { ...deps };
+  const fallbackCalls = [];
+  deps.keyStatus = keyedStatus("featherless", "Qwen/Qwen2.5-Coder-32B-Instruct");
+  deps.fallbackModel = (loaded) => {
+    fallbackCalls.push(loaded);
+    return loaded?.some((m) => m.providerID === "infiniterouter-dev") ? { providerID: "infiniterouter-dev", modelID: "big-pickle" } : null;
+  };
+  const seat = { name: "Channel", model: "featherless/Qwen/Qwen2.5-Coder-32B-Instruct" };
+  try {
+    const unknown = seatModelPlan(seat, null);
+    assert.equal(unknown.ok, true);
+    assert.equal(unknown.fallback, false);
+    assert.equal(unknown.model, seat.model);
+
+    const loaded = [...BUILTIN_ONLY, { providerID: "infiniterouter-dev", modelID: "big-pickle" }];
+    const fb = seatModelPlan(seat, loaded);
+    assert.equal(fb.ok, true);
+    assert.equal(fb.fallback, true);
+    assert.equal(fb.model, "infiniterouter-dev/big-pickle");
+    assert.match(fb.hint, /which OpenCode did not load\. Using infiniterouter-dev\/big-pickle instead/);
+    assert.deepEqual(fallbackCalls.at(-1), loaded);
+
+    const none = seatModelPlan(seat, BUILTIN_ONLY);
+    assert.equal(none.ok, false);
+    assert.match(none.hint, /featherless is in Settings, but the OpenCode harness did not load it \(loaded: opencode\)/);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("routeChannelMessage labels the Channel seat with the loaded fallback and wakes it", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  const loaded = [...BUILTIN_ONLY, { providerID: "infiniterouter-dev", modelID: "big-pickle" }];
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => loaded;
+  deps.knownLoadedModels = () => loaded;
+  deps.keyStatus = keyedStatus("featherless", "Qwen/Qwen2.5-Coder-32B-Instruct");
+  deps.fallbackModel = (l) => (l ? { providerID: "infiniterouter-dev", modelID: "big-pickle" } : null);
+  let woke = null;
+  deps.wakeSeat = async (to) => {
+    woke = to;
+    return { sessionId: "ses_loaded", seat: to };
+  };
+  deps.pullAssistant = async () => [{ id: `a-loaded-${Date.now()}`, text: "Loaded fallback reply." }];
+  deps.pullFailure = async () => null;
+  deps.followTicks = 1;
+  deps.followDelayMs = 0;
+  const channel = `loaded-${Date.now()}`;
+  try {
+    const routed = routeChannelMessage({ channelId: channel, text: "hi loaded" });
+    await routed.pending;
+    assert.equal(woke, "channel");
+    const added = getState().messages.filter((m) => m.channel === channel);
+    assert.ok(added.some((m) => m.system && /^Waking Channel \(infiniterouter-dev\/big-pickle\)/.test(m.text)));
+    assert.ok(!added.some((m) => m.system && /Waking Channel \(featherless/.test(m.text)));
+    assert.ok(added.some((m) => m.text === "Loaded fallback reply."));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("routeChannelMessage does not wake a seat whose provider OpenCode did not load", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => BUILTIN_ONLY;
+  deps.knownLoadedModels = () => BUILTIN_ONLY;
+  deps.keyStatus = keyedStatus("featherless", "Qwen/Qwen2.5-Coder-32B-Instruct");
+  deps.fallbackModel = () => null;
+  deps.wakeSeat = async () => {
+    throw new Error("wakeSeat should not run when the provider is not loaded");
+  };
+  deps.followTicks = 0;
+  const channel = `notloaded-${Date.now()}`;
+  try {
+    const routed = routeChannelMessage({ channelId: channel, text: "hi not loaded" });
+    const results = await routed.pending;
+    assert.equal(results[0].nokey, true);
+    const added = getState().messages.filter((m) => m.channel === channel);
+    assert.ok(added.some((m) => m.system && /did not load it \(loaded: opencode\)/.test(m.text)));
+    assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.nokey"));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("followChannel posts a provider 401 instead of waiting for a reply that never comes", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  const sinces = [];
+  deps.pullAssistant = async () => [];
+  deps.pullFailure = async (_seat, since) => {
+    sinces.push(since);
+    return { id: "a1:error", error: true, code: "PROVIDER_AUTH", text: "featherless rejected the API key (401): You must be signed in. Update the key in Settings → Providers, then send again." };
+  };
+  deps.knownLoadedModels = () => null;
+  deps.followDelayMs = 0;
+  const channel = `auth-${Date.now()}`;
+  try {
+    const replies = await followChannel(channel, ["channel"], 5, { since: 1234 });
+    assert.equal(replies, 0);
+    const added = getState().messages.filter((m) => m.channel === channel);
+    assert.equal(added.length, 1);
+    assert.match(added[0].text, /^Channel could not reply: featherless rejected the API key \(401\)/);
+    assert.ok(!added.some((m) => /did not reply/.test(m.text)));
+    assert.deepEqual(sinces, [1234]);
+    assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.failed" && e.detail.code === "PROVIDER_AUTH"));
   } finally {
     Object.assign(deps, prev);
   }
