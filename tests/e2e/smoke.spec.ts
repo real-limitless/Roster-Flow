@@ -3,6 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Staff an org of agents");
+  await expect(page.getByText("SSO ready")).toHaveCount(0);
+  await expect(page.getByText("Local owner account")).toBeVisible();
 });
 
 test("workspace room send and block kit seed", async ({ page, request }) => {
@@ -417,8 +419,15 @@ test("related pages still render chart/room", async ({ page }) => {
   await page.goto("/org");
   await expect(page.getByRole("heading", { name: /org chart is the control plane/i })).toBeVisible();
   await expect(page.getByTestId("org-chart")).toBeVisible();
+  await expect(page.getByText(/yaml export is not shipped/i)).toBeVisible();
+  await expect(page.getByText("multi-team.yaml")).toHaveCount(0);
   await page.goto("/product");
   await expect(page.getByRole("heading", { name: /the room, the org, the harness/i })).toBeVisible();
+  await expect(page.getByText(/huddles/i)).toHaveCount(0);
+  await page.goto("/orchestration");
+  await expect(page.getByText("send_message")).toBeVisible();
+  await expect(page.getByText("share_memory")).toHaveCount(0);
+  await expect(page.getByText("depend_on")).toHaveCount(0);
 });
 
 test("pause pip and blocked attach", async ({ page, request }) => {

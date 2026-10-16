@@ -6,8 +6,14 @@
 
 const API = process.env.ROSTER_API || "http://127.0.0.1:8790";
 
+/** Seat calls use the scoped token when the harness was started with ROSTER_API_TOKEN. */
+export function rosterAuthHeaders(env = process.env) {
+  const token = String(env.ROSTER_API_TOKEN || "").trim();
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function api(path, init = {}) {
-  const headers = { ...(init.headers || {}) };
+  const headers = { ...rosterAuthHeaders(), ...(init.headers || {}) };
   if (init.body && !headers["content-type"]) headers["content-type"] = "application/json";
   const res = await fetch(`${API}${path}`, { ...init, headers });
   const text = await res.text();
@@ -21,7 +27,61 @@ async function api(path, init = {}) {
   return data;
 }
 
-export function buildTools(tool, fetchApi = api) {
+/**
+ * wiki-flow client. Reads WIKIFLOW_URL (base URL) and WIKIFLOW_TOKEN (Bearer)
+ * at call time so a running serve picks up rotated tokens.
+ */
+export function wikiflowConfig(env = process.env) {
+  const token = String(env.WIKIFLOW_TOKEN || "").trim();
+  const base = String(env.WIKIFLOW_URL || "").trim().replace(/\/+$/, "");
+  if (!token) throw new Error("WIKIFLOW_TOKEN is not set. Export it in the OpenCode serve env to use wikiflow_* tools.");
+  if (!base) throw new Error("WIKIFLOW_URL is not set. Point it at the wiki-flow base URL (e.g. https://wiki.example).");
+  return { token, base };
+}
+
+export async function wikiflowApi(path, init = {}, env = process.env, fetchImpl = fetch) {
+  const { token, base } = wikiflowConfig(env);
+  const headers = { accept: "application/json", authorization: `Bearer ${token}`, ...(init.headers || {}) };
+  if (init.body && !headers["content-type"]) headers["content-type"] = "application/json";
+  const res = await fetchImpl(`${base}${path}`, { ...init, headers });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  if (!res.ok) throw new Error(`wiki-flow ${res.status}: ${data?.error || res.statusText || "request failed"}`);
+  return data;
+}
+
+function repoPath(owner, repo) {
+  if (!owner || !repo) throw new Error("owner and repo are required");
+  return `/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
+function parseSources(raw) {
+  if (raw === undefined || raw === null || raw === "") return [];
+  const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!Array.isArray(v)) throw new Error("sources must be a JSON array");
+  return v.map((entry, i) => {
+    const where = `sources[${i}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`${where} must be {path, startLine?, endLine?}`);
+    const extra = Object.keys(entry).filter((k) => !["path", "startLine", "endLine"].includes(k));
+    if (extra.length) throw new Error(`${where} has unknown keys: ${extra.join(", ")}`);
+    if (typeof entry.path !== "string" || !entry.path.trim()) throw new Error(`${where}.path is required`);
+    const out = { path: entry.path };
+    for (const k of ["startLine", "endLine"]) {
+      if (entry[k] === undefined) continue;
+      if (!Number.isInteger(entry[k]) || entry[k] < 1) throw new Error(`${where}.${k} must be a positive integer`);
+      out[k] = entry[k];
+    }
+    if (out.startLine && out.endLine && out.endLine < out.startLine) throw new Error(`${where}.endLine must be >= startLine`);
+    return out;
+  });
+}
+
+export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
   const z = tool.schema;
   return {
     roster_list_seats: tool({
@@ -85,17 +145,37 @@ export function buildTools(tool, fetchApi = api) {
       },
     }),
     roster_report: tool({
-      description: "Post a structured result back to the originating Room thread. Optional blocks is Roster Block Kit JSON.",
+      description:
+        "Post a structured result back to the originating Room thread. Pass jobId to complete that job (done, failed, or needs_human). Optional blocks is Roster Block Kit JSON.",
       args: {
         text: z.string(),
         channel: z.string().optional(),
         from: z.string().optional(),
         blocks: z.string().optional().describe("Optional Roster Block Kit JSON array"),
+        jobId: z.string().optional().describe("Job id to complete"),
+        status: z.string().optional().describe("With jobId: done (default), failed, or needs_human"),
+        cost: z.string().optional().describe("Optional cost, a non-negative number"),
+        tokens: z.string().optional().describe("Optional usage: a number or JSON {input, output, total}"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
         const channel = args.channel || "ship";
         const blocks = parseBlocks(args.blocks);
+        if (args.jobId) {
+          const body = {
+            result: args.text,
+            status: args.status || "done",
+            from,
+            channel,
+          };
+          if (args.cost != null && args.cost !== "") body.cost = Number(args.cost);
+          if (args.tokens) body.tokens = parseTokenArg(args.tokens);
+          const job = await fetchApi(`/api/v1/jobs/${encodeURIComponent(args.jobId)}/complete`, {
+            method: "POST",
+            body: JSON.stringify(body),
+          });
+          return { title: `job ${body.status}`, output: JSON.stringify(job) };
+        }
         const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
           body: JSON.stringify({
@@ -112,19 +192,33 @@ export function buildTools(tool, fetchApi = api) {
       },
     }),
     roster_ask_human: tool({
-      description: "Park the run on your reports_to human. Never dump into #general.",
+      description: "Park the run on your reports_to human. Never dump into #general. Pass jobId to mark that job needs_human.",
       args: {
         text: z.string(),
         from: z.string().optional(),
+        jobId: z.string().optional().describe("Job id to park as needs_human"),
       },
       async execute(args, ctx) {
         const from = args.from || guessSeat(ctx.agent);
         const seats = await fetchApi("/api/v1/seats");
         const me = seats.find((s) => s.id === from);
         const manager = me?.reportsTo || "you";
+        if (args.jobId) {
+          await fetchApi(`/api/v1/jobs/${encodeURIComponent(args.jobId)}/complete`, {
+            method: "POST",
+            body: JSON.stringify({ status: "needs_human", result: args.text, from, announce: false }),
+          });
+        }
         const entry = await fetchApi("/api/v1/bus/send", {
           method: "POST",
-          body: JSON.stringify({ from, to: manager, kind: "ask_human", text: args.text, wake: false }),
+          body: JSON.stringify({
+            from,
+            to: manager,
+            kind: "ask_human",
+            text: args.text,
+            wake: false,
+            ...(args.jobId ? { jobId: args.jobId } : {}),
+          }),
         });
         return { title: `ask ${manager}`, output: JSON.stringify(entry) };
       },
@@ -142,7 +236,76 @@ export function buildTools(tool, fetchApi = api) {
         return { title: `inbox ${id}`, output: JSON.stringify(out) };
       },
     }),
+    wikiflow_read_source: tool({
+      description:
+        "List wiki-flow sources for a repo (GET /api/v1/repos/:owner/:repo/sources -> {sources:[{path,language,bytes}]}). Pass paths to include file content. Needs WIKIFLOW_URL + WIKIFLOW_TOKEN.",
+      args: {
+        owner: z.string().describe("Repo owner"),
+        repo: z.string().describe("Repo name"),
+        paths: z.string().optional().describe("Comma-separated source paths to read with content, e.g. src/a.ts,README.md"),
+      },
+      async execute(args) {
+        const paths = String(args.paths || "")
+          .split(",")
+          .map((p) => p.trim())
+          .filter(Boolean);
+        const qs = paths.length ? `?paths=${paths.map(encodeURIComponent).join(",")}` : "";
+        const out = await wikiApi(`${repoPath(args.owner, args.repo)}/sources${qs}`);
+        return { title: `sources ${args.owner}/${args.repo}`, output: JSON.stringify(out) };
+      },
+    }),
+    wikiflow_search: tool({
+      description: "Search wiki-flow sources (GET /api/v1/repos/:owner/:repo/sources/search?q= -> {results:[{path,line,snippet}]}).",
+      args: {
+        owner: z.string().describe("Repo owner"),
+        repo: z.string().describe("Repo name"),
+        q: z.string().describe("Search query"),
+      },
+      async execute(args) {
+        if (!args.q) throw new Error("q is required");
+        const out = await wikiApi(`${repoPath(args.owner, args.repo)}/sources/search?q=${encodeURIComponent(args.q)}`);
+        return { title: `search ${args.q}`, output: JSON.stringify(out) };
+      },
+    }),
+    wikiflow_put_page: tool({
+      description:
+        "Write a wiki page (PUT /api/v1/repos/:owner/:repo/pages/:slug, body {runId,title,markdown,sources,agent}). runId must be an existing, open wiki-flow run (404 unknown run, 409 run complete).",
+      args: {
+        owner: z.string().describe("Repo owner"),
+        repo: z.string().describe("Repo name"),
+        slug: z.string().describe("Page slug"),
+        runId: z.string().describe("wiki-flow run id"),
+        title: z.string().describe("Page title"),
+        markdown: z.string().describe("Page body (Markdown)"),
+        sources: z.string().optional().describe('JSON array of cited sources: [{"path":"src/a.ts","startLine":1,"endLine":20}] (startLine/endLine optional, 1-based)'),
+        agent: z.string().optional().describe("Authoring agent id. Defaults to the current agent."),
+      },
+      async execute(args, ctx) {
+        for (const k of ["slug", "runId", "title", "markdown"]) if (!args[k]) throw new Error(`${k} is required`);
+        const body = {
+          runId: args.runId,
+          title: args.title,
+          markdown: args.markdown,
+          sources: parseSources(args.sources),
+          agent: args.agent || ctx?.agent || "unknown",
+        };
+        const out = await wikiApi(`${repoPath(args.owner, args.repo)}/pages/${encodeURIComponent(args.slug)}`, {
+          method: "PUT",
+          body: JSON.stringify(body),
+        });
+        return { title: `page ${args.slug}`, output: JSON.stringify(out) };
+      },
+    }),
   };
+}
+
+function parseTokenArg(raw) {
+  const text = String(raw).trim();
+  if (!text) return undefined;
+  if (text.startsWith("{")) return JSON.parse(text);
+  const n = Number(text);
+  if (!Number.isFinite(n)) throw new Error("tokens must be a number or JSON {input, output, total}");
+  return n;
 }
 
 function parseBlocks(raw) {
@@ -213,7 +376,9 @@ export async function RosterFlowPlugin(_input) {
           "Peers are other OpenCode agents on the same org chart.",
           "Talk through roster_send_message / roster_handoff / roster_report. Do not impersonate peers.",
           "You may attach Roster Block Kit via roster_send_message / roster_report `blocks` (JSON array of header|section|divider|context|image|actions|markdown).",
-          "Mail to team:<id> reaches that team's Supervisor. @channel notifies room members and wakes the Channel conductor.",
+          "Mail to team:<id> reaches that team's Supervisor. A job addressed to a team says how to route: supervisor, round_robin, or a named specialist.",
+          "When a prompt includes a job id, finish with roster_report jobId=<id>. roster_ask_human jobId=<id> parks that job as needs_human.",
+          "@channel notifies room members and wakes the Channel conductor.",
           "ask_human walks reports_to. Channel owns the org run graph. Architect proposes OrgPlan JSON; humans Apply.",
           `Teams: ${(teams || []).map((t) => t.name).join(", ")}`,
           `Rooms:\n${rooms}`,
