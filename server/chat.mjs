@@ -283,7 +283,7 @@ async function wakeTarget(channelId, text, from, target) {
   const seatId = resolvedSeatId(target.to, state);
   const direct = seatOf(seatId, state);
   if (String(channelId).startsWith("dm-")) rememberSessionRoom(seatId, channelId);
-  const meta = { from, kind: target.reason, channel: channelId, announce: false, ...(target.meta || {}) };
+  const meta = { from, kind: target.reason, channel: channelId, announce: false, followed: true, ...(target.meta || {}) };
   if (meta.thread) seatThreads.set(`${seatId}|${channelId}`, meta.thread);
   if (direct && direct.kind === "bot" && !direct.mcpGuest && !isOpenCodeAdapter(direct)) {
     emit({ scope: "chat", step: "seat.wake", channel: channelId, seat: seatId, detail: { reason: target.reason, adapter: direct.adapter } });
@@ -657,6 +657,7 @@ export async function followChannel(
     const seat = seatOf(id);
     return seat ? harnessKindForSeat(seat) : "company";
   };
+  let settledPolls = 0;
   const missingKey = [...seats].some((id) => {
     const seat = getState().seats.find((s) => s.id === id);
     return !seatModelPlan(seat, deps.knownLoadedModels?.(seat ? harnessKindForSeat(seat) : "company") ?? null).ok;
@@ -730,6 +731,13 @@ export async function followChannel(
         });
       }
       if ([...seats].every((id) => failed.has(id) || answered.has(id))) break;
+      const anyStarting = [...seats].some(
+        (id) => !failed.has(id) && (getState().runs || []).some((r) => r.seatId === id && r.status === "starting"),
+      );
+      if (!anyStarting) {
+        settledPolls += 1;
+        if (settledPolls >= 8) break;
+      }
       const kinds = [...new Set([...seats].map(kindOf))];
       for (const k of kinds) deps.ensureEventStream?.(k);
       const stretch = kinds.length && kinds.every((k) => deps.eventsConnected?.(k)) ? SSE_STRETCH : 1;
@@ -738,7 +746,9 @@ export async function followChannel(
       if (why === "event" && eventWakes++ < MAX_EVENT_WAKES && Date.now() < hardDeadline) continue;
       ticksLeft -= step;
     }
-    const waiting = [...seats].filter((id) => !failed.has(id) && !answered.has(id));
+    const waiting = [...seats].filter(
+      (id) => !failed.has(id) && !answered.has(id) && !(getState().runs || []).some((r) => r.seatId === id && r.status === "running"),
+    );
     if (epoch !== followEpoch) {
       /* reset while following: post nothing */
     } else if (!replies && waiting.length) {
