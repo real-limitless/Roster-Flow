@@ -224,6 +224,7 @@ test("a serve restart for a late hire reopens the room's session, not the DM", a
     const seat = (s.seats || []).find((x) => x.id === "build");
     if (seat) seat.status = "idle";
     if (s.roomSessions?.build) delete s.roomSessions.build.ship;
+    s.runs = (s.runs || []).map((run) => (run.status === "starting" || run.status === "running" ? { ...run, status: "done" } : run));
   });
   try {
     await wakeSeat("build", "first", { from: "you", kind: "mention-seat", channel: "ship", followed: true });
