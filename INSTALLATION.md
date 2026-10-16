@@ -29,14 +29,14 @@ cp -n .env.example .env
 docker compose up --build
 ```
 
-Then open http://127.0.0.1:5173/setup.
+Compose exposes these on the compose network only. It does not publish them on the host. Reach Roster through the proxy, or from another container at `http://roster-flow:8790`.
 
-| Process | URL | Role |
+| Process | Port | Role |
 |---|---|---|
-| Product (UI + `/api`) | http://127.0.0.1:5173 | Marketing, `/setup`, `/app` |
-| CORE API (host publish) | http://127.0.0.1:8790/api/v1/health | Same API next to mcp-flow’s 8787 |
+| Product (UI + `/api`) | **5175** (`ROSTER_WEB_PORT`) | Marketing, `/setup`, `/app` |
+| CORE API | **8790** (`ROSTER_API_PORT`) | `/api/v1/health`, next to mcp-flow’s 8787 |
 
-mcp-flow uses **8787** on the host. Roster publishes **8790**. Inside the container CORE listens on 8787.
+mcp-flow uses **8787**. Roster CORE listens on **8790** inside and outside the container.
 
 ## Contributor path (host Node)
 
