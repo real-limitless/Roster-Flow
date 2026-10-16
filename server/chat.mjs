@@ -231,16 +231,13 @@ async function runWakes(channelId, text, from, targets) {
     }
     if (!plan.ok) {
       const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
-      const runId = woke?.runId || null;
-      const reason = woke?.error || plan.hint || "model not loaded";
-      if (runId) blockLatestRun(woke?.seat || seatId, reason);
       results.push({
         ...woke,
         seat: woke?.seat || seatId,
-        error: reason,
-        nokey: true,
-        runId,
-        started: false,
+        error: woke?.error || plan.hint,
+        nokey: !woke?.started,
+        runId: woke?.runId || null,
+        started: Boolean(woke?.started),
       });
       continue;
     }

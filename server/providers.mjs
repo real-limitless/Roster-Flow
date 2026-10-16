@@ -1,4 +1,5 @@
 /** OpenChamber-shaped write-through to OpenCode config + local auth sidecar. */
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -321,10 +322,43 @@ export function isBuiltinProvider(providerID) {
   return String(providerID || "").toLowerCase() === "opencode";
 }
 
+const reachCache = new Map();
+
+/** True when something accepts TCP connections on the provider base URL. */
+export function endpointAccepts(baseURL, timeoutMs = 300) {
+  if (!baseURL) return true;
+  const cached = reachCache.get(baseURL);
+  if (cached && Date.now() - cached.at < 5000) return cached.ok;
+  let host;
+  let port;
+  try {
+    const url = new URL(baseURL);
+    host = url.hostname;
+    port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+  } catch {
+    return false;
+  }
+  if (!host || !port) return false;
+  const probe = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      "const net=require('node:net'); const s=net.connect({host:process.argv[1], port:Number(process.argv[2])}); const t=setTimeout(()=>{s.destroy(); process.exit(1);}, Number(process.argv[3])); s.on('connect',()=>{clearTimeout(t); s.end(); process.exit(0);}); s.on('error',()=>process.exit(1));",
+      host,
+      String(port),
+      String(timeoutMs),
+    ],
+    { timeout: timeoutMs + 250 },
+  );
+  const ok = probe.status === 0;
+  reachCache.set(baseURL, { ok, at: Date.now() });
+  return ok;
+}
+
 /**
  * A model may be written into the shared OpenCode config only when its provider
- * is one the operator configured and connected. The built-in `opencode` provider
- * is never written: one bad agent model reloads the whole serve.
+ * is configured, connected, and accepting connections. The built-in `opencode`
+ * provider is never written: one bad agent model reloads the whole serve.
  */
 export function modelAllowedInConfig(model) {
   const parsed = parseModelRef(model);
@@ -333,6 +367,7 @@ export function modelAllowedInConfig(model) {
   const provider = listProviders().find((p) => p.id === parsed.providerID);
   if (!provider?.connected) return false;
   if ((provider.models || []).length && !provider.models.some((m) => m.id === parsed.modelID)) return false;
+  if (provider.baseURL && !endpointAccepts(provider.baseURL)) return false;
   return true;
 }
 
