@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deps, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
+import { deps, isPass, meterTurn, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
+import { meterWake } from "./budget.mjs";
 import { getState, mutate } from "./store.mjs";
 
 test("promptBody tells the seat which job to finish", () => {
@@ -385,4 +386,39 @@ test("room wakes tell the seat how to bring someone in, and hop wakes say who me
   const hop = roomReplyLines({ channel: "ship", kind: "mention-seat", thread: { hop: 2, from: "product", maxHops: 4 } });
   assert.equal(hop[0], "@product mentioned you in #ship (hop 2 of 4). Answer them; @mention someone else only if they must act.");
   assert.deepEqual(roomReplyLines({ kind: "send_message" }), []);
+});
+
+test("team-mode wakes are told to reply PASS when they have nothing to add", () => {
+  const lines = roomReplyLines({ channel: "ship", kind: "implicit", teamMode: true });
+  assert.ok(lines.some((l) => l.includes("otherwise reply with exactly PASS")));
+  assert.ok(isPass("PASS") && isPass(" pass. ") && !isPass("PASS: I disagree"));
+});
+
+test("meterTurn corrects the wake's usage row from the session's reported tokens", async () => {
+  const prev = { ...deps };
+  const runId = `run-meter-${Date.now()}`;
+  const was = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "build")));
+  mutate((s) => {
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.tokenBudget = 0;
+    meterWake(s, { seatId: "build", runId, inputTokens: 100, outputTokens: 200, channelId: "ship" });
+  });
+  const spentAfterEstimate = getState().seats.find((s) => s.id === "build").spent;
+  deps.sessionMessages = async (id) => {
+    assert.equal(id, "ses-meter");
+    return [{ info: { role: "assistant", time: { created: Date.now() }, cost: 0.004, tokens: { input: 900, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] }];
+  };
+  try {
+    const out = await meterTurn("build", { sessionId: "ses-meter", runId });
+    assert.equal(out.row.tokens, 1000);
+    assert.equal(out.row.channelId, "ship");
+    assert.equal(getState().seats.find((s) => s.id === "build").spent, spentAfterEstimate + 700);
+    assert.equal(await meterTurn("build", { sessionId: "ses-meter", runId: null }), null);
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      s.seats = s.seats.map((x) => (x.id === "build" ? was : x));
+      s.usage = (s.usage || []).filter((r) => r.runId !== runId);
+    });
+  }
 });

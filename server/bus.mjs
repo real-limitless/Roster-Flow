@@ -10,6 +10,7 @@ import {
   loadedModels,
   describeOpenCodeError,
   lastAssistantFailure,
+  turnUsage,
 } from "./harness.mjs";
 import { isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
@@ -19,7 +20,7 @@ import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
 import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
-import { estimateTokens, meterWake } from "./budget.mjs";
+import { applyTurnUsage, estimateTokens, meterWake } from "./budget.mjs";
 import { dropRoomSession, liveRoomSession, roomContext, roomSessionTitle, setRoomSession } from "./room-sessions.mjs";
 
 export const deps = {
@@ -147,6 +148,13 @@ export function roomSessionChannel(meta = {}, seatId) {
 }
 
 /** Lines that tell a seat woken from a room how its reply gets back there. */
+export const PASS = "PASS";
+
+/** A team-mode reply that means "nothing to add"; it is not posted. */
+export function isPass(text) {
+  return /^\s*PASS\.?\s*$/i.test(String(text || ""));
+}
+
 export function roomReplyLines(meta = {}) {
   if (!meta.channel || !ROOM_KINDS.has(meta.kind)) return [];
   const room = `#${meta.channel}`;
@@ -154,6 +162,13 @@ export function roomReplyLines(meta = {}) {
   const hop = meta.thread?.hop > 0
     ? [`@${meta.thread.from} mentioned you in ${room} (hop ${meta.thread.hop} of ${meta.thread.maxHops}). Answer them; @mention someone else only if they must act.`]
     : [];
+  if (meta.kind === IMPLICIT && meta.teamMode) {
+    return [
+      `A human wrote in ${room} without mentioning anyone. Several members of ${room} were asked.`,
+      `Reply only if you can help; otherwise reply with exactly ${PASS}. Roster-flow posts your text to ${room}, except ${PASS}. Do not use roster_report for this reply.`,
+      mention,
+    ];
+  }
   if (meta.kind === IMPLICIT) {
     return [
       `A human wrote in ${room} without mentioning anyone. You are the seat answering for ${room}.`,
@@ -263,6 +278,8 @@ function meterPromptedWake(to, text, meta, result, started) {
       outputTokens: 200,
       ms: Date.now() - started,
       source: meta.kind || "wake",
+      channelId: meta.channel || null,
+      threadId: meta.thread?.threadId || null,
     });
   });
   const live = (getState().seats || []).find((s) => s.id === to);
@@ -444,6 +461,29 @@ export async function pullFailure(to, since = 0, { sessionId: wanted = null } = 
   } catch {
     return null;
   }
+}
+
+/** Correct the wake's estimated usage row with the tokens OpenCode reported for the turn. */
+export async function meterTurn(to, { sessionId = null, since = 0, runId = null } = {}) {
+  const seat = seatById(to);
+  if (!seat || !runId) return null;
+  const id = sessionFor(seat, sessionId);
+  if (!id) return null;
+  const usage = turnUsage(await deps.sessionMessages(id, harnessKindForSeat(seat)), since);
+  if (!usage) return null;
+  let out = null;
+  mutate((s) => {
+    out = applyTurnUsage(s, { seatId: to, runId, usage });
+  });
+  if (out) {
+    emit({
+      scope: "chat",
+      step: "seat.metered",
+      seat: to,
+      detail: { runId, tokens: out.row.tokens, cost: usage.cost, messages: usage.messages },
+    });
+  }
+  return out;
 }
 
 export async function pullAssistant(to, { sessionId: wanted = null } = {}) {

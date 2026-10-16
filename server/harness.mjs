@@ -603,6 +603,12 @@ export function parseRosterTitle(title) {
   return { seatId: m[1], channelId: m[2] || null };
 }
 
+/** The serve's base URL while it is healthy, else null. */
+export function serveBaseUrl(kind = COMPANY) {
+  const inst = instances[harnessKind(kind)];
+  return inst?.healthy && inst.baseUrl ? inst.baseUrl : null;
+}
+
 export async function sessionMessages(sessionId, kind = COMPANY) {
   const data = await ocFetch(`/session/${sessionId}/message`, {}, kind);
   return Array.isArray(data) ? data : data?.messages || [];
@@ -641,6 +647,31 @@ export function assistantText(messages) {
     if (text) out.push({ id: msg.id || msg.info?.id, text, role: "assistant", created });
   }
   return out;
+}
+
+/**
+ * Token use of the assistant messages created at or after `since`, summed from
+ * OpenCode's `info.tokens` and `info.cost`. Null when no message reports tokens.
+ */
+export function turnUsage(messages, since = 0) {
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const out = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, messages: 0 };
+  for (const msg of messages || []) {
+    const info = msg.info || msg;
+    if ((info.role || msg.role) !== "assistant") continue;
+    const created = Number(info.time?.created || 0);
+    if (since && created && created < since) continue;
+    const t = info.tokens;
+    if (!t || typeof t !== "object") continue;
+    out.input += n(t.input);
+    out.output += n(t.output);
+    out.reasoning += n(t.reasoning);
+    out.cacheRead += n(t.cache?.read);
+    out.cacheWrite += n(t.cache?.write);
+    out.cost += n(info.cost);
+    out.messages += 1;
+  }
+  return out.messages ? out : null;
 }
 
 export function sessionTranscript(messages) {

@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   applyBudgetSideEffects,
+  applyTurnUsage,
   budgetRemaining,
   budgetWarn,
   currentBudgetPeriod,
   listUsage,
   meterWake,
+  nextUtcMidnight,
+  roomSpentToday,
   publicUsageRow,
   rolloverSeatBudget,
   seatOverBudget,
@@ -188,4 +191,44 @@ test("usage csv omits keys and summarizeUsage totals tokens", () => {
   const sum = summarizeUsage(rows);
   assert.equal(sum.wakes, 2);
   assert.equal(sum.tokens, 30);
+});
+
+test("applyTurnUsage replaces the wake estimate with OpenCode's tokens and moves spend by the difference", () => {
+  const state = migrateState(emptyState());
+  const seat = state.seats.find((s) => s.id === "build");
+  seat.spent = 0;
+  seat.tokenBudget = 0;
+  meterWake(state, { seatId: "build", runId: "run-real", inputTokens: 500, outputTokens: 200, channelId: "ship", threadId: "msg-1" });
+  assert.equal(seat.spent, 700);
+  const row = state.usage.find((r) => r.runId === "run-real");
+  assert.equal(row.channelId, "ship");
+  assert.equal(row.threadId, "msg-1");
+  const usage = { input: 1200, output: 300, reasoning: 50, cacheRead: 4000, cacheWrite: 10, cost: 0.0123, messages: 2 };
+  const out = applyTurnUsage(state, { seatId: "build", runId: "run-real", usage });
+  assert.equal(out.row.tokens, 1550);
+  assert.equal(out.row.cacheReadTokens, 4000);
+  assert.equal(out.row.usdEstimate, 0.0123);
+  assert.equal(out.row.metered, "opencode");
+  assert.equal(seat.spent, 1550);
+  applyTurnUsage(state, { seatId: "build", runId: "run-real", usage: { ...usage, output: 400 } });
+  assert.equal(seat.spent, 1650);
+  assert.equal(applyTurnUsage(state, { seatId: "build", runId: "run-missing", usage }), null);
+  const csv = usageCsv(state.usage.filter((r) => r.runId === "run-real"));
+  const [header, line] = csv.trim().split("\n");
+  assert.ok(header.split(",").includes("channelId"));
+  assert.equal(line.split(",")[header.split(",").indexOf("channelId")], "ship");
+});
+
+test("roomSpentToday sums the room's usage rows for the current UTC day", () => {
+  const now = Date.parse("2026-10-16T12:00:00.000Z");
+  const state = {
+    usage: [
+      { channelId: "ship", tokens: 100, time: "2026-10-16T01:00:00.000Z" },
+      { channelId: "ship", tokens: 50, time: "2026-10-16T23:00:00.000Z" },
+      { channelId: "ship", tokens: 999, time: "2026-10-15T23:59:00.000Z" },
+      { channelId: "general", tokens: 7, time: "2026-10-16T02:00:00.000Z" },
+    ],
+  };
+  assert.equal(roomSpentToday(state, "ship", now), 150);
+  assert.equal(nextUtcMidnight(now), "2026-10-17T00:00:00.000Z");
 });
