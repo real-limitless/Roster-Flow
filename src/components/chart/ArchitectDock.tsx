@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import type { Approval } from "../../data";
 import type { OrgPlan } from "./planPreview";
 import { ChatDebugPanel } from "../chat/ChatDebugPanel";
 
@@ -23,6 +24,8 @@ export function ArchitectDock({
   onApply,
   onRevise,
   showDebug = false,
+  pendingApprovals = [],
+  onApprovePending,
 }: {
   messages: ArchitectMsg[];
   busy: boolean;
@@ -30,6 +33,8 @@ export function ArchitectDock({
   onApply: (plan: OrgPlan) => void;
   onRevise: () => void;
   showDebug?: boolean;
+  pendingApprovals?: Approval[];
+  onApprovePending?: (id: string) => void;
 }) {
   const [draft, setDraft] = useState("");
 
@@ -54,6 +59,27 @@ export function ArchitectDock({
           </button>
         ))}
       </div>
+      {pendingApprovals.length > 0 && (
+        <div className="architect-approvals" data-testid="architect-approvals">
+          <div className="micro">Pending approvals</div>
+          {pendingApprovals.map((a) => (
+            <div key={a.id} className="approval-row" data-testid={`approval-${a.id}`}>
+              <span>
+                {a.kind} · {a.planId || a.seatId || a.id}
+              </span>
+              <button
+                className="pill-btn primary"
+                type="button"
+                data-testid={`approval-approve-${a.id}`}
+                disabled={busy}
+                onClick={() => onApprovePending?.(a.id)}
+              >
+                Approve
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="architect-thread" data-testid="architect-thread">
         {messages.length === 0 && <p className="micro">Staff a project, reshape the org, or ask who to cut. Nothing lands until you Apply.</p>}
         {messages.map((m) => (

@@ -1,6 +1,7 @@
 import { PointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Tree, { type CustomNodeElementProps, type TreeLinkDatum } from "react-d3-tree";
-import { type Project, type Seat, type Team } from "../data";
+import { isOpenCodeSeat, seatAdapter, type Project, type Seat, type Team } from "../data";
+import { budgetPaused } from "../lib/budget";
 import { SeatAvatar } from "./SeatAvatar";
 import type { ChartPreview } from "./chart/planPreview";
 import { buildOrgTree, toRawNodeDatum, type OrgTreeNode } from "./chart/orgTreeData";
@@ -51,6 +52,9 @@ export function OrgChart({
   onSelectTeam,
   onSelectProject,
   onAttach,
+  unreadBySeat = {},
+  pathIds = [],
+  claimedSeatIds = [],
 }: {
   roster: Seat[];
   teams?: Team[];
@@ -66,6 +70,9 @@ export function OrgChart({
   onSelectTeam?: (t: Team) => void;
   onSelectProject?: (p: Project) => void;
   onAttach?: (s: Seat) => void;
+  unreadBySeat?: Record<string, number>;
+  pathIds?: string[];
+  claimedSeatIds?: string[];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const fittingRef = useRef(false);
@@ -288,7 +295,10 @@ export function OrgChart({
           seat={seat}
           selectedId={selectedId}
           liveId={liveId}
+          onPath={pathIds.includes(seat.id)}
           fire={Boolean(meta.fire)}
+          unread={unreadBySeat[seat.id] || 0}
+          claimed={claimedSeatIds.includes(seat.id)}
           onSelect={onSelect}
           onAttach={onAttach}
         />
@@ -401,21 +411,6 @@ function CollapseHandle({
   collapsed: boolean;
   onToggle: (next?: boolean) => void;
 }) {
-  const start = useRef<{ y: number } | null>(null);
-  function down(e: PointerEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    start.current = { y: e.clientY };
-  }
-  function up(e: PointerEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    if (!start.current) return;
-    const dy = e.clientY - start.current.y;
-    start.current = null;
-    if (Math.abs(dy) < 12) onToggle();
-    else onToggle(dy < 0);
-  }
   return (
     <button
       type="button"
@@ -423,10 +418,12 @@ function CollapseHandle({
       data-testid={`tree-collapse-${id}`}
       aria-label={collapsed ? "Expand" : "Collapse"}
       aria-expanded={!collapsed}
-      onPointerDown={down}
-      onPointerUp={up}
-      onPointerCancel={() => {
-        start.current = null;
+      onPointerDown={(e) => {
+        e.stopPropagation();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
       }}
     >
       <span className="tree-collapse-grip" />
@@ -438,35 +435,64 @@ function SeatBtn({
   seat,
   selectedId,
   liveId,
+  onPath,
   fire,
+  unread = 0,
+  claimed = false,
   onSelect,
   onAttach,
 }: {
   seat: Seat;
   selectedId: string;
   liveId?: string;
+  onPath?: boolean;
   fire?: boolean;
+  unread?: number;
+  claimed?: boolean;
   onSelect: (s: Seat) => void;
   onAttach?: (s: Seat) => void;
 }) {
+  const budget = budgetPaused(seat);
+  const scheduled = !budget && seat.status !== "paused" && Number(seat.heartbeatMinutes) > 0;
+  const pip = budget ? "paused budget" : seat.status === "paused" ? "paused" : claimed ? "claimed" : liveId === seat.id ? "run" : scheduled ? "scheduled" : "on";
   return (
     <button
       type="button"
       data-seat-id={seat.id}
       data-testid={`seat-${seat.id}`}
-      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""}`}
+      data-paused={seat.status === "paused" ? "1" : "0"}
+      data-adapter={seatAdapter(seat)}
+      data-mcp-guest={seat.mcpGuest ? "1" : "0"}
+      data-budget-paused={budget ? "1" : "0"}
+      data-heartbeat={scheduled ? "1" : "0"}
+      data-claimed={claimed ? "1" : "0"}
+      data-coach-path={onPath ? "1" : "0"}
+      className={`seat ${seat.kind === "human" ? "human" : ""} ${selectedId === seat.id ? "live" : ""} ${seat.system ? "system" : ""} ${seat.preview === "hire" ? "ghost" : ""} ${fire ? "fire" : ""} ${seat.status === "paused" ? "paused" : ""} ${budget ? "budget-paused" : ""} ${scheduled ? "heartbeat" : ""} ${claimed ? "claimed" : ""} ${onPath ? "coach-path" : ""}`}
       onClick={() => onSelect(seat)}
-      onDoubleClick={() => onAttach?.(seat)}
+      onDoubleClick={() => {
+        if (isOpenCodeSeat(seat) && !seat.mcpGuest) onAttach?.(seat);
+      }}
     >
       <SeatAvatar seed={seat.id} kind={seat.kind} size={22} />
-      <span className={`pip ${liveId === seat.id ? "run" : "on"}`} />
-      {seat.name}
+      <span className="seat-name-row">
+        <span className={`pip ${pip}`} data-testid={`pip-${seat.id}`} />
+        {seat.name}
+        {unread > 0 && (
+          <span className="unread-pip" data-testid={`inbox-count-${seat.id}`}>
+            {unread}
+          </span>
+        )}
+      </span>
       <div style={{ color: "var(--muted)", fontSize: 10 }}>
         {seat.role}
         {seat.kind === "human" ? " · human" : ""}
+        {seat.kind === "bot" && !isOpenCodeSeat(seat) ? ` · ${seatAdapter(seat)}` : ""}
+        {seat.mcpGuest ? " · mcp" : ""}
         {seat.system ? " · system" : ""}
         {seat.preview === "hire" ? " · proposed" : ""}
         {fire ? " · fire" : ""}
+        {budget ? " · budget" : seat.status === "paused" ? " · paused" : scheduled ? " · beat" : ""}
+        {claimed ? " · claim" : ""}
       </div>
     </button>
   );

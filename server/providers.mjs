@@ -21,8 +21,41 @@ export function readOpenCodeConfig() {
     $schema: "https://opencode.ai/config.json",
     plugin: ["roster-flow-opencode"],
     provider: {},
-    providers: {},
   });
+}
+
+/**
+ * OpenCode's config schema (https://opencode.ai/config.json) only accepts
+ * `provider`, `agent`, and `permission`, and provider blocks only take
+ * `options` (no `settings` / `package`). Older Roster builds wrote plural keys;
+ * fold them into the documented shape so `opencode serve` honors them.
+ */
+export function normalizeOpenCodeConfig(cfg = {}) {
+  const out = { ...cfg };
+  const provider = { ...(out.providers || {}), ...(out.provider || {}) };
+  for (const [id, raw] of Object.entries(provider)) {
+    if (!raw || typeof raw !== "object") continue;
+    const { settings, package: pkg, ...rest } = raw;
+    const options = { ...(settings || {}), ...(rest.options || {}) };
+    provider[id] = { ...rest, ...(rest.npm || !pkg ? {} : { npm: pkg }), ...(Object.keys(options).length ? { options } : {}) };
+  }
+  delete out.providers;
+  out.provider = provider;
+  if (out.agents || out.agent) {
+    const agent = { ...(out.agents || {}), ...(out.agent || {}) };
+    for (const [id, raw] of Object.entries(agent)) {
+      if (!raw || typeof raw !== "object") continue;
+      const { system, permissions, ...rest } = raw;
+      agent[id] = {
+        ...rest,
+        ...(rest.prompt || !system ? {} : { prompt: system }),
+        ...(rest.permission || !permissions || Array.isArray(permissions) ? {} : { permission: permissions }),
+      };
+    }
+    delete out.agents;
+    out.agent = agent;
+  }
+  return out;
 }
 
 function providerBlocks(cfg) {
@@ -35,8 +68,9 @@ export function writeOpenCodeConfig(cfg) {
   mkdirSync(ocDir, { recursive: true });
   if (!cfg.plugin) cfg.plugin = ["roster-flow-opencode"];
   else if (!cfg.plugin.includes("roster-flow-opencode")) cfg.plugin.push("roster-flow-opencode");
-  writeFileSync(ocPath, JSON.stringify(cfg, null, 2));
-  return cfg;
+  const clean = normalizeOpenCodeConfig(cfg);
+  writeFileSync(ocPath, JSON.stringify(clean, null, 2));
+  return clean;
 }
 
 function readAuth() {
@@ -83,7 +117,6 @@ export function upsertProvider(body) {
   if (!id) throw Object.assign(new Error("provider id required"), { status: 400 });
   const cfg = readOpenCodeConfig();
   cfg.provider = cfg.provider || {};
-  cfg.providers = cfg.providers || {};
   const models = {};
   for (const m of body.models || []) {
     const mid = String(m.id || m).trim();
@@ -93,21 +126,15 @@ export function upsertProvider(body) {
   const apiKeyEnv = String(body.apiKeyEnv || "").trim();
   const block = {
     npm: body.npm || "@ai-sdk/openai-compatible",
-    package: body.package || body.npm || "@ai-sdk/openai-compatible",
     name: body.name || id,
     options: {
       ...(body.baseURL ? { baseURL: body.baseURL } : {}),
       ...(apiKeyEnv ? { apiKey: `{env:${apiKeyEnv}}` } : {}),
       ...(body.headers ? { headers: body.headers } : {}),
     },
-    settings: {
-      ...(body.baseURL ? { baseURL: body.baseURL } : {}),
-      ...(apiKeyEnv ? { apiKey: `{env:${apiKeyEnv}}` } : {}),
-    },
     models,
   };
   cfg.provider[id] = block;
-  cfg.providers[id] = block;
   writeOpenCodeConfig(cfg);
   if (body.apiKey) setAuth(id, body.apiKey);
   return listProviders().find((p) => p.id === id);
@@ -223,17 +250,37 @@ export function listModels() {
   return listConfiguredModels();
 }
 
+/** Env vars the OpenCode serve child needs for roster-flow-opencode plugin tools. */
+export const PLUGIN_PASSTHROUGH_ENV = ["WIKIFLOW_URL", "WIKIFLOW_TOKEN"];
+
+const BUILTIN_KEY_ENV = {
+  xai: "XAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+};
+
+/** Every `{env:NAME}` a provider block references, plus the built-in key vars. */
+export function providerKeyEnvNames(...configs) {
+  const names = new Set(Object.values(BUILTIN_KEY_ENV));
+  for (const cfg of configs) {
+    for (const raw of Object.values(providerBlocks(cfg || {}))) {
+      for (const m of JSON.stringify(raw || {}).matchAll(/\{env:([^}]+)\}/g)) names.add(m[1]);
+    }
+  }
+  return [...names];
+}
+
 /** Merge stored Settings keys into env so `{env:VAR}` in opencode.json resolves. */
 export function serveChildEnv(base = process.env) {
   const env = { ...base };
-  const auth = readAuth();
   const cfg = readOpenCodeConfig();
-  const fallback = {
-    xai: "XAI_API_KEY",
-    anthropic: "ANTHROPIC_API_KEY",
-    openai: "OPENAI_API_KEY",
-    google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  };
+  const passthrough = [...PLUGIN_PASSTHROUGH_ENV, ...providerKeyEnvNames(cfg, readGlobalOpenCodeConfig())];
+  for (const name of passthrough) {
+    if (base[name] === undefined && process.env[name] !== undefined) env[name] = process.env[name];
+  }
+  const auth = readAuth();
+  const fallback = BUILTIN_KEY_ENV;
   for (const [id, rec] of Object.entries(auth)) {
     const key = typeof rec === "string" ? rec : rec?.key;
     if (!key) continue;
@@ -256,8 +303,22 @@ export function hasProviderKey() {
   );
 }
 
-export function firstConnectedModel() {
-  const models = listModels().filter((m) => m.connected);
+/**
+ * Whether OpenCode actually loaded `providerID/modelID`. `loaded` is the live
+ * list from the serve (`{ providerID, modelID }[]`); null means unknown.
+ */
+export function isLoadedModel(loaded, providerID, modelID) {
+  if (!Array.isArray(loaded)) return null;
+  return loaded.some((m) => m.providerID === providerID && (!modelID || m.modelID === modelID));
+}
+
+export function loadedProviderIds(loaded) {
+  return Array.isArray(loaded) ? [...new Set(loaded.map((m) => m.providerID).filter(Boolean))] : [];
+}
+
+/** A connected configured model, restricted to ones the serve loaded when `loaded` is known. */
+export function firstConnectedModel(loaded = null) {
+  const models = listModels().filter((m) => m.connected && isLoadedModel(loaded, m.providerID, m.modelID) !== false);
   if (!models.length) return null;
   const preferred = [
     ["infiniterouter-dev", "big-pickle"],
@@ -273,7 +334,7 @@ export function firstConnectedModel() {
   return models[0];
 }
 
-export function keyStatusForModel(model) {
+export function keyStatusForModel(model, loaded = null) {
   const parsed = parseModelRef(model) || {
     providerID: inferProviderId(model),
     modelID: String(model || "")
@@ -284,20 +345,22 @@ export function keyStatusForModel(model) {
   const providers = listProviders();
   const p = providers.find((x) => x.id === parsed.providerID);
   const env = serveChildEnv();
-  const fallback = {
-    xai: "XAI_API_KEY",
-    anthropic: "ANTHROPIC_API_KEY",
-    openai: "OPENAI_API_KEY",
-    google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  };
-  const envName = p?.apiKeyEnv || fallback[parsed.providerID];
+  const envName = p?.apiKeyEnv || BUILTIN_KEY_ENV[parsed.providerID];
   const inGlobal = Boolean(providerBlocks(readGlobalOpenCodeConfig())[parsed.providerID]);
   return {
     providerID: parsed.providerID || "",
     modelID: parsed.modelID || "",
     configured: Boolean(p || inGlobal),
     connected: Boolean((inGlobal && p?.connected) || p?.hasStoredKey || (envName && env[envName])),
+    loaded: isLoadedModel(loaded, parsed.providerID, parsed.modelID),
+    providerLoaded: isLoadedModel(loaded, parsed.providerID),
+    loadedProviders: loadedProviderIds(loaded),
   };
+}
+
+/** Connected by key and, when the live list is known, loaded by OpenCode. */
+export function isUsable(st) {
+  return Boolean(st?.connected) && st?.loaded !== false;
 }
 
 const AUTH_PRESETS = {
@@ -341,23 +404,16 @@ export function ensureAuthProviders() {
     const preset = AUTH_PRESETS[id];
     const block = {
       npm: preset.npm || "@ai-sdk/openai-compatible",
-      package: preset.npm || "@ai-sdk/openai-compatible",
       name: preset.name || id,
       options: {
-        ...(preset.baseURL ? { baseURL: preset.baseURL } : {}),
-        ...(preset.apiKeyEnv ? { apiKey: `{env:${preset.apiKeyEnv}}` } : {}),
-      },
-      settings: {
         ...(preset.baseURL ? { baseURL: preset.baseURL } : {}),
         ...(preset.apiKeyEnv ? { apiKey: `{env:${preset.apiKeyEnv}}` } : {}),
       },
       models: preset.models || {},
     };
     cfg.provider = cfg.provider || {};
-    cfg.providers = cfg.providers || {};
-    cfg.provider[id] = block;
-    cfg.providers[id] = block;
-    changed = true;
+      cfg.provider[id] = block;
+      changed = true;
   }
   if (changed) writeOpenCodeConfig(cfg);
   return changed;
@@ -373,7 +429,7 @@ export function parseModelRef(model) {
   return null;
 }
 
-export function resolveSeatModel(seat, modelOverride) {
+export function resolveSeatModel(seat, modelOverride, loaded = null) {
   const models = listModels();
   const raw = modelOverride || seat?.model;
   const parsed = parseModelRef(raw);
@@ -388,18 +444,18 @@ export function resolveSeatModel(seat, modelOverride) {
   const guess = inferProviderId(raw);
   const fromGuess = models.find((m) => m.providerID === guess);
   if (fromGuess) return { providerID: fromGuess.providerID, modelID: raw || fromGuess.modelID };
-  const connected = firstConnectedModel();
+  const connected = firstConnectedModel(loaded);
   if (connected) return { providerID: connected.providerID, modelID: connected.modelID };
   return guess && raw ? { providerID: guess, modelID: raw } : undefined;
 }
 
-export function resolveUsableModel(seat, modelOverride) {
-  const resolved = resolveSeatModel(seat, modelOverride);
+export function resolveUsableModel(seat, modelOverride, loaded = null) {
+  const resolved = resolveSeatModel(seat, modelOverride, loaded);
   if (resolved) {
-    const st = keyStatusForModel(`${resolved.providerID}/${resolved.modelID}`);
-    if (st.connected) return resolved;
+    const st = keyStatusForModel(`${resolved.providerID}/${resolved.modelID}`, loaded);
+    if (isUsable(st)) return resolved;
   }
-  const fallback = firstConnectedModel();
+  const fallback = firstConnectedModel(loaded);
   if (fallback) return { providerID: fallback.providerID, modelID: fallback.modelID };
   return resolved;
 }

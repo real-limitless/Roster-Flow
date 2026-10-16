@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deps, wakeSeat } from "./bus.mjs";
+import { deps, promptBody, wakeSeat } from "./bus.mjs";
 import { mutate } from "./store.mjs";
+
+test("promptBody tells the seat which job to finish", () => {
+  const text = promptBody(
+    { name: "Eng.Build", role: "Implement", job: "Ship the PR", tools: ["read"], deny: [] },
+    "build",
+    "implement it",
+    { from: "you", kind: "job", jobId: "job-1" },
+    null,
+  ).parts[0].text;
+  assert.match(text, /job-1/);
+  assert.match(text, /roster_report/);
+});
 
 test("wakeSeat records promptAsync on the recipient session", async () => {
   const prompts = [];
@@ -13,6 +25,8 @@ test("wakeSeat records promptAsync on the recipient session", async () => {
   };
   mutate((s) => {
     if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("build", "ship the webhook", { from: "product", kind: "handoff" });
@@ -35,6 +49,8 @@ test("wakeSeat routes team: addresses to the Supervisor", async () => {
   };
   mutate((s) => {
     if (s.sessions) delete s.sessions["eng-supervisor"];
+    const seat = (s.seats || []).find((x) => x.id === "eng-supervisor");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("team:eng", "build the webhook", { from: "product", kind: "send_message" });
@@ -63,6 +79,8 @@ test("wakeSeat stores Architect sessions on systemSessions", async () => {
   mutate((s) => {
     s.systemSessions = { ...(s.systemSessions || {}) };
     delete s.systemSessions.architect;
+    const seat = (s.seats || []).find((x) => x.id === "architect");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("architect", "propose a plan", { from: "you", kind: "architect" });
@@ -73,6 +91,76 @@ test("wakeSeat stores Architect sessions on systemSessions", async () => {
     assert.equal(prompts[0].agent, "architect");
   } finally {
     Object.assign(deps, prev);
+  }
+});
+
+function restoreBuild(model) {
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.model = model;
+    if (s.sessions) delete s.sessions.build;
+  });
+}
+
+test("wakeSeat refuses a model the serve did not load instead of a silent prompt", async () => {
+  const prev = { ...deps };
+  let priorModel;
+  let prompted = 0;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_notloaded" });
+  deps.loadedModels = async () => [{ providerID: "opencode", modelID: "big-pickle" }];
+  deps.promptSession = async () => {
+    prompted += 1;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) {
+      seat.status = "idle";
+      priorModel = seat.model;
+      seat.model = "featherless/Qwen/Qwen2.5-Coder-32B-Instruct";
+    }
+  });
+  try {
+    const result = await wakeSeat("build", "ship it", { from: "product" });
+    assert.equal(prompted, 0);
+    assert.equal(result.code, "PROVIDER_NOT_LOADED");
+    assert.match(result.error, /featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct is not loaded by the company OpenCode harness \(loaded: opencode\)/);
+  } finally {
+    Object.assign(deps, prev);
+    restoreBuild(priorModel);
+  }
+});
+
+test("wakeSeat turns an opaque OpenCode 500 into a provider error", async () => {
+  const prev = { ...deps };
+  let priorModel;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_500" });
+  deps.loadedModels = async () => null;
+  deps.promptSession = async () => {
+    const err = new Error("Internal Server Error");
+    err.status = 500;
+    err.detail = { name: "UnknownError", data: { message: "ProviderModelNotFoundError: Model not found" } };
+    throw err;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) {
+      seat.status = "idle";
+      priorModel = seat.model;
+      seat.model = "featherless/Qwen/Qwen2.5-Coder-32B-Instruct";
+    }
+  });
+  try {
+    const result = await wakeSeat("build", "ship it", { from: "product" });
+    assert.equal(result.code, "PROVIDER_NOT_LOADED");
+    assert.doesNotMatch(result.error, /Internal Server Error/);
+    assert.match(result.error, /not loaded by the company OpenCode harness/);
+  } finally {
+    Object.assign(deps, prev);
+    restoreBuild(priorModel);
   }
 });
 
@@ -92,6 +180,8 @@ test("wakeSeat recreates session after 404", async () => {
   };
   mutate((s) => {
     s.sessions = { ...(s.sessions || {}), build: "ses_stale" };
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
   });
   try {
     const result = await wakeSeat("build", "retry", { from: "product" });

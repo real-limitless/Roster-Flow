@@ -1,4 +1,5 @@
 import { slugify } from "./seed.mjs";
+import { goalPackLines } from "./goals.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { fireSeat, hireSeat } from "./seats.mjs";
 import { createStaffedTeam } from "./teams.mjs";
@@ -58,7 +59,7 @@ function storePlan(state, plan) {
 }
 
 function keepSeat(seat) {
-  return seat.id === "you" || Boolean(seat.system);
+  return seat.id === "you" || Boolean(seat.system) || Boolean(seat.mcpGuest);
 }
 
 export function replaceOrg(state) {
@@ -445,11 +446,13 @@ export function architectPrompt(message, history, state) {
     .slice(-8)
     .map((m) => `${m.role || "user"}: ${m.text || m.content || ""}`)
     .join("\n");
+  const pack = goalPackLines(state, { seat: (state.seats || []).find((s) => s.id === "architect") });
   return [
+    pack.length ? `Company context:\n${pack.join("\n")}` : "",
     "Propose ONE OrgPlan as a JSON object. No prose outside a short reply field.",
     "Ops: replace_org, create_project, create_team, hire, reparent, fire. Max 48 ops.",
     "Org → Project → Team → Seat. PMs are project-scoped (asPm: true, knowledge, skills).",
-    "When the user wants a whole company or full org, start with replace_org (keeps You, Channel, Architect), then staff the new chart.",
+    "When the user wants a whole company or full org, start with replace_org (keeps You, Channel, Architect, and the MCP guest chair), then staff the new chart.",
     "Incremental asks (staff a project, hire, layoff) must not use replace_org.",
     "Do not fire you or system seats. Do not apply the plan.",
     `Current org:\n${contextBlock(state)}`,

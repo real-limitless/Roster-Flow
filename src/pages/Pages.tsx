@@ -2,6 +2,8 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { changelog, seats } from "../data";
 import { WorkspaceMock } from "../components/WorkspaceMock";
+import { DISCUSSIONS_URL } from "../lib/community";
+import { api } from "../lib/api";
 
 function PageHero({ kicker, title, sub }: { kicker: string; title: string; sub: string }) {
   return (
@@ -18,10 +20,15 @@ export function Product() {
     <>
       <PageHero kicker="Product" title="The room, the org, the harness." sub="Channels for people. Computers for bots. A chart that actually runs the company." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
+        <p className="micro" data-testid="clone-note">
+          Clone the GitHub URL, then <code>docker compose up</code> — this tree is the app. If you only see markdown,{" "}
+          <code>git checkout DEVELOPMENT</code>. GitHub’s default branch should be DEVELOPMENT (repo admin). See{" "}
+          <a href="https://github.com/real-limitless/roster-flow/blob/DEVELOPMENT/INSTALLATION.md">INSTALLATION.md</a>.
+        </p>
         <div className="grid-3">
           <div className="card">
             <h3>Room</h3>
-            <p>Slack muscle memory. Threads, huddles, run cards. @eng fans out through Channel, not a broadcast storm.</p>
+            <p>Slack muscle memory. Threads, run cards. @eng fans out through Channel, not a broadcast storm.</p>
           </div>
           <div className="card">
             <h3>Org chart</h3>
@@ -84,7 +91,7 @@ export function Bots() {
 export function Orchestration() {
   return (
     <>
-      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, share_memory, depend_on, ask_human, report. Channel owns the graph." />
+      <PageHero kicker="Orchestration" title="Bots talk to bots. You still own the run." sub="send_message, handoff, ask_human, report, roster_task_claim, depend_on. Channel owns the graph. Named memory blocks are not in the API yet." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         <blockquote className="card" style={{ fontSize: 20, letterSpacing: "-0.02em" }}>
           Talk to Product and the Eng team. When they complete, have DevOps deploy to staging and QA test everything.
@@ -137,15 +144,15 @@ export function OrgPage() {
         <div className="grid-3" style={{ marginTop: 24 }}>
           <div className="card">
             <h3>Hire</h3>
-            <p>Template → name → team → tools → budget → OpenCode session boots.</p>
+            <p data-testid="org-hire-copy">Template → name → team → tools → tokenBudget → OpenCode session boots.</p>
           </div>
           <div className="card">
             <h3>Escalation</h3>
             <p>ask_human walks reports_to. It never dumps into #general.</p>
           </div>
           <div className="card">
-            <h3>Export</h3>
-            <p>multi-team.yaml, git-versioned, OpenCode-shaped.</p>
+            <h3>Seats as files</h3>
+            <p>Hire writes OpenCode agent markdown per seat. Org YAML export is not shipped yet.</p>
           </div>
         </div>
         <p style={{ marginTop: 16 }}>
@@ -161,9 +168,11 @@ export function OrgPage() {
 export function Security() {
   const rows = [
     ["Training on workspace data", "Off. Never."],
+    ["Project knowledge", "Connectors are per project. CORE indexes a local git/docs tree (or mcp-flow when it is up). Disconnect drops it from the next wake. Not used for training."],
     ["Tool permissions", "Deny by default. OpenCode frontmatter is source of truth."],
     ["Deploy / merge / delete", "Confirm (human or dual-control)."],
     ["Bus", "Authenticated, audited, rate-limited, cycle-detected."],
+    ["Usage export", "Settings → Usage JSON/CSV. Keys never appear in the log."],
     ["Memory", "Scoped seat / team / project / org."],
     ["Kill switch", "Per bot, per team, per run."],
   ];
@@ -186,13 +195,17 @@ export function Security() {
 
 export function Pricing() {
   const tiers = [
-    ["Starter", "1 project, small roster", "Shared bot-hours", "Room + Harness + Chart"],
+    ["Starter", "1 project, small roster", "Usage meter in Settings", "Room + Harness + Chart"],
     ["Team", "Orgs + teams + bus", "Pool + harness attach", "Parallel runs"],
-    ["Enterprise", "SSO, VPC placement", "Dedicated hours + SLA", "Policy engine, audit export"],
+    ["Enterprise", "SSO, VPC placement", "Dedicated roster + SLA", "Policy engine, audit export"],
   ];
   return (
     <>
-      <PageHero kicker="Pricing" title="Seats for humans. Hours for bots." sub="Invite-only. We’ll place you. Bot-hours are OpenCode session time." />
+      <PageHero
+        kicker="Pricing"
+        title="Seats for humans. Tokens on the meter."
+        sub="Invite-only. We’ll place you. Settings → Usage shows tokens, estimated USD, and session hours from CORE wakes — not a billed bot-hour product."
+      />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         <div className="grid-3">
           {tiers.map((t) => (
@@ -219,6 +232,10 @@ export function Changelog() {
     <>
       <PageHero kicker="Changelog" title="Ship log." sub="Short, dated, specific." />
       <section className="wrap section" style={{ paddingTop: 0 }}>
+        <p className="micro" data-testid="office-hours-empty">
+          Office hours will be listed here when they exist. None scheduled. Ask in{" "}
+          <a href={DISCUSSIONS_URL}>Discussions</a> in the meantime.
+        </p>
         {changelog.map((c) => (
           <div className="card" key={c.date} style={{ marginBottom: 12 }}>
             <div className="kicker">{c.date}</div>
@@ -237,22 +254,47 @@ export function Changelog() {
 
 export function Access() {
   const [ok, setOk] = useState(false);
-  function onSubmit(e: FormEvent) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setOk(true);
+    const form = e.currentTarget;
+    const data = new FormData(form);
+    setBusy(true);
+    setErr("");
+    try {
+      await api.requestAccess({
+        name: String(data.get("name") || ""),
+        email: String(data.get("email") || ""),
+        company: String(data.get("company") || ""),
+        role: String(data.get("role") || ""),
+        size: String(data.get("size") || ""),
+        replace: String(data.get("replace") || ""),
+        note: String(data.get("note") || ""),
+      });
+      setOk(true);
+    } catch (er) {
+      setErr(er instanceof Error ? er.message : "Could not save request");
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <>
-      <PageHero kicker="Access" title="Tell us what Roster-flow should replace first." sub="Work email only. We’ll reply within one business day — usually with a walkthrough of Room and Harness on the same bot." />
+      <PageHero
+        kicker="Access"
+        title="Tell us what Roster-flow should replace first."
+        sub="Work email only. CORE stores the request for the operator. There is no automated email yet."
+      />
       <section className="wrap section" style={{ paddingTop: 0 }}>
         {ok ? (
-          <div className="success">
+          <div className="success" data-testid="access-success">
             <h3 style={{ marginTop: 0 }}>You’re on the list.</h3>
-            <p>We’ll reply within one business day. No demo theater — we’ll show a real channel.</p>
+            <p>Saved on this CORE instance. An operator can read it under Settings → Access. No automated reply yet.</p>
             <Link to="/app">Meanwhile, open the workspace →</Link>
           </div>
         ) : (
-          <form className="form" data-testid="access-form" onSubmit={onSubmit}>
+          <form className="form" data-testid="access-form" onSubmit={(e) => void onSubmit(e)}>
             <label>
               Name
               <input required name="name" />
@@ -292,10 +334,15 @@ export function Access() {
               Anything we should know?
               <textarea name="note" rows={4} />
             </label>
-            <button className="pill-btn primary" type="submit">
-              Request access
+            {err && (
+              <p className="micro" data-testid="access-error" style={{ color: "var(--deny)" }}>
+                {err}
+              </p>
+            )}
+            <button className="pill-btn primary" type="submit" disabled={busy}>
+              {busy ? "Saving…" : "Request access"}
             </button>
-            <p className="micro">We don’t train on your workspace. We won’t sell this list.</p>
+            <p className="micro">We don’t train on your workspace. We won’t sell this list. Duplicate emails update the same row.</p>
           </form>
         )}
       </section>

@@ -1,11 +1,18 @@
 import { getState, mutate, uid } from "./store.mjs";
-import { postBus, wakeSeat, pullAssistant } from "./bus.mjs";
+import { postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
 import { resolveMembers } from "./channels.mjs";
 import { teamWakeTarget } from "./teams.mjs";
-import { ensure, status as harnessStatus, sessionTranscript, harnessKindForSeat } from "./harness.mjs";
+import {
+  ensure,
+  status as harnessStatus,
+  sessionTranscript,
+  harnessKindForSeat,
+  loadedModels,
+  knownLoadedModels,
+} from "./harness.mjs";
 import { emit } from "./trace.mjs";
-import { firstConnectedModel, keyStatusForModel } from "./providers.mjs";
+import { firstConnectedModel, isUsable, keyStatusForModel } from "./providers.mjs";
 
 const followingSeats = new Map();
 let syncTimer = null;
@@ -13,8 +20,11 @@ let syncTimer = null;
 export const deps = {
   wakeSeat,
   pullAssistant,
+  pullFailure,
   ensure,
   harnessStatus,
+  loadedModels,
+  knownLoadedModels,
   followTicks: 40,
   followDelayMs: 1500,
   keyStatus: keyStatusForModel,
@@ -109,39 +119,48 @@ function statusMessage(channelId, text) {
   return postMessage(channelId, "System", "bot", text, { system: true });
 }
 
-export function providerHint(seat) {
-  const st = deps.keyStatus(seat?.model);
+/** `loaded` is the serve's live model list (see harness.loadedModels); null when unknown. */
+export function providerHint(seat, loaded = null) {
+  const st = deps.keyStatus(seat?.model, loaded);
   const name = seat?.name || "This seat";
   const model = seat?.model || "the assigned model";
-  if (st.connected) return null;
+  if (isUsable(st)) return null;
   if (!st.providerID) return `${name} has no provider for ${model}. Add one in Settings.`;
   if (!st.configured) {
     return `${name} uses ${model}, but ${st.providerID} is not in Settings. Add that provider and an API key, then send again.`;
   }
-  return `No API key for ${st.providerID}. ${name} cannot call ${st.modelID || model}. Add the key in Settings, then send again.`;
+  if (!st.connected) {
+    return `No API key for ${st.providerID}. ${name} cannot call ${st.modelID || model}. Add the key in Settings, then send again.`;
+  }
+  const have = (st.loadedProviders || []).join(", ") || "none";
+  if (st.providerLoaded === false) {
+    return `${st.providerID} is in Settings, but the OpenCode harness did not load it (loaded: ${have}). Restart the harness, then send again.`;
+  }
+  return `${st.providerID} is loaded, but OpenCode has no model ${st.modelID || model}. Add it to ${st.providerID} in Settings, then send again.`;
 }
 
-export function seatModelPlan(seat) {
+export function seatModelPlan(seat, loaded = null) {
   const assigned = seat?.model || "";
-  const st = deps.keyStatus(assigned);
-  if (st.connected) return { ok: true, model: assigned, hint: null, fallback: false };
-  const fb = deps.fallbackModel?.();
+  const st = deps.keyStatus(assigned, loaded);
+  if (isUsable(st)) return { ok: true, model: assigned, hint: null, fallback: false };
+  const fb = deps.fallbackModel?.(loaded);
   if (fb?.providerID && fb?.modelID) {
     const ref = `${fb.providerID}/${fb.modelID}`;
     const name = seat?.name || "This seat";
+    const why = st.connected && st.loaded === false ? "which OpenCode did not load" : "which is not connected";
     return {
       ok: true,
       model: ref,
       fallback: true,
-      hint: `${name} is set to ${assigned || "no model"}, which is not connected. Using ${ref} instead.`,
+      hint: `${name} is set to ${assigned || "no model"}, ${why}. Using ${ref} instead.`,
     };
   }
-  return { ok: false, model: assigned, hint: providerHint(seat), fallback: false };
+  return { ok: false, model: assigned, hint: providerHint(seat, loaded), fallback: false };
 }
 
 function looksLikeWakePrompt(text) {
   const t = String(text || "");
-  return /^You are .+ on the Roster-flow org chart/.test(t) || t.includes("Propose ONE OrgPlan");
+  return /You are .+ on the Roster-flow org chart/.test(t) || t.includes("Propose ONE OrgPlan");
 }
 
 function resolvedSeatId(to, state = getState()) {
@@ -182,6 +201,7 @@ async function ensureForTarget(to, channelId) {
 
 async function runWakes(channelId, text, from, targets) {
   const results = [];
+  const since = Date.now();
   for (const target of targets) {
     const ready = await ensureForTarget(target.to, channelId);
     const seatId = resolvedSeatId(target.to, getState());
@@ -190,7 +210,8 @@ async function runWakes(channelId, text, from, targets) {
       results.push({ offline: true, seat: seatId, harness: ready.kind, error: ready.error });
       continue;
     }
-    const plan = seatModelPlan(ready.seat);
+    const loaded = await Promise.resolve(deps.loadedModels?.(ready.kind)).catch(() => null);
+    const plan = seatModelPlan(ready.seat, loaded ?? null);
     const model = plan.model || ready.seat?.model || "default";
     const wakeLine = `Waking ${ready.seat?.name || seatId} (${model})…`;
     const alreadyWake = (getState().messages || []).some((m) => m.channel === channelId && m.system && m.text === wakeLine);
@@ -218,7 +239,9 @@ async function runWakes(channelId, text, from, targets) {
       detail: { reason: target.reason, model, harness: ready.kind },
     });
     const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId });
-    if (woke?.offline) {
+    if (woke?.paused) {
+      statusMessage(channelId, `${ready.seat?.name || seatId} is paused — wake skipped.`);
+    } else if (woke?.offline) {
       statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
     } else if (woke?.error) {
       statusMessage(channelId, `Wake failed for ${ready.seat?.name || seatId}: ${woke.error}`);
@@ -231,7 +254,7 @@ async function runWakes(channelId, text, from, targets) {
     .filter((w) => w && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human)))
     .map((w) => w.seat)
     .filter(Boolean);
-  if (seats.length) await followChannel(channelId, seats);
+  if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since });
   return results;
 }
 
@@ -265,7 +288,7 @@ export function routeChannelMessage({ channelId, text, from = "you", wake = true
     const seat = (state.seats || []).find((s) => s.id === seatId);
     const kind = seat ? harnessKindForSeat(seat) : "company";
     const h = deps.harnessStatus(kind);
-    const plan = seatModelPlan(seat);
+    const plan = seatModelPlan(seat, deps.knownLoadedModels?.(kind) ?? null);
     if (h.harness !== "up") statusMessage(channelId, `Starting ${kind} harness…`);
     else statusMessage(channelId, `Waking ${seat?.name || seatId} (${plan.model || seat?.model || "default"})…`);
     if (plan.hint) statusMessage(channelId, plan.hint);
@@ -295,7 +318,7 @@ function absorbBusSeats(channelId, seats) {
   }
 }
 
-export async function followChannel(channelId, seatIds = [], ticks = deps.followTicks) {
+export async function followChannel(channelId, seatIds = [], ticks = deps.followTicks, { since = 0 } = {}) {
   const existing = followingSeats.get(channelId);
   if (existing) {
     for (const id of seatIds) existing.add(id);
@@ -304,23 +327,27 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
   const seats = new Set(seatIds.filter(Boolean));
   followingSeats.set(channelId, seats);
   const seen = new Set();
+  const failed = new Set();
   let replies = 0;
   const missingKey = [...seats].some((id) => {
     const seat = getState().seats.find((s) => s.id === id);
-    return !seatModelPlan(seat).ok;
+    return !seatModelPlan(seat, deps.knownLoadedModels?.(seat ? harnessKindForSeat(seat) : "company") ?? null).ok;
   });
   const limit = missingKey ? Math.min(ticks, 6) : ticks;
   try {
     for (let i = 0; i < limit; i++) {
       absorbBusSeats(channelId, seats);
       for (const seatId of [...seats]) {
+        if (failed.has(seatId)) continue;
         const parts = await deps.pullAssistant(seatId);
+        let posted = 0;
         for (const p of parts) {
           if (!p.id || seen.has(p.id)) continue;
           seen.add(p.id);
           if (getState().messages.some((m) => m.text === p.text && m.channel === channelId)) continue;
           const seat = getState().seats.find((s) => s.id === seatId);
           postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id });
+          posted += 1;
           replies += 1;
           emit({
             scope: "chat",
@@ -330,14 +357,30 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
             detail: { messageId: p.id },
           });
         }
+        if (posted || !deps.pullFailure) continue;
+        const failure = await deps.pullFailure(seatId, since);
+        if (!failure) continue;
+        failed.add(seatId);
+        const seat = getState().seats.find((s) => s.id === seatId);
+        statusMessage(channelId, `${seat?.name || seatId} could not reply: ${failure.text}`);
+        emit({
+          level: "error",
+          scope: "chat",
+          step: "seat.failed",
+          channel: channelId,
+          seat: seatId,
+          detail: { code: failure.code, error: failure.text },
+        });
       }
+      if ([...seats].every((id) => failed.has(id))) break;
       if (replies) continue;
       await new Promise((r) => setTimeout(r, deps.followDelayMs));
     }
-    if (!replies && seats.size) {
-      const first = [...seats][0];
+    const waiting = [...seats].filter((id) => !failed.has(id));
+    if (!replies && waiting.length) {
+      const first = waiting[0];
       const seat = getState().seats.find((s) => s.id === first);
-      const hint = providerHint(seat);
+      const hint = providerHint(seat, deps.knownLoadedModels?.(seat ? harnessKindForSeat(seat) : "company") ?? null);
       statusMessage(
         channelId,
         hint || `${seat?.name || first} did not reply. Open Debug for the last pipeline steps.`,
