@@ -38,15 +38,47 @@ function sessionMap(state, seat) {
   return { key, sessions: state[key] || {} };
 }
 
+const pendingWakes = new WeakMap();
+
+function noteRun(runId, seatId, status, reason) {
+  if (!runId) return;
+  mutate((s) => {
+    const runs = Array.isArray(s.runs) ? s.runs : [];
+    let run = runs.find((r) => r.id === runId);
+    if (!run) {
+      run = { id: runId, seatId: seatId || null, at: new Date().toISOString() };
+      s.runs = [...runs, run];
+    }
+    run.status = status;
+    run.seatId = seatId || run.seatId || null;
+    run.reason = reason || null;
+    run.updatedAt = new Date().toISOString();
+  });
+}
+
+async function announceWake(meta, text) {
+  if (!meta || meta.announce === false || !meta.channel || !text) return;
+  const { postMessage } = await import("./chat.mjs");
+  postMessage(meta.channel, "System", "bot", text, { system: true, runId: meta.runId || null });
+}
+
+/** The in-flight wake for a bus entry, if `postBus` started one. */
+export function pendingWake(entry) {
+  return pendingWakes.get(entry) || null;
+}
+
 export function postBus({ from, to, kind = "send_message", text, runId, wake = false, channel, jobId }) {
+  const waking = Boolean(wake) && !String(to || "").startsWith("channel:");
+  const resolvedRunId = runId || (waking ? uid("run") : null);
+  const room = channel || (waking ? "ship" : null);
   const entry = {
     id: uid("bus"),
     from,
     to,
     kind,
     text,
-    channel: channel || null,
-    runId: runId || null,
+    channel: room,
+    runId: resolvedRunId,
     time: new Date().toISOString(),
     clock: clock(),
     ...(jobId ? { jobId } : {}),
@@ -54,7 +86,12 @@ export function postBus({ from, to, kind = "send_message", text, runId, wake = f
   mutate((s) => {
     s.bus = [...(s.bus || []), entry];
   });
-  if (wake) void wakeSeat(to, text, { from, kind, runId: entry.runId });
+  if (waking) {
+    pendingWakes.set(
+      entry,
+      wakeSeat(to, text, { from, kind, runId: resolvedRunId, channel: room, jobId, announce: true }),
+    );
+  }
   return entry;
 }
 
@@ -181,15 +218,42 @@ function meterPromptedWake(to, text, meta, result, started) {
   return result;
 }
 
+async function finishPrompted(to, seat, text, runMeta, result, started) {
+  const metered = meterPromptedWake(to, text, runMeta, result, started);
+  if (metered.paused) {
+    noteRun(runMeta.runId, to, "blocked", "budget");
+    await announceWake(runMeta, `${seat.name} did not keep run ${runMeta.runId}: the seat is paused (budget).`);
+    return { ...metered, runId: runMeta.runId, started: false };
+  }
+  noteRun(runMeta.runId, to, "running", null);
+  return { ...metered, runId: runMeta.runId, started: true };
+}
+
+function bindRun(meta, seatId) {
+  const runId = meta.runId || uid("run");
+  noteRun(runId, seatId, "starting", null);
+  return { ...meta, runId };
+}
+
 export async function wakeSeat(to, text, meta = {}) {
   if (String(to).startsWith("channel:")) return null;
   if (String(to).startsWith("team:")) {
     const target = teamWakeTarget(to, getState().teams || []);
-    if (!target) return { error: "team has no supervisor", seat: to };
+    if (!target) {
+      const runId = meta.runId || null;
+      if (runId) noteRun(runId, null, "blocked", "team has no supervisor");
+      await announceWake(meta, `${to} did not start a run: that team has no supervisor.`);
+      return { error: "team has no supervisor", seat: to, runId, started: false };
+    }
     return wakeSeat(target, text, { ...meta, via: to });
   }
   const seat = seatById(to);
-  if (!seat) return { error: "seat not found", seat: to };
+  if (!seat) {
+    const runId = meta.runId || null;
+    if (runId) noteRun(runId, to, "blocked", "seat not found");
+    await announceWake(meta, `${to} did not start a run: that seat does not exist.`);
+    return { error: "seat not found", seat: to, runId, started: false };
+  }
   if (seat.mcpGuest) {
     emit({
       scope: "chat",
@@ -198,13 +262,20 @@ export async function wakeSeat(to, text, meta = {}) {
       channel: meta.channel || null,
       detail: { origin: seat.origin || "mcp" },
     });
-    return { guest: true, seat: to, origin: seat.origin || "mcp" };
+    if (meta.runId) noteRun(meta.runId, to, "blocked", "mcp guest");
+    await announceWake(meta, `${seat.name} is an MCP guest. The wake notifies the chair and does not start an OpenCode run.`);
+    return { guest: true, seat: to, origin: seat.origin || "mcp", runId: meta.runId || null, started: false };
   }
-  if (seat.kind !== "bot") return { human: true, seat: to };
+  if (seat.kind !== "bot") {
+    if (meta.runId) noteRun(meta.runId, to, "blocked", "human");
+    await announceWake(meta, `${seat.name} was notified. Human seats do not start an OpenCode run.`);
+    return { human: true, seat: to, runId: meta.runId || null, started: false };
+  }
+  const runMeta = bindRun(meta, to);
   let blocked = null;
   mutate((s) => {
     const live = (s.seats || []).find((x) => x.id === to);
-    blocked = wakeBlocked(s, live, meta);
+    blocked = wakeBlocked(s, live, runMeta);
   });
   if (blocked) {
     emit({
@@ -212,13 +283,21 @@ export async function wakeSeat(to, text, meta = {}) {
       scope: "chat",
       step: "seat.paused",
       seat: to,
-      channel: meta.channel || null,
-      detail: { reason: blocked.reason, runId: meta.runId || null },
+      channel: runMeta.channel || null,
+      detail: { reason: blocked.reason, runId: runMeta.runId },
     });
-    return { paused: true, seat: to, reason: blocked.reason };
+    noteRun(runMeta.runId, to, "blocked", blocked.reason);
+    await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: the seat is paused (${blocked.reason}).`);
+    return { paused: true, seat: to, reason: blocked.reason, runId: runMeta.runId, started: false };
   }
   if (!isOpenCodeAdapter(seat)) {
-    return wakeAdapter(seat, text, meta);
+    const adapted = await wakeAdapter(seat, text, runMeta);
+    const started = !adapted?.error && !adapted?.offline;
+    noteRun(runMeta.runId, to, started ? "running" : "blocked", started ? null : adapted?.error || adapted?.reason || "adapter did not start");
+    if (!started) {
+      await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${adapted?.error || adapted?.reason || "the adapter did not start a run"}.`);
+    }
+    return { ...adapted, runId: runMeta.runId, started };
   }
   const kind = harnessKindForSeat(seat);
   const h = deps.harnessStatus(kind);
@@ -228,18 +307,24 @@ export async function wakeSeat(to, text, meta = {}) {
       scope: "chat",
       step: "seat.offline",
       seat: to,
-      channel: meta.channel || null,
+      channel: runMeta.channel || null,
       detail: { harness: kind },
     });
-    return { offline: true, seat: to, harness: kind };
+    noteRun(runMeta.runId, to, "blocked", "harness offline");
+    await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: the ${kind} OpenCode harness is offline.`);
+    return { offline: true, seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
   try {
     const started = Date.now();
     let sessionId = await ensureSeatSession(to);
-    if (!sessionId) return { error: "no session", seat: to, harness: kind };
+    if (!sessionId) {
+      noteRun(runMeta.runId, to, "blocked", "no session");
+      await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: OpenCode did not open a session.`);
+      return { error: "no session", seat: to, harness: kind, runId: runMeta.runId, started: false };
+    }
     try {
-      const result = await promptWithFallback(sessionId, seat, to, text, meta);
-      return meterPromptedWake(to, text, meta, result, started);
+      const result = await promptWithFallback(sessionId, seat, to, text, runMeta);
+      return finishPrompted(to, seat, text, runMeta, result, started);
     } catch (err) {
       if (err.status === 404) {
         mutate((s) => {
@@ -247,9 +332,13 @@ export async function wakeSeat(to, text, meta = {}) {
           if (s[key]) delete s[key][to];
         });
         sessionId = await ensureSeatSession(to);
-        if (!sessionId) return { error: "no session after recreate", seat: to, harness: kind };
-        const result = await promptWithFallback(sessionId, seat, to, text, meta);
-        return meterPromptedWake(to, text, meta, result, started);
+        if (!sessionId) {
+          noteRun(runMeta.runId, to, "blocked", "no session");
+          await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: OpenCode did not open a session.`);
+          return { error: "no session after recreate", seat: to, harness: kind, runId: runMeta.runId, started: false };
+        }
+        const result = await promptWithFallback(sessionId, seat, to, text, runMeta);
+        return finishPrompted(to, seat, text, runMeta, result, started);
       }
       throw err;
     }
@@ -260,10 +349,12 @@ export async function wakeSeat(to, text, meta = {}) {
       scope: "chat",
       step: "seat.error",
       seat: to,
-      channel: meta.channel || null,
+      channel: runMeta.channel || null,
       detail: { harness: kind, error, code: err.code || null },
     });
-    return { error, code: err.code || null, seat: to, harness: kind };
+    noteRun(runMeta.runId, to, "blocked", error);
+    await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${error}`);
+    return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
 }
 

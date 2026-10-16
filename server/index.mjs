@@ -21,7 +21,7 @@ import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
-import { postBus, wakeSeat, cycleSafe } from "./bus.mjs";
+import { pendingWake, postBus, wakeSeat, cycleSafe } from "./bus.mjs";
 import {
   callbackSecretInfo,
   deliverCallback,
@@ -432,6 +432,7 @@ const server = createServer(async (req, res) => {
       json(res, 200, {
         ok: true,
         ...status,
+        harnessReady: status.harness === "up",
         ready: status.harness === "up" && status.systemHarness?.harness === "up",
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
@@ -1227,8 +1228,17 @@ const server = createServer(async (req, res) => {
       if (String(to).startsWith("channel:")) channel = to.slice("channel:".length);
       const fromSeat = getState().seats.find((s) => s.id === from);
       await postRoomMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from }, githubHint(body));
-      const entry = postBus({ from, to, kind: "send_message", text, wake: body.wake !== false && !String(to).startsWith("channel:") });
-      json(res, 201, entry);
+      const entry = postBus({
+        from,
+        to,
+        kind: "send_message",
+        text,
+        channel,
+        runId: body.runId,
+        wake: body.wake !== false && !String(to).startsWith("channel:"),
+      });
+      const woke = await pendingWake(entry);
+      json(res, 201, woke ? { ...entry, runId: woke.runId || entry.runId, started: Boolean(woke.started) } : entry);
       return;
     }
     if (pathname === "/api/v1/bus" && method === "GET") {
@@ -1254,7 +1264,9 @@ const server = createServer(async (req, res) => {
         ...(body.jobId ? { jobId: String(body.jobId) } : {}),
       }, githubHint(body));
       void mirrorToSlack(msg, { kind: body.kind }).catch(() => undefined);
-      json(res, 201, postBus({ ...body, text }));
+      const entry = postBus({ ...body, text, channel: body.channel || (body.wake ? "ship" : undefined) });
+      const woke = await pendingWake(entry);
+      json(res, 201, woke ? { ...entry, runId: woke.runId || entry.runId, started: Boolean(woke.started) } : entry);
       return;
     }
     if (pathname === "/api/v1/github" && method === "GET") {

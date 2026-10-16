@@ -238,7 +238,7 @@ async function runWakes(channelId, text, from, targets) {
       seat: seatId,
       detail: { reason: target.reason, model, harness: ready.kind },
     });
-    const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId });
+    const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
     if (woke?.paused) {
       statusMessage(channelId, `${ready.seat?.name || seatId} is paused — wake skipped.`);
     } else if (woke?.offline) {

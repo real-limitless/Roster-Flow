@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 import { bootCore } from "./test-helpers.mjs";
-import { providerFromEnv, shouldAutostartHarness } from "./autostart.mjs";
+import { envHasProvider, providerFromEnv, shouldAutostartHarness } from "./autostart.mjs";
 
 const TOKEN = "rf_autostarttoken00000001";
 
@@ -55,6 +55,16 @@ test("ROSTER_HARNESS_AUTOSTART selects auto, always, or never", () => {
   assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "1", ROSTER_DISABLE_HARNESS_AUTOSTART: "1" }, true), false);
 });
 
+test("auto counts FEATHERLESS_API_KEY and a named provider key env", () => {
+  const owner = { users: [{ id: "u" }] };
+  assert.equal(envHasProvider({}), false);
+  assert.equal(envHasProvider({ FEATHERLESS_API_KEY: "secret" }), true);
+  assert.equal(envHasProvider({ ROSTER_PROVIDER_API_KEY_ENV: "ACME_KEY", ACME_KEY: "secret" }), true);
+  assert.equal(envHasProvider({ ROSTER_PROVIDER_API_KEY_ENV: "ACME_KEY" }), false);
+  assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "auto", FEATHERLESS_API_KEY: "secret" }), true);
+  assert.equal(shouldAutostartHarness(owner, { ROSTER_HARNESS_AUTOSTART: "0", FEATHERLESS_API_KEY: "secret" }), false);
+});
+
 test("fresh container with owner and provider reports harness ready", async () => {
   const company = await listen((req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
@@ -73,6 +83,7 @@ test("fresh container with owner and provider reports harness ready", async () =
     ROSTER_PROVIDER_BASE_URL: "https://api.featherless.ai/v1",
     ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
     ROSTER_PROVIDER_MODELS: "demo-small",
+    ROSTER_HARNESS_AUTOSTART: "auto",
     OPENCODE_PORT: String(company.address().port),
     OPENCODE_SYSTEM_PORT: String(system.address().port),
     OPENCODE_BIN: "/nonexistent/opencode",
@@ -100,9 +111,53 @@ test("fresh container with owner and provider reports harness ready", async () =
     assert.equal(health.ok, true);
     assert.equal(health.harness, "up");
     assert.equal(health.systemHarness.harness, "up");
+    assert.equal(health.harnessReady, true);
     assert.equal(health.ready, true);
     assert.equal(health.version, "fake-company");
     assert.equal(health.systemHarness.version, "fake-system");
+  } finally {
+    await core.stop();
+    await close(company);
+    await close(system);
+  }
+});
+
+test("ROSTER_HARNESS_AUTOSTART=auto starts from FEATHERLESS_API_KEY alone", async () => {
+  const company = await listen((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ version: "fake-featherless" }));
+  });
+  const system = await listen((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ version: "fake-system" }));
+  });
+  const core = await bootCore({
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_HARNESS_AUTOSTART: "auto",
+    ROSTER_PROVIDER_ID: "",
+    ROSTER_PROVIDER_MODELS: "",
+    ROSTER_PROVIDER_API_KEY_ENV: "",
+    XAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    GOOGLE_GENERATIVE_AI_API_KEY: "",
+    FEATHERLESS_API_KEY: "test-key",
+    OPENCODE_PORT: String(company.address().port),
+    OPENCODE_SYSTEM_PORT: String(system.address().port),
+    OPENCODE_BIN: "/nonexistent/opencode",
+  });
+  try {
+    let health;
+    const start = Date.now();
+    while (Date.now() - start < 8000) {
+      health = await (await fetch(`${core.base}/api/v1/health`)).json();
+      if (health.harnessReady) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(health.harness, "up");
+    assert.equal(health.harnessReady, true);
+    assert.equal(health.version, "fake-featherless");
   } finally {
     await core.stop();
     await close(company);
@@ -128,6 +183,7 @@ test("missing OpenCode binary stays up with harness offline", async () => {
     assert.equal(health.ok, true);
     assert.equal(health.harness, "offline");
     assert.equal(health.systemHarness.harness, "offline");
+    assert.equal(health.harnessReady, false);
     assert.equal(health.ready, false);
   } finally {
     await core.stop();
