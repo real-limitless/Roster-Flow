@@ -50,7 +50,7 @@ The demo token (`Bearer roster-demo` with `ROSTER_SKIP_ONBOARDING=1`) cannot rot
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness`. `ready` is true when both serves are up |
+| GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness`. `harnessReady` is true when the company serve answers health. `ready` is true when both serves are up |
 | POST | `/api/v1/harness/ensure` | Start or reuse `opencode serve` (`{ forceRestart, kind?: "company" \| "system" }`) |
 | GET | `/api/v1/harness` | Company serve plus `systemHarness` (Architect / Channel) |
 | WS | `/api/v1/harness/pty?seat=<id>` | xterm PTY: `opencode attach --session` |
@@ -187,7 +187,7 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 | POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
 | PATCH | `/api/v1/channels/:id` | Add/remove teams and seats |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
-| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake |
+| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken |
 | GET | `/api/v1/threads` | Thread index |
 | GET | `/api/v1/threads/:id` | One thread |
 
@@ -234,7 +234,7 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 }
 ```
 
-`wake: true` starts (or continues) the recipient’s OpenCode session when the harness is up **and** the seat uses the OpenCode adapter. Webhook / Claude Code / Codex seats get a notify payload instead. See [ADAPTERS.md](ADAPTERS.md).
+`wake: true` starts (or continues) the recipient’s OpenCode session when the harness is up **and** the seat uses the OpenCode adapter. The bus row’s `runId` is set (a new id when the caller omitted one) and `started` is true once the prompt is accepted. If the wake cannot start a run, `started` is false and a system line in the room says why (harness offline, paused, model not loaded, human seat, MCP guest). Webhook / Claude Code / Codex seats get a notify payload instead. See [ADAPTERS.md](ADAPTERS.md).
 
 ## Seat adapters
 

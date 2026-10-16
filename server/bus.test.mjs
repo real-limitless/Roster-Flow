@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deps, promptBody, wakeSeat } from "./bus.mjs";
-import { mutate } from "./store.mjs";
+import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
+import { getState, mutate } from "./store.mjs";
 
 test("promptBody tells the seat which job to finish", () => {
   const text = promptBody(
@@ -13,6 +13,62 @@ test("promptBody tells the seat which job to finish", () => {
   ).parts[0].text;
   assert.match(text, /job-1/);
   assert.match(text, /roster_report/);
+});
+
+test("wakeSeat starts a run id and puts it on the prompt", async () => {
+  const prompts = [];
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_run" });
+  deps.promptSession = async (id, body) => {
+    prompts.push(body.parts?.[0]?.text || "");
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    const result = await wakeSeat("build", "ship the webhook", { from: "product", kind: "handoff" });
+    assert.equal(result.started, true);
+    assert.ok(result.runId);
+    assert.match(prompts[0], new RegExp(`Run: ${result.runId}`));
+    const run = (getState().runs || []).find((r) => r.id === result.runId);
+    assert.equal(run?.status, "running");
+    assert.equal(run?.seatId, "build");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a wake that cannot start posts the reason in the room", async () => {
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "offline" });
+  deps.promptSession = async () => {
+    throw new Error("should not prompt");
+  };
+  const before = getState().messages.length;
+  try {
+    const entry = postBus({
+      from: "product",
+      to: "build",
+      kind: "handoff",
+      text: "ship it",
+      channel: "ship",
+      wake: true,
+    });
+    assert.ok(entry.runId);
+    const woke = await pendingWake(entry);
+    assert.equal(woke.started, false);
+    assert.equal(woke.offline, true);
+    assert.equal(woke.runId, entry.runId);
+    const added = getState().messages.slice(before);
+    assert.ok(added.some((m) => m.channel === "ship" && m.system && m.text.includes(entry.runId) && /offline/.test(m.text)));
+    const run = (getState().runs || []).find((r) => r.id === entry.runId);
+    assert.equal(run?.status, "blocked");
+  } finally {
+    Object.assign(deps, prev);
+  }
 });
 
 test("wakeSeat records promptAsync on the recipient session", async () => {
@@ -102,6 +158,58 @@ function restoreBuild(model) {
   });
 }
 
+test("an explicitly assigned model is not swapped for a loaded one", async () => {
+  const prev = { ...deps };
+  const prevKey = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = "test-key";
+  let prompted = 0;
+  let priorModel;
+  let priorFallback;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_assigned" });
+  deps.loadedModels = async () => [{ providerID: "demo-llm", modelID: "demo-small" }];
+  deps.promptSession = async () => {
+    prompted += 1;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    const team = (s.teams || []).find((t) => t.id === "eng");
+    if (team) {
+      priorFallback = team.fallbackModel;
+      team.fallbackModel = "";
+    }
+    if (seat) {
+      seat.status = "idle";
+      seat.fallbackModel = "";
+      priorModel = seat.model;
+      seat.model = "featherless/not-loaded-model";
+    }
+  });
+  const before = getState().messages.length;
+  try {
+    const result = await wakeSeat("build", "ship it", { from: "product", channel: "ship" });
+    assert.equal(prompted, 0);
+    assert.equal(result.started, false);
+    assert.equal(result.code, "PROVIDER_NOT_LOADED");
+    assert.match(result.error, /featherless\/not-loaded-model is not loaded by the company OpenCode harness \(loaded: demo-llm\)/);
+    const run = (getState().runs || []).find((r) => r.id === result.runId);
+    assert.equal(run?.status, "blocked");
+    const added = getState().messages.slice(before);
+    assert.ok(added.some((m) => m.channel === "ship" && m.system && /featherless\/not-loaded-model is not loaded by the company OpenCode harness \(loaded: demo-llm\)/.test(m.text)));
+  } finally {
+    Object.assign(deps, prev);
+    if (prevKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = prevKey;
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      const team = (s.teams || []).find((t) => t.id === "eng");
+      if (seat && priorModel !== undefined) seat.model = priorModel;
+      if (team) team.fallbackModel = priorFallback;
+    });
+  }
+});
+
 test("wakeSeat refuses a model the serve did not load instead of a silent prompt", async () => {
   const prev = { ...deps };
   let priorModel;
@@ -186,6 +294,8 @@ test("wakeSeat recreates session after 404", async () => {
   try {
     const result = await wakeSeat("build", "retry", { from: "product" });
     assert.equal(result.sessionId, "ses_fresh");
+    assert.ok(result.runId);
+    assert.equal(result.started, true);
     assert.deepEqual(prompts, ["ses_fresh"]);
   } finally {
     Object.assign(deps, prev);

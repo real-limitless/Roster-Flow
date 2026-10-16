@@ -70,6 +70,7 @@ export function goalPackLines(state, { seat = null, runId = null } = {}) {
   if (project?.brief) lines.push(`Project brief: ${project.brief}`);
   if (project?.constitution) lines.push(`Constitution: ${project.constitution}`);
   for (const line of knowledgePointerLines(state, seat)) lines.push(line);
-  if (runId) lines.push(`Run: ${runId}`);
-  return lines.filter(Boolean).slice(0, 14);
+  const body = lines.filter(Boolean);
+  if (!runId) return body.slice(0, 14);
+  return [...body.slice(0, 13), `Run: ${runId}`];
 }

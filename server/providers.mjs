@@ -450,14 +450,23 @@ export function resolveSeatModel(seat, modelOverride, loaded = null) {
 }
 
 export function resolveUsableModel(seat, modelOverride, loaded = null) {
+  const explicit = String(modelOverride || seat?.model || "").trim();
   const resolved = resolveSeatModel(seat, modelOverride, loaded);
-  if (resolved) {
-    const st = keyStatusForModel(`${resolved.providerID}/${resolved.modelID}`, loaded);
-    if (isUsable(st)) return resolved;
+  if (!explicit) {
+    if (resolved) {
+      const st = keyStatusForModel(`${resolved.providerID}/${resolved.modelID}`, loaded);
+      if (isUsable(st)) return resolved;
+    }
+    const fallback = firstConnectedModel(loaded);
+    if (fallback) return { providerID: fallback.providerID, modelID: fallback.modelID };
+    return resolved;
   }
-  const fallback = firstConnectedModel(loaded);
-  if (fallback) return { providerID: fallback.providerID, modelID: fallback.modelID };
-  return resolved;
+  // An assigned model that the serve did not load must stay assigned. Swapping
+  // in firstConnectedModel makes the wake look started while nothing is sent.
+  const parsed = parseModelRef(explicit);
+  const chosen = parsed || (resolved?.providerID ? resolved : null);
+  if (!chosen?.providerID) return resolved;
+  return { providerID: chosen.providerID, modelID: chosen.modelID };
 }
 
 export function inferProviderId(model) {

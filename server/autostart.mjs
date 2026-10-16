@@ -41,9 +41,25 @@ export function providerFromEnv(env = process.env) {
   };
 }
 
+const PROVIDER_KEY_ENVS = [
+  "XAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "FEATHERLESS_API_KEY",
+];
+
+/** True when this env can seed a provider or already holds a provider key. */
+export function envHasProvider(env = process.env) {
+  if (providerFromEnv(env)) return true;
+  const named = String(env.ROSTER_PROVIDER_API_KEY_ENV || "").trim();
+  if (named && String(env[named] || "").trim()) return true;
+  return PROVIDER_KEY_ENVS.some((name) => String(env[name] || "").trim());
+}
+
 /** True when env seed, a live provider key, or a configured model list is present. */
 export function providerConfigured(env = process.env) {
-  if (providerFromEnv(env)) return true;
+  if (envHasProvider(env)) return true;
   try {
     if (hasProviderKey()) return true;
     return listProviders().some((p) => (p.models || []).length > 0);
@@ -80,7 +96,13 @@ export function seedProviderFromEnv(env = process.env) {
 }
 
 export async function autostartHarness({ ensureFn = ensure, state = getState(), env = process.env } = {}) {
-  if (!shouldAutostartHarness(state, env)) return { started: false };
+  // Seed before the auto check so a provider written on this boot counts.
+  try {
+    seedProviderFromEnv(env);
+  } catch (err) {
+    console.error(`Provider seed from env failed: ${err.message}`);
+  }
+  if (!shouldAutostartHarness(getState() || state, env)) return { started: false, reason: "autostart off, no owner, or no provider" };
   const results = {};
   for (const kind of ["company", "system"]) {
     try {
