@@ -26,3 +26,36 @@ test("mergeModelLists prefers live then configured", () => {
   assert.equal(merged.length, 2);
   assert.equal(merged[0].source, "live");
 });
+
+test("normalizeOpenCodeConfig folds legacy keys into OpenCode's documented schema", async () => {
+  const { normalizeOpenCodeConfig } = await import("./providers.mjs");
+  const out = normalizeOpenCodeConfig({
+    $schema: "https://opencode.ai/config.json",
+    providers: {
+      featherless: {
+        npm: "@ai-sdk/openai-compatible",
+        package: "@ai-sdk/openai-compatible",
+        settings: { baseURL: "https://api.featherless.ai/v1", apiKey: "{env:FEATHERLESS_API_KEY}" },
+        models: { m: { name: "m" } },
+      },
+    },
+    agents: { build: { mode: "all", system: "Persona: x", permissions: { edit: "deny" } } },
+  });
+  assert.equal(out.providers, undefined);
+  assert.equal(out.agents, undefined);
+  const p = out.provider.featherless;
+  assert.equal(p.settings, undefined);
+  assert.equal(p.package, undefined);
+  assert.deepEqual(p.options, { baseURL: "https://api.featherless.ai/v1", apiKey: "{env:FEATHERLESS_API_KEY}" });
+  assert.equal(out.agent.build.prompt, "Persona: x");
+  assert.equal(out.agent.build.system, undefined);
+  assert.deepEqual(out.agent.build.permission, { edit: "deny" });
+  assert.equal(out.agent.build.permissions, undefined);
+});
+
+test("serveChildEnv passes wiki-flow env through to opencode serve", async () => {
+  const { serveChildEnv } = await import("./providers.mjs");
+  const env = serveChildEnv({ PATH: "/bin", WIKIFLOW_URL: "http://wiki", WIKIFLOW_TOKEN: "tok" });
+  assert.equal(env.WIKIFLOW_URL, "http://wiki");
+  assert.equal(env.WIKIFLOW_TOKEN, "tok");
+});

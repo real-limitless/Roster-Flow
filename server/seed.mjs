@@ -250,6 +250,7 @@ export function holdOrgSeed(state) {
 export function migrateOnboarding(state) {
   if (!Array.isArray(state.users)) state.users = [];
   if (!Array.isArray(state.authSessions)) state.authSessions = [];
+  if (!Array.isArray(state.apiTokens)) state.apiTokens = [];
   if (!state.onboarding || typeof state.onboarding !== "object") {
     state.onboarding = { ...defaultOnboarding };
     return state;
@@ -389,6 +390,7 @@ export function migrateState(state) {
     };
   });
   migrateCompanyLoop(next);
+  if (!Array.isArray(next.jobs)) next.jobs = [];
   return next;
 }
 
@@ -404,12 +406,14 @@ function baseFields() {
     defaultModel: "",
     users: [],
     authSessions: [],
+    apiTokens: [],
     goals: [],
     approvals: [],
     inboxCursors: {},
     pausedRunIds: [],
     routines: [],
     routineRuns: [],
+    jobs: [],
   };
 }
 
