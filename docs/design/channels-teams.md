@@ -303,3 +303,4 @@ Acceptance on the live app: with a usable model loaded on the System serve, `Any
 - **Reply dedupe is by OpenCode message id across all rooms** (`alreadyMirrored`), and the follow loop ignores assistant messages created before the wake. `assistantText()` now returns `created`.
 - **`chat.test.mjs` seeds the starter company** when the shared test store is empty. Before, it only passed after an e2e run had seeded `.roster-flow/state.json`.
 - **e2e uses a fake OpenCode serve** (`tests/e2e/fake-opencode.ts`). CORE adopts any healthy serve on 14180 or 14181, so wakes run end to end without the binary.
+- **`POST /api/v1/reset` clears queued and in-flight room wakes** (`resetChatRuntime()`), so a later post is not queued behind an answer from before the reset.
