@@ -920,7 +920,7 @@ test("a 30s provider keeps the thinking row until the reply and posts no failure
     assert.equal(woke.pending, true);
     assert.deepEqual(roomThinking(channel).map((row) => row.seatId), ["build"]);
     const lines = () => getState().messages.filter((m) => m.channel === channel);
-    assert.equal(lines().some((m) => /did not start|did not respond in time/.test(m.text)), false);
+    assert.equal(lines().some((m) => /did not start|did not respond in time|finished without a reply|provider timed out/.test(m.text)), false);
     release({ reached: true, text: "Arrived after 30s.", done: true, messageId: "msg_slow30" });
     const start = Date.now();
     while (Date.now() - start < 1000 && !lines().some((m) => m.text === "Arrived after 30s.")) {
@@ -929,10 +929,185 @@ test("a 30s provider keeps the thinking row until the reply and posts no failure
     const replies = lines().filter((m) => m.seatId === "build" && !m.system);
     assert.deepEqual(replies.map((m) => m.text), ["Arrived after 30s."]);
     assert.equal(replies.filter((m) => m.runId === woke.runId).length, 1);
-    assert.equal(lines().some((m) => /did not start|did not respond in time/.test(m.text)), false);
+    assert.equal(lines().some((m) => /did not start|did not respond in time|finished without a reply|provider timed out/.test(m.text)), false);
     assert.deepEqual(roomThinking(channel), []);
     assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "done");
   } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+  }
+});
+
+function openBuildTurn(channel, watch) {
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = () => ({ providerID: "xai", modelID: "m", configured: true, connected: true, loaded: true });
+  deps.followTicks = 1;
+  deps.followDelayMs = 0;
+  deps.pullAssistant = async () => [];
+  deps.wakeSeat = wakeSeat;
+  busDeps.harnessStatus = () => ({ harness: "up" });
+  busDeps.createSession = async () => ({ id: `ses_${channel}` });
+  busDeps.promptSession = async () => undefined;
+  busDeps.sessionMessages = async () => [];
+  busDeps.loadedModels = async () => null;
+  busDeps.watchProviderTurn = watch;
+  mutate((s) => {
+    if (!s.channels.some((c) => c.id === channel)) s.channels.push({ id: channel, name: `#${channel}`, seatIds: ["you", "build"], teamIds: [] });
+    if (s.sessions) delete s.sessions.build;
+    if (s.roomSessions?.build) delete s.roomSessions.build[channel];
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.status = "idle";
+    seat.pauseReason = undefined;
+  });
+}
+
+function returnedWake(routed) {
+  return Promise.race([
+    routed.started.then((rows) => rows[0]),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("POST did not return")), 1000)),
+  ]);
+}
+
+test("an empty completion finishes without a reply and the POST returns", { timeout: 5000 }, async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  const channel = `empty-now-${Date.now()}`;
+  const done = Promise.resolve({ reached: false, done: true, empty: true, text: "" });
+  done.rest = done;
+  done.cancel = () => {};
+  openBuildTurn(channel, () => done);
+  try {
+    const routed = routeChannelMessage({ channelId: channel, text: "@build hello" });
+    const woke = await returnedWake(routed);
+    await returnedWake({ started: routed.pending });
+    assert.equal(woke.started, false);
+    assert.equal(woke.pending, false);
+    const lines = () => getState().messages.filter((m) => m.channel === channel);
+    const failures = lines().filter((m) => m.system && m.text === "Eng.Build finished without a reply");
+    assert.equal(failures.length, 1);
+    assert.equal(lines().some((m) => m.seatId === "build" && !m.system), false);
+    assert.deepEqual(roomThinking(channel), []);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "blocked");
+  } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+  }
+});
+
+test("a step-start with an empty completion does not leave the run running", { timeout: 5000 }, async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  const channel = `empty-step-${Date.now()}`;
+  openBuildTurn(channel, () => {
+    let resolveRest;
+    const rest = new Promise((resolve) => {
+      resolveRest = resolve;
+    });
+    const pending = Promise.resolve({ reached: true, done: false, text: "" });
+    pending.rest = rest;
+    pending.cancel = () => resolveRest({ reached: false, cancelled: true, done: true, text: "" });
+    queueMicrotask(() => resolveRest({ reached: false, done: true, empty: true, text: "" }));
+    return pending;
+  });
+  try {
+    const routed = routeChannelMessage({ channelId: channel, text: "@build hello" });
+    const woke = await returnedWake(routed);
+    await returnedWake({ started: routed.pending });
+    assert.equal(woke.started, false);
+    assert.equal(woke.pending, false);
+    const lines = getState().messages.filter((m) => m.channel === channel);
+    assert.deepEqual(
+      lines.filter((m) => m.system).map((m) => m.text),
+      ["Eng.Build finished without a reply"],
+    );
+    assert.equal(lines.some((m) => m.seatId === "build" && !m.system), false);
+    assert.deepEqual(roomThinking(channel), []);
+    const run = (getState().runs || []).find((r) => r.id === woke.runId);
+    assert.equal(run?.status, "blocked");
+    assert.notEqual(run?.status, "running");
+  } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+  }
+});
+
+test("an empty completion at 30s clears the thinking row and posts one line", { timeout: 5000 }, async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  let release;
+  const rest = new Promise((resolve) => {
+    release = resolve;
+  });
+  const channel = `empty-30-${Date.now()}`;
+  openBuildTurn(channel, () => {
+    const pending = Promise.resolve({ reached: false, timeout: true, done: false, text: "" });
+    pending.rest = rest;
+    pending.cancel = () => {};
+    return pending;
+  });
+  try {
+    const routed = routeChannelMessage({ channelId: channel, text: "@build still there" });
+    const woke = await returnedWake(routed);
+    assert.equal(woke.started, false);
+    assert.equal(woke.pending, true);
+    const lines = () => getState().messages.filter((m) => m.channel === channel);
+    assert.deepEqual(roomThinking(channel).map((row) => row.seatId), ["build"]);
+    assert.equal(lines().some((m) => /finished without a reply|provider timed out|did not start/.test(m.text)), false);
+    release({ reached: false, done: true, empty: true, text: "" });
+    const posted = await until(() => lines().some((m) => m.text === "Eng.Build finished without a reply"), 100);
+    assert.equal(posted, true);
+    assert.equal(lines().filter((m) => m.text === "Eng.Build finished without a reply").length, 1);
+    assert.equal(lines().some((m) => /provider timed out|did not start/.test(m.text)), false);
+    assert.equal(lines().some((m) => m.seatId === "build" && !m.system), false);
+    assert.deepEqual(roomThinking(channel), []);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "blocked");
+  } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+  }
+});
+
+test("a hung provider posts one timeout line at the deadline and a later reply once", { timeout: 5000 }, async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  const prevDeadline = process.env.ROSTER_WAKE_DEADLINE_MS;
+  process.env.ROSTER_WAKE_DEADLINE_MS = "200";
+  let release;
+  const rest = new Promise((resolve) => {
+    release = resolve;
+  });
+  const channel = `hung-${Date.now()}`;
+  openBuildTurn(channel, () => {
+    const pending = Promise.resolve({ reached: false, timeout: true, done: false, text: "" });
+    pending.rest = rest;
+    pending.cancel = () => {};
+    return pending;
+  });
+  try {
+    const routed = routeChannelMessage({ channelId: channel, text: "@build are you there" });
+    const woke = await returnedWake(routed);
+    assert.equal(woke.started, false);
+    assert.equal(woke.pending, true);
+    const lines = () => getState().messages.filter((m) => m.channel === channel);
+    assert.deepEqual(roomThinking(channel).map((row) => row.seatId), ["build"]);
+    assert.equal(lines().some((m) => /provider timed out|finished without a reply|did not start/.test(m.text)), false);
+    const posted = await until(() => lines().some((m) => m.text === "Eng.Build did not reply: the provider timed out"), 100);
+    assert.equal(posted, true);
+    assert.equal(lines().filter((m) => /provider timed out/.test(m.text)).length, 1);
+    assert.deepEqual(roomThinking(channel), []);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "blocked");
+    release({ reached: true, text: "After the deadline.", done: true, messageId: "msg_after_deadline" });
+    const reply = await until(() => lines().some((m) => m.text === "After the deadline."), 100);
+    assert.equal(reply, true);
+    assert.equal(lines().filter((m) => m.seatId === "build" && !m.system && m.text === "After the deadline.").length, 1);
+    assert.equal(lines().filter((m) => /provider timed out/.test(m.text)).length, 1);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "done");
+  } finally {
+    if (prevDeadline === undefined) delete process.env.ROSTER_WAKE_DEADLINE_MS;
+    else process.env.ROSTER_WAKE_DEADLINE_MS = prevDeadline;
     Object.assign(deps, prev);
     Object.assign(busDeps, prevBus);
   }

@@ -49,6 +49,91 @@ function sessionMap(state, seat) {
 
 const pendingWakes = new WeakMap();
 const inflightWakes = new Map();
+const wakeOutcomes = new Map();
+
+function wakeSlot(runId) {
+  const key = String(runId || "");
+  let slot = wakeOutcomes.get(key);
+  if (!slot) {
+    slot = { failurePosted: false, replyPosted: false };
+    if (key) {
+      wakeOutcomes.set(key, slot);
+      if (wakeOutcomes.size > 500) wakeOutcomes.delete(wakeOutcomes.keys().next().value);
+    }
+  }
+  return slot;
+}
+
+/** Hard stop for a turn that is still open after the provider-start window. Under the 5 minute thinking stale drop. */
+export function wakeDeadlineMs() {
+  const n = Number(process.env.ROSTER_WAKE_DEADLINE_MS);
+  return Number.isFinite(n) && n > 0 ? n : 120_000;
+}
+
+function terminalTurnError(message, code) {
+  const err = new Error(message);
+  err.code = code;
+  err.terminal = true;
+  err.status = 502;
+  return err;
+}
+
+function isEmptyTurn(verdict) {
+  return Boolean(verdict?.done) && verdict.empty === true && !verdict.error && !String(verdict.text || "").trim();
+}
+
+function wakeFailureLine(seat, runMeta, err) {
+  if (err?.code === "NO_REPLY") return `${seat.name} finished without a reply`;
+  if (err?.code === "PROVIDER_DEADLINE") return `${seat.name} did not reply: the provider timed out`;
+  return `${seat.name} did not start run ${runMeta.runId}: ${err?.message || err}`;
+}
+
+async function freshAssistantText(sid, kind, askedAt) {
+  if (!sid) return { text: "", messageId: null };
+  try {
+    const replies = assistantText(await deps.sessionMessages(sid, kind)).filter((m) => m.text);
+    const dated = replies.some((m) => m.created);
+    const fresh = dated ? replies.filter((m) => m.created && m.created >= askedAt) : replies.slice(-1);
+    return {
+      text: fresh.map((m) => m.text).join("\n"),
+      messageId: fresh.length ? fresh[fresh.length - 1].id || null : null,
+    };
+  } catch {
+    return { text: "", messageId: null };
+  }
+}
+
+/** The reached-but-not-done path. A hung provider must not leave `await watch.rest` pending forever. */
+async function awaitTurnRest(watch) {
+  const ms = wakeDeadlineMs();
+  let timer;
+  let timedOut = false;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve({ deadline: true, timedOut: true, done: true, reached: false, text: "" });
+    }, ms);
+    timer.unref?.();
+  });
+  try {
+    const final = await Promise.race([Promise.resolve(watch.rest), deadline]);
+    if (!timedOut) return final;
+    try {
+      watch.cancel?.();
+    } catch {
+      /* the listener is already gone */
+    }
+    const snapped = await Promise.race([
+      Promise.resolve(watch.rest).catch(() => null),
+      new Promise((resolve) => setTimeout(resolve, 0)),
+    ]);
+    const text = String(snapped?.text || "").trim();
+    if (text) return { ...snapped, text, timedOut: false, deadline: false };
+    return { deadline: true, timedOut: true, done: true, reached: false, text: "" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export function publishedWake(woke) {
   return {
@@ -399,12 +484,18 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
           prompt.then(() => (promptError ? Promise.reject(promptError) : watch)),
         ]);
       }
+      if (isEmptyTurn(outcome)) {
+        const polled = await freshAssistantText(sid, kind, askedAt);
+        if (polled.text) outcome = { ...outcome, reached: true, text: polled.text, messageId: polled.messageId || outcome.messageId, empty: false };
+        else throw terminalTurnError("finished without a reply", "NO_REPLY");
+      }
       if (!outcome?.reached || outcome.error) {
         const err = new Error(outcome?.error || "the provider did not respond in time");
         err.code = outcome?.error ? outcome.code || "PROVIDER_ERROR" : "PROVIDER_TIMEOUT";
         err.status = 502;
         if (!outcome?.done && !outcome?.cancelled) {
           err.lateReply = watch.rest;
+          err.cancelWatch = () => watch.cancel?.();
           err.askedAt = askedAt;
           err.sid = sid;
           err.kind = kind;
@@ -413,25 +504,32 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
       }
       noteRun(meta.runId, to, "running", null);
       let final = outcome;
-      if (!outcome.done && watch.rest) final = await watch.rest;
+      if (!outcome.done && watch.rest) final = await awaitTurnRest(watch);
+      if (final?.timedOut && !String(final.text || outcome.text || "").trim()) {
+        const polled = await freshAssistantText(sid, kind, askedAt);
+        if (polled.text) final = { ...final, text: polled.text, messageId: polled.messageId, timedOut: false };
+        else throw terminalTurnError("the provider timed out", "PROVIDER_DEADLINE");
+      }
       if (final?.error && !final?.text && !outcome.text) {
         const err = new Error(final.error);
         err.code = final.code || "PROVIDER_ERROR";
         err.status = 502;
         throw err;
       }
+      if (isEmptyTurn(final)) {
+        const polled = await freshAssistantText(sid, kind, askedAt);
+        if (polled.text) final = { ...final, text: polled.text, messageId: polled.messageId || final.messageId, empty: false };
+        else throw terminalTurnError("finished without a reply", "NO_REPLY");
+      }
       let providerText = final?.text || outcome.text || "";
       let messageId = final?.messageId || outcome.messageId || null;
-      try {
-        // A reused session still holds earlier turns. Keep only assistant messages created after this prompt.
-        const replies = assistantText(await deps.sessionMessages(sid, kind)).filter((m) => m.text);
-        const dated = replies.some((m) => m.created);
-        const fresh = dated ? replies.filter((m) => m.created && m.created >= askedAt) : replies.slice(-1);
-        const polled = fresh.map((m) => m.text).join("\n");
-        if (polled) providerText = polled;
-        if (fresh.length) messageId = fresh[fresh.length - 1].id || messageId;
-      } catch {
-        /* the streamed text is enough */
+      const polled = await freshAssistantText(sid, kind, askedAt);
+      if (polled.text) {
+        providerText = polled.text;
+        messageId = polled.messageId || messageId;
+      }
+      if (!String(providerText || "").trim() && !outcome.unwatched) {
+        throw terminalTurnError("finished without a reply", "NO_REPLY");
       }
       emit({
         scope: "chat",
@@ -443,13 +541,14 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
       return { sessionId: sid, seat: to, model, harness: kind, providerText, messageId };
     } catch (err) {
       if (!err.lateReply) watch.cancel?.();
-      if (err.status === 404) throw err;
+      if (err.terminal || err.status === 404) throw err;
       const described = describeOpenCodeError(err, { model: modelRef(model), kind });
       lastErr = Object.assign(new Error(described.message), {
         status: described.status,
         code: described.code || err.code,
         cause: err,
         lateReply: err.lateReply,
+        cancelWatch: err.cancelWatch,
         askedAt: err.askedAt,
         sid: err.sid,
         kind: err.kind,
@@ -512,28 +611,106 @@ async function postSeatReply(to, seat, runMeta, reply, messageId) {
   stopThinking(runMeta.channel, to);
 }
 
-async function recoverLateReply(to, seat, runMeta, reply, messageId) {
-  const run = (getState().runs || []).find((item) => item.id === runMeta.runId);
-  if (!run || (run.status !== "blocked" && run.status !== "starting")) {
-    stopThinking(runMeta.channel, to);
-    return;
+/**
+ * One cleanup for every way a turn ends: reply, provider error, empty completion,
+ * the wake deadline, or a turn that never finishes. A failure is posted once.
+ * A reply that shows up after that failure is posted once and does not add a second failure line.
+ */
+async function settleWake(to, seat, runMeta, { reply = "", messageId = null, failure = "", reason = null } = {}) {
+  const slot = wakeSlot(runMeta?.runId);
+  const text = String(reply || "").trim();
+  if (text && !isPass(text)) {
+    if (slot.replyPosted) {
+      stopThinking(runMeta?.channel, to);
+      return { reported: true, replied: true };
+    }
+    slot.replyPosted = true;
+    noteRun(runMeta?.runId, to, "done", null);
+    await postSeatReply(to, seat, runMeta, text, messageId);
+    stopThinking(runMeta?.channel, to);
+    return { reported: true, replied: true };
   }
-  noteRun(runMeta.runId, to, "running", null);
-  await postSeatReply(to, seat, runMeta, reply, messageId);
-  noteRun(runMeta.runId, to, "done", null);
-  stopThinking(runMeta.channel, to);
+  if (text && isPass(text)) {
+    slot.replyPosted = true;
+    noteRun(runMeta?.runId, to, "done", null);
+    stopThinking(runMeta?.channel, to);
+    return { reported: true, replied: true };
+  }
+  if (slot.failurePosted || slot.replyPosted) {
+    stopThinking(runMeta?.channel, to);
+    return { reported: true };
+  }
+  slot.failurePosted = true;
+  noteRun(runMeta?.runId, to, "blocked", reason || failure || "failed");
+  stopThinking(runMeta?.channel, to);
+  if (failure && runMeta?.channel) {
+    if (runMeta.announce === false) {
+      const { statusMessage } = await import("./chat.mjs");
+      statusMessage(runMeta.channel, failure);
+    } else await announceWake(runMeta, failure);
+  }
+  return { reported: true };
 }
 
-/** The start window elapsed and nothing more is coming. Clear the thinking row and post the failure now. */
-async function closePendingWake(to, runMeta, failure) {
-  stopThinking(runMeta.channel, to);
-  if (!failure || !runMeta?.channel) return;
-  if (runMeta.announce === false) {
-    const { statusMessage } = await import("./chat.mjs");
-    statusMessage(runMeta.channel, failure);
-    return;
-  }
-  await announceWake(runMeta, failure);
+/** The start window elapsed and the stream is still open. Settle it once, on the stream's end or on the deadline. */
+function armPendingSettle(to, seat, runMeta, err) {
+  let failureClaimed = false;
+  const timer = setTimeout(() => {
+    void (async () => {
+      const polled = err.sid ? await freshAssistantText(err.sid, err.kind, err.askedAt) : { text: "", messageId: null };
+      if (String(polled.text || "").trim()) {
+        try {
+          err.cancelWatch?.();
+        } catch {
+          /* already stopped */
+        }
+        await settleWake(to, seat, runMeta, { reply: polled.text, messageId: polled.messageId });
+        return;
+      }
+      if (failureClaimed) return;
+      failureClaimed = true;
+      try {
+        err.cancelWatch?.();
+      } catch {
+        /* already stopped */
+      }
+      await settleWake(to, seat, runMeta, {
+        failure: `${seat.name} did not reply: the provider timed out`,
+        reason: "provider timeout",
+      });
+    })();
+  }, wakeDeadlineMs());
+  timer.unref?.();
+  Promise.resolve(err.lateReply)
+    .then(async (final) => {
+      clearTimeout(timer);
+      let text = String(final?.text || "").trim();
+      let messageId = final?.messageId || null;
+      if (!text && err.sid) {
+        const polled = await freshAssistantText(err.sid, err.kind, err.askedAt);
+        text = String(polled.text || "").trim();
+        messageId = polled.messageId || messageId;
+      }
+      if (text) return settleWake(to, seat, runMeta, { reply: text, messageId });
+      if (failureClaimed) return;
+      failureClaimed = true;
+      const failure = final?.error
+        ? `${seat.name} did not start run ${runMeta.runId}: ${final.error}`
+        : `${seat.name} finished without a reply`;
+      return settleWake(to, seat, runMeta, {
+        failure,
+        reason: final?.error ? final.code || "PROVIDER_ERROR" : "NO_REPLY",
+      });
+    })
+    .catch(() => {
+      clearTimeout(timer);
+      if (failureClaimed) return;
+      failureClaimed = true;
+      return settleWake(to, seat, runMeta, {
+        failure: `${seat.name} did not start run ${runMeta.runId}: ${err.message || "the provider did not respond in time"}`,
+        reason: err.code || "PROVIDER_ERROR",
+      });
+    });
 }
 
 async function finishPrompted(to, seat, text, runMeta, result, started) {
@@ -543,9 +720,17 @@ async function finishPrompted(to, seat, text, runMeta, result, started) {
     await announceWake(runMeta, `${seat.name} did not keep run ${runMeta.runId}: the seat is paused (budget).`);
     return { ...metered, runId: runMeta.runId, started: false };
   }
+  const reply = String(result?.providerText || "");
+  if (reply && !isPass(reply)) {
+    noteRun(runMeta.runId, to, "running", null);
+    await settleWake(to, seat, runMeta, { reply, messageId: result?.messageId || null });
+    return { ...metered, runId: runMeta.runId, started: true };
+  }
   noteRun(runMeta.runId, to, "running", null);
-  await postSeatReply(to, seat, runMeta, result?.providerText, result?.messageId);
+  await postSeatReply(to, seat, runMeta, reply, result?.messageId);
   noteRun(runMeta.runId, to, "done", null);
+  wakeSlot(runMeta.runId).replyPosted = true;
+  stopThinking(runMeta.channel, to);
   return { ...metered, runId: runMeta.runId, started: true };
 }
 
@@ -710,34 +895,13 @@ async function wakeSeatBody(to, text, meta = {}) {
       channel: runMeta.channel || null,
       detail: { harness: kind, error, code: err.code || null },
     });
-    noteRun(runMeta.runId, to, "blocked", error);
-    const failure = `${seat.name} did not start run ${runMeta.runId}: ${error}`;
-    if (err.lateReply) {
-      Promise.resolve(err.lateReply)
-        .then(async (final) => {
-          let text = final?.text || "";
-          let messageId = final?.messageId || null;
-          if (err.sid) {
-            try {
-              const rows = assistantText(await deps.sessionMessages(err.sid, err.kind)).filter(
-                (row) => row.text && (!row.created || !err.askedAt || row.created >= err.askedAt),
-              );
-              if (rows.length) {
-                text = rows.map((row) => row.text).join("\n");
-                messageId = rows[rows.length - 1].id || messageId;
-              }
-            } catch {
-              /* keep the streamed text */
-            }
-          }
-          if (text) return recoverLateReply(to, seat, runMeta, text, messageId);
-          return closePendingWake(to, runMeta, failure);
-        })
-        .catch(() => closePendingWake(to, runMeta, failure));
-    } else {
-      await announceWake(runMeta, failure);
+    if (err.lateReply && !err.terminal) {
+      noteRun(runMeta.runId, to, "blocked", error);
+      armPendingSettle(to, seat, runMeta, err);
+      return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false, pending: true };
     }
-    return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false, pending: Boolean(err.lateReply) };
+    await settleWake(to, seat, runMeta, { failure: wakeFailureLine(seat, runMeta, err), reason: err.code || error });
+    return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false, pending: false, reported: true };
   }
 }
 

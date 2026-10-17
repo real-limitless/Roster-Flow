@@ -162,6 +162,34 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
   assert.equal((getState().runs || []).find((r) => r.id === "run-start")?.status, "blocked");
 });
 
+test("providerTurnVerdict finishes an empty completion and an idle turn with no text", () => {
+  const state = { userIds: new Set(), assistantIds: new Set() };
+  const empty = providerTurnVerdict(
+    {
+      type: "message.updated",
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop" } },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(empty.done, true);
+  assert.equal(empty.empty, true);
+  assert.equal(empty.reached, false);
+  assert.equal(empty.text, "");
+  const premature = providerTurnVerdict({ type: "session.idle", properties: { sessionID: "s2" } }, "s2", { userIds: new Set() });
+  assert.equal(premature, null);
+  const quiet = { userIds: new Set(), assistantIds: new Set() };
+  providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s2", info: { id: "a9", role: "assistant", time: { created: 5 } } } },
+    "s2",
+    quiet,
+  );
+  const idle = providerTurnVerdict({ type: "session.idle", properties: { sessionID: "s2" } }, "s2", quiet);
+  assert.equal(idle.done, true);
+  assert.equal(idle.empty, true);
+  assert.equal(idle.reached, false);
+});
+
 test("wakeSeat starts a run id and puts it on the prompt", async () => {
   const prompts = [];
   const prev = { ...deps };

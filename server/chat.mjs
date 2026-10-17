@@ -340,7 +340,7 @@ async function wakeTarget(channelId, text, from, target) {
     detail: { reason: target.reason, model, harness: ready.kind },
   });
   const woke = await deps.wakeSeat(target.to, text, meta);
-  // A slow first chunk returns started:false while the turn is still open. The row stays until the reply, a real error, or the 5 minute stuck-run timeout.
+  // A slow first chunk returns started:false while the turn is still open. The row stays until the reply, a real terminal failure, the wake deadline, or the 5 minute stale drop.
   const stillPending = woke?.pending === true;
   if (!woke || (woke.started === false && !stillPending)) stopThinking(channelId, seatId);
   const name = ready.seat?.name || seatId;
@@ -349,7 +349,7 @@ async function wakeTarget(channelId, text, from, target) {
     statusMessage(channelId, why);
   } else if (woke?.offline) {
     statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
-  } else if (woke?.error && !stillPending) {
+  } else if (woke?.error && !stillPending && !woke.reported) {
     statusMessage(channelId, `${name} did not start run ${woke.runId || ""}: ${woke.error}`.trim());
   } else if (woke?.human) {
     statusMessage(channelId, `${ready.seat?.name || seatId} is a human seat — notified, no model.`);

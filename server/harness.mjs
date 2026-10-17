@@ -633,6 +633,11 @@ function withMessageId(state, verdict) {
 export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() }) {
   const props = ev?.properties || {};
   if (!props.sessionID || props.sessionID !== sessionId) return null;
+  if (ev?.type === "session.idle") {
+    // Idle before this turn has an assistant message is the session's previous state.
+    if (!state.text && !state.assistantIds?.size) return null;
+    return withMessageId(state, { reached: Boolean(state.text), text: state.text || "", done: true, empty: !state.text });
+  }
   if (ev?.type === "message.updated") {
     const info = props.info || {};
     if (info.role === "user" && info.id) state.userIds.add(info.id);
@@ -654,7 +659,11 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
       });
       return withMessageId(state, { reached: false, error: described.message, code: described.code, done: true });
     }
-    if (info.time?.completed && state.text) return withMessageId(state, { reached: true, text: state.text, done: true });
+    // A completed turn with no assistant text is finished. Waiting for text here
+    // leaves `watch.rest` pending and the POST never returns.
+    if (info.time?.completed || info.finish === "stop") {
+      return withMessageId(state, { reached: Boolean(state.text), text: state.text || "", done: true, empty: !state.text });
+    }
     // The first assistant text can arrive as a part before this update. That chunk
     // already means the provider was reached, even though the turn is not done.
     if (state.text) return withMessageId(state, { reached: true, text: state.text, done: false });
