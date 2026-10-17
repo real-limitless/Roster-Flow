@@ -447,11 +447,11 @@ test("an explicitly assigned model is not swapped for a loaded one", async () =>
     assert.equal(prompted, 0);
     assert.equal(result.started, false);
     assert.equal(result.code, "PROVIDER_NOT_LOADED");
-    assert.match(result.error, /featherless\/not-loaded-model is not loaded by the company OpenCode harness \(loaded: demo-llm\)/);
+    assert.match(result.error, /Eng\.Build needs featherless\/not-loaded-model; company harness loaded \[demo-llm\]/);
     const run = (getState().runs || []).find((r) => r.id === result.runId);
     assert.equal(run?.status, "blocked");
     const added = getState().messages.slice(before);
-    assert.ok(added.some((m) => m.channel === "ship" && m.system && /featherless\/not-loaded-model is not loaded by the company OpenCode harness \(loaded: demo-llm\)/.test(m.text)));
+    assert.ok(added.some((m) => m.channel === "ship" && m.system && /Eng\.Build needs featherless\/not-loaded-model; company harness loaded \[demo-llm\]/.test(m.text)));
   } finally {
     Object.assign(deps, prev);
     if (prevKey === undefined) delete process.env.XAI_API_KEY;
@@ -461,6 +461,65 @@ test("an explicitly assigned model is not swapped for a loaded one", async () =>
       const team = (s.teams || []).find((t) => t.id === "eng");
       if (seat && priorModel !== undefined) seat.model = priorModel;
       if (team) team.fallbackModel = priorFallback;
+    });
+  }
+});
+
+test("a broken seat fails before fallback and a loaded seat still runs", async () => {
+  const prev = { ...deps };
+  const prompts = [];
+  let priorModel;
+  let priorFallback;
+  let priorTeamFallback;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_gap" });
+  deps.loadedModels = async () => [{ providerID: "demo-llm", modelID: "demo-small" }];
+  deps.promptSession = async (_id, body) => {
+    prompts.push(body.model);
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    if (s.sessions) delete s.sessions.qa;
+    const build = (s.seats || []).find((x) => x.id === "build");
+    const qa = (s.seats || []).find((x) => x.id === "qa");
+    const team = (s.teams || []).find((t) => t.id === "eng");
+    if (team) {
+      priorTeamFallback = team.fallbackModel;
+      team.fallbackModel = "demo-llm/demo-small";
+    }
+    if (build) {
+      priorModel = build.model;
+      priorFallback = build.fallbackModel;
+      build.model = "missingprov/model-a";
+      build.fallbackModel = "demo-llm/demo-small";
+      build.status = "idle";
+    }
+    if (qa) {
+      qa.model = "demo-llm/demo-small";
+      qa.fallbackModel = "";
+      qa.status = "idle";
+    }
+  });
+  try {
+    const bad = await wakeSeat("build", "nope", { from: "you", channel: "ship" });
+    assert.equal(bad.started, false);
+    assert.equal(bad.code, "PROVIDER_NOT_LOADED");
+    assert.match(bad.error, /Eng\.Build needs missingprov\/model-a; company harness loaded \[demo-llm\]/);
+    assert.equal(prompts.length, 0);
+    const good = await wakeSeat("qa", "still works", { from: "you" });
+    assert.equal(good.started, true);
+    assert.equal(prompts.length, 1);
+    assert.equal(prompts[0].providerID, "demo-llm");
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      const build = (s.seats || []).find((x) => x.id === "build");
+      const team = (s.teams || []).find((t) => t.id === "eng");
+      if (build && priorModel !== undefined) {
+        build.model = priorModel;
+        build.fallbackModel = priorFallback;
+      }
+      if (team) team.fallbackModel = priorTeamFallback;
     });
   }
 });
@@ -488,7 +547,7 @@ test("wakeSeat refuses a model the serve did not load instead of a silent prompt
     const result = await wakeSeat("build", "ship it", { from: "product" });
     assert.equal(prompted, 0);
     assert.equal(result.code, "PROVIDER_NOT_LOADED");
-    assert.match(result.error, /featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct is not loaded by the company OpenCode harness \(loaded: opencode\)/);
+    assert.match(result.error, /Eng\.Build needs featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct; company harness loaded \[opencode\]/);
   } finally {
     Object.assign(deps, prev);
     restoreBuild(priorModel);

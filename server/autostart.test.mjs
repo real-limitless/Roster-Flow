@@ -113,6 +113,28 @@ test("fresh container with owner and provider reports harness ready", async () =
     assert.equal(health.systemHarness.harness, "up");
     assert.equal(health.harnessReady, true);
     assert.equal(health.ready, true);
+    assert.ok(Array.isArray(health.seats));
+    const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+    for (const body of [
+      { id: "seat-ready", name: "Eng.Build", model: "opencode/big-pickle", job: "Ship." },
+      { id: "seat-gap", name: "Wiki Scribe", model: "featherless/demo-small", job: "Write." },
+    ]) {
+      const hired = await fetch(`${core.base}/api/v1/seats`, { method: "POST", headers, body: JSON.stringify(body) });
+      assert.equal(hired.status, 201, await hired.text());
+    }
+    health = await (await fetch(`${core.base}/api/v1/health`)).json();
+    assert.equal(health.harnessReady, true, health.harnessError || JSON.stringify(health.seats));
+    const build = health.seats.find((row) => row.seat === "seat-ready");
+    const wiki = health.seats.find((row) => row.seat === "seat-gap");
+    assert.equal(build?.ready, true);
+    assert.equal(wiki?.ready, false);
+    assert.match(wiki?.error || "", /Wiki Scribe needs featherless\/demo-small/);
+    const harnessRes = await fetch(`${core.base}/api/v1/harness`, { headers });
+    const harnessBody = await harnessRes.json();
+    assert.equal(harnessRes.status, 200);
+    assert.equal(harnessBody.harnessReady, true);
+    assert.equal(harnessBody.seats.find((row) => row.seat === "seat-gap")?.ready, false);
+    assert.equal(harnessBody.harnessError, null);
     assert.equal(health.version, "fake-company");
     assert.equal(health.systemHarness.version, "fake-system");
   } finally {
