@@ -1,12 +1,14 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { bootState, migrateState, starterState } from "./seed.mjs";
 import { dataDir } from "./paths.mjs";
+import { protectPrivateFile, writePrivateFile } from "./private-file.mjs";
 
 export { dataDir };
 export const statePath = join(dataDir, "state.json");
 
 function load() {
+  protectPrivateFile(statePath);
   if (!existsSync(statePath)) return migrateState(bootState());
   try {
     return migrateState({ ...starterState(), ...JSON.parse(readFileSync(statePath, "utf8")) });
@@ -23,8 +25,7 @@ export function getState() {
 }
 
 export function save() {
-  mkdirSync(dataDir, { recursive: true });
-  writeFileSync(statePath, JSON.stringify(state, null, 2));
+  writePrivateFile(statePath, JSON.stringify(state, null, 2));
 }
 
 export function mutate(fn) {

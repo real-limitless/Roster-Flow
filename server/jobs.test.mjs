@@ -1,21 +1,33 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import diagnostics from "node:diagnostics_channel";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { emptyOrgState, emptyState, migrateState } from "./seed.mjs";
 import { publicState } from "./setup.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { bootCore } from "./test-helpers.mjs";
 import {
   CALLBACK_HEADERS,
+  CALLBACK_SECRET_MIN_BYTES,
+  DEFAULT_CALLBACK_GRACE_MS,
   applyWake,
+  assertCallbackSecret,
   callbackAddressBlocked,
   callbackAllowlist,
+  callbackSecretInfo,
+  callbackAllowlistWarnings,
   cancelJob,
   createJob,
   deliverCallback,
   ensureCallbackSecret,
+  flushCallbacks,
+  getJob,
   normalizeCallback,
   isWaitSatisfied,
   listJobs,
@@ -31,6 +43,8 @@ import {
   verifyCallback,
   waitForJob,
 } from "./jobs.mjs";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 async function hookServer(status = 204) {
   const hits = [];
@@ -219,7 +233,9 @@ test("settleJob announces, callbacks, and wait returns on a terminal status", as
   assert.equal(done.status, "done");
   assert.equal(done.cost, 0.1);
   assert.deepEqual(done.tokens, { total: 3 });
-  assert.equal(done.callback.ok, true);
+  assert.equal(done.callback, null);
+  await flushCallbacks();
+  assert.equal(getJob(state, done.id).callback.ok, true);
   assert.deepEqual(hits, ["done"]);
   assert.equal(messages.at(-1).text.includes("shipped"), true);
   assert.equal(bus.at(-1).kind, "job_complete");
@@ -228,6 +244,8 @@ test("settleJob announces, callbacks, and wait returns on a terminal status", as
   const before = messages.length;
   const parked = await settleJob(quiet.id, "complete", { status: "needs_human", result: "approve?", announce: false }, caller, deps);
   assert.equal(parked.status, "needs_human");
+  assert.equal(parked.callback, null);
+  await flushCallbacks();
   assert.equal(messages.length, before);
   assert.equal(hits.at(-1), "needs_human");
 
@@ -464,7 +482,15 @@ test("jobs HTTP API authorizes with scoped tokens, waits, and callbacks", async 
     assert.equal(finished.status, 200);
     const done = await finished.json();
     assert.equal(done.status, "done");
-    assert.equal(done.callback.ok, true);
+    assert.equal(done.callback, null);
+    let recorded = null;
+    for (let i = 0; i < 50 && !recorded?.callback; i++) {
+      if (hookHits.length) {
+        recorded = await (await fetch(`${core.base}/api/v1/jobs/${job.id}`, { headers: auth(readOnly) })).json();
+      }
+      if (!recorded?.callback) await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(recorded.callback.ok, true);
     assert.equal(hookHits.length, 1);
     assert.equal(hookHits[0].event, "job.status");
     assert.equal(hookHits[0].job.status, "done");
@@ -593,6 +619,13 @@ test("callbackUrl blocks documentation, benchmarking, multicast, reserved, and I
     "2001:0:4136:e378:8000:63bf:3fff:fdd2",
     "2001:db8::1",
     "fec0::1",
+    "100::1",
+    "100::ffff:ffff:ffff:ffff",
+    "2001:2::1",
+    "2001:10::1",
+    "2001:1f::1",
+    "192.88.99.1",
+    "192.88.99.255",
     "ff02::1",
     "ff05::1:3",
     "::ffff:127.0.0.1",
@@ -603,12 +636,17 @@ test("callbackUrl blocks documentation, benchmarking, multicast, reserved, and I
     "not-an-ip",
   ];
   for (const address of blocked) assert.equal(callbackAddressBlocked(address), true, address);
-  const open = ["93.184.216.34", "8.8.8.8", "198.20.0.1", "223.255.255.255", "2606:2800:220:1:248:1893:25c8:1946", "::ffff:8.8.8.8"];
+  const open = ["93.184.216.34", "8.8.8.8", "192.88.100.1", "198.20.0.1", "223.255.255.255", "100:0:0:1::", "2001:20::1", "2606:2800:220:1:248:1893:25c8:1946", "::ffff:8.8.8.8"];
   for (const address of open) assert.equal(callbackAddressBlocked(address), false, address);
 });
 
 test("ROSTER_CALLBACK_ALLOWLIST never opens link-local or metadata addresses", async () => {
   const never = [
+    "0.0.0.0",
+    "0.1.2.3",
+    "0.255.255.255",
+    "::ffff:0.1.2.3",
+    "64:ff9b::1",
     "169.254.169.254",
     "169.254.170.2",
     "169.254.1.1",
@@ -643,12 +681,18 @@ test("ROSTER_CALLBACK_ALLOWLIST never opens link-local or metadata addresses", a
 });
 
 test("ROSTER_CALLBACK_ALLOWLIST supports host:port with exact, case-insensitive, ASCII-only matching", async () => {
-  assert.deepEqual(callbackAllowlist({ ROSTER_CALLBACK_ALLOWLIST: " Hooks.Internal:8443 , relay.internal., [::1]:9000, ::1, bücher.example, bad:port:1, x:0" }), [
+  assert.deepEqual(callbackAllowlist({ ROSTER_CALLBACK_ALLOWLIST: " Hooks.Internal:8443 , relay.internal., [::1]:9000, ::1, bücher.example, bad:port:1, x:0, [2001:0db8:0000:0000:0000:0000:0000:0001], ::ffff:127.0.0.1" }), [
     { host: "hooks.internal", port: 8443 },
     { host: "relay.internal", port: null },
     { host: "::1", port: 9000 },
     { host: "::1", port: null },
+    { host: "2001:db8::1", port: null },
+    { host: "::ffff:7f00:1", port: null },
   ]);
+  const warnings = callbackAllowlistWarnings({ ROSTER_CALLBACK_ALLOWLIST: "*.hooks.example, hooks.internal:443" });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /\*\.hooks\.example/);
+  assert.match(warnings[0], /never matches/);
   const lookup = async () => [{ address: "10.0.0.5", family: 4 }];
   const env = { ROSTER_CALLBACK_ALLOWLIST: "Hooks.Internal:8443,relay.internal,xn--bcher-kva.internal,bücher.example" };
   assert.equal(await normalizeCallback("https://HOOKS.internal:8443/cb", { env, lookup }), "https://hooks.internal:8443/cb");
@@ -694,11 +738,12 @@ test("the callback secret is per org, env-overridable, and rotates", () => {
   const first = ensureCallbackSecret(state, {});
   assert.match(first, /^rfcb_[0-9a-f]{64}$/);
   assert.equal(ensureCallbackSecret(state, {}), first);
-  assert.equal(ensureCallbackSecret(state, { ROSTER_CALLBACK_SECRET: "from-env" }), "from-env");
+  const envSecret = "e".repeat(CALLBACK_SECRET_MIN_BYTES);
+  assert.equal(ensureCallbackSecret(state, { ROSTER_CALLBACK_SECRET: envSecret }), envSecret);
   const rotated = rotateCallbackSecret(state, {});
   assert.notEqual(rotated.secret, first);
   assert.equal(rotated.headers.signature, "x-roster-signature");
-  assert.throws(() => rotateCallbackSecret(state, { ROSTER_CALLBACK_SECRET: "from-env" }), (e) => e.status === 409);
+  assert.throws(() => rotateCallbackSecret(state, { ROSTER_CALLBACK_SECRET: envSecret }), (e) => e.status === 409);
 });
 
 test("publishing a job that lands in needs_human fires the callback", async () => {
@@ -716,13 +761,16 @@ test("publishing a job that lands in needs_human fires the callback", async () =
     loopback,
   );
   assert.equal(job.status, "needs_human");
+  assert.equal(job.callback, null);
+  await flushCallbacks();
+  const recorded = getJob(state, job.id);
   assert.equal(hits.length, 1);
   assert.equal(hits[0].status, "needs_human");
   assert.equal(hits[0].secret, state.callbackSecret.value);
   assert.equal(hits[0].env, loopback.env);
-  assert.equal(job.callback.ok, true);
-  assert.equal(job.callback.status, 204);
-  assert.deepEqual(job.events.map((e) => e.type), ["submitted", "needs_human", "callback"]);
+  assert.equal(recorded.callback.ok, true);
+  assert.equal(recorded.callback.status, 204);
+  assert.deepEqual(recorded.events.map((e) => e.type), ["submitted", "needs_human", "callback"]);
   assert.ok(messages.some((m) => m.text.includes("needs_human")));
 
   const quiet = await publishNewJob({ target: "build", brief: "bot work", callbackUrl: "http://127.0.0.1:9/hook" }, caller, harness(state, async () => ({ sessionId: "ses_1" })).deps, loopback);
@@ -760,5 +808,268 @@ test("empty org HTTP job defaults to #general and blocks metadata callbacks", as
     assert.match(body.error, /blocked/);
   } finally {
     await core.stop();
+  }
+});
+
+function secretHeaders(res) {
+  assert.equal(res.headers.get("cache-control"), "no-store");
+  assert.equal(res.headers.get("access-control-allow-origin"), null);
+  assert.equal(res.headers.get("access-control-allow-headers"), null);
+}
+
+test("unauthenticated callback-secret reads are 403 when onboarding is skipped", async () => {
+  const open = await bootCore({ ROSTER_SKIP_ONBOARDING: "1", ROSTER_HARNESS_AUTOSTART: "0" });
+  try {
+    const res = await fetch(`${open.base}/api/v1/jobs/callback-secret`);
+    assert.equal(res.status, 403);
+    secretHeaders(res);
+    assert.match((await res.json()).error, /owner or admin/);
+    const rotated = await fetch(`${open.base}/api/v1/jobs/callback-secret/rotate`, { method: "POST" });
+    assert.equal(rotated.status, 403);
+    secretHeaders(rotated);
+    const opt = await fetch(`${open.base}/api/v1/jobs/callback-secret`, { method: "OPTIONS" });
+    assert.equal(opt.status, 204);
+    assert.equal(opt.headers.get("access-control-allow-origin"), null);
+    assert.equal(opt.headers.get("cache-control"), "no-store");
+    const health = await fetch(`${open.base}/api/v1/health`);
+    assert.equal(health.headers.get("access-control-allow-origin"), "*");
+  } finally {
+    await open.stop();
+  }
+
+  const core = await bootCore({
+    ROSTER_SKIP_ONBOARDING: "1",
+    ROSTER_HARNESS_AUTOSTART: "0",
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_OWNER_TEMPLATE: "empty",
+  });
+  try {
+    const secretPath = `${core.base}/api/v1/jobs/callback-secret`;
+    const anon = await fetch(secretPath);
+    assert.equal(anon.status, 403);
+    secretHeaders(anon);
+    const demo = await fetch(secretPath, { headers: { authorization: "Bearer roster-demo" } });
+    assert.equal(demo.status, 403);
+    secretHeaders(demo);
+    const login = await fetch(`${core.base}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "ops@example.com", password: "password1" }),
+    });
+    assert.equal(login.status, 200);
+    const { token } = await login.json();
+    const authed = await fetch(secretPath, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(authed.status, 200);
+    secretHeaders(authed);
+    const info = await authed.json();
+    assert.match(info.secret, /^rfcb_[0-9a-f]{64}$/);
+  } finally {
+    await core.stop();
+  }
+});
+
+test("a short ROSTER_CALLBACK_SECRET is rejected", async () => {
+  assert.throws(() => assertCallbackSecret({ ROSTER_CALLBACK_SECRET: "a".repeat(31) }), (e) => /at least 32 bytes/.test(e.message));
+  assert.equal(assertCallbackSecret({ ROSTER_CALLBACK_SECRET: "a".repeat(CALLBACK_SECRET_MIN_BYTES) }), "a".repeat(32));
+  assert.equal(assertCallbackSecret({}), "");
+  assert.throws(() => ensureCallbackSecret(emptyState(), { ROSTER_CALLBACK_SECRET: "short" }), /32 bytes/);
+
+  const dir = mkdtempSync(join(tmpdir(), "rf-secret-"));
+  const child = spawn(process.execPath, [join(repoRoot, "server/index.mjs")], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      ROSTER_CALLBACK_SECRET: "too-short",
+      ROSTER_SKIP_ONBOARDING: "1",
+      ROSTER_API_HOST: "127.0.0.1",
+      ROSTER_API_PORT: "0",
+      ROSTER_DATA_DIR: join(dir, "data"),
+      ROSTER_OPENCODE_DIR: join(dir, "oc"),
+      ROSTER_WORKSPACE: join(dir, "ws"),
+      ROSTER_HARNESS_AUTOSTART: "0",
+      ROSTER_DISABLE_ROUTINES: "1",
+      OPENCODE_BIN: "/nonexistent/opencode",
+      HOME: dir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  try {
+    const code = await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`startup hung: ${stderr}`)), 8000)),
+    ]);
+    assert.equal(code, 1);
+    assert.match(stderr, /ROSTER_CALLBACK_SECRET must be at least 32 bytes/);
+  } finally {
+    if (child.exitCode == null) child.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("state.json and auth.json are mode 0600, including existing files on load", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rf-mode-"));
+  writeFileSync(join(dir, "state.json"), "{}\n", { mode: 0o644 });
+  writeFileSync(join(dir, "auth.json"), "{}\n", { mode: 0o644 });
+  assert.equal(statSync(join(dir, "state.json")).mode & 0o777, 0o644);
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import ${JSON.stringify(join(repoRoot, "server/store.mjs"))}; import { listProviders } from ${JSON.stringify(join(repoRoot, "server/providers.mjs"))}; listProviders();`,
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        ROSTER_DATA_DIR: dir,
+        ROSTER_OPENCODE_DIR: join(dir, "oc"),
+        ROSTER_WORKSPACE: join(dir, "ws"),
+        HOME: dir,
+      },
+    },
+  );
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  try {
+    const code = await new Promise((resolve) => child.once("exit", resolve));
+    assert.equal(code, 0, stderr);
+    assert.equal(statSync(join(dir, "state.json")).mode & 0o777, 0o600);
+    assert.equal(statSync(join(dir, "auth.json")).mode & 0o777, 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("callback DNS lookup times out", async () => {
+  const started = Date.now();
+  await assert.rejects(
+    normalizeCallback("https://hooks.example/cb", { lookup: () => new Promise(() => {}), dnsTimeoutMs: 40 }),
+    (e) => e.status === 400 && /lookup timed out/.test(e.message),
+  );
+  assert.ok(Date.now() - started < 2000);
+});
+
+test("rotation grace accepts the previous secret until the window ends", () => {
+  const state = emptyState();
+  const t0 = Date.now();
+  const first = ensureCallbackSecret(state, {}, t0);
+  const jobId = "job-grace";
+  const body = JSON.stringify({ event: "job.status", job: { id: jobId, status: "done" } });
+  const ts = String(Math.floor(t0 / 1000));
+  const headers = {
+    [CALLBACK_HEADERS.timestamp]: ts,
+    [CALLBACK_HEADERS.jobId]: jobId,
+    [CALLBACK_HEADERS.signature]: signCallback(first, ts, jobId, body),
+  };
+  const rotated = rotateCallbackSecret(state, { ROSTER_CALLBACK_GRACE_MS: "1000" }, t0);
+  assert.equal(rotated.previous.secret, first);
+  assert.equal(new Date(rotated.previous.until).getTime(), t0 + 1000);
+  assert.equal(verifyCallback(rotated.secret, headers, body, { now: t0 + 500 }), false);
+  assert.equal(verifyCallback(rotated.secret, headers, body, { previous: rotated.previous, now: t0 + 500 }), true);
+  assert.equal(verifyCallback(rotated.secret, headers, body, { previous: rotated.previous, now: t0 + 1500 }), false);
+  assert.equal(callbackSecretInfo(state, {}, t0 + 1500).previous, null);
+
+  const fresh = emptyState();
+  ensureCallbackSecret(fresh, {}, t0);
+  const full = rotateCallbackSecret(fresh, {}, t0);
+  assert.equal(new Date(full.previous.until).getTime(), t0 + DEFAULT_CALLBACK_GRACE_MS);
+  const none = emptyState();
+  ensureCallbackSecret(none, {}, t0);
+  const closed = rotateCallbackSecret(none, { ROSTER_CALLBACK_GRACE_MS: "0" }, t0);
+  assert.equal(closed.previous, null);
+});
+
+test("callback delivery retries in the background and reuses the signature", async () => {
+  const state = emptyState();
+  const { deps } = harness(state, async () => ({ offline: true }));
+  const stamps = [];
+  let n = 0;
+  deps.deliverCallback = async (job, opts) => {
+    stamps.push(opts.timestamp);
+    n += 1;
+    if (n < 3) return { ok: false, error: "connect ECONNREFUSED", at: new Date().toISOString() };
+    return { ok: true, status: 204, at: new Date().toISOString() };
+  };
+  const created = await createJob(state, { target: "build", brief: "x", callbackUrl: "http://127.0.0.1:9/hook" }, caller, loopback);
+  const done = await settleJob(created.id, "complete", { result: "ok" }, caller, deps, { retryDelaysMs: [0, 0] });
+  assert.equal(done.callback, null);
+  await flushCallbacks();
+  assert.equal(n, 3);
+  assert.equal(new Set(stamps).size, 1);
+  assert.equal(getJob(state, created.id).callback.ok, true);
+});
+
+test("normalized IPv6 allowlist entries match, and 0.0.0.0/8 stays blocked when listed", async () => {
+  const env = { ROSTER_CALLBACK_ALLOWLIST: "2001:0db8:0000:0000:0000:0000:0000:1" };
+  assert.equal(await normalizeCallback("http://[2001:db8::1]/cb", { env }), "http://[2001:db8::1]/cb");
+  await assert.rejects(
+    normalizeCallback("http://0.8.8.8/cb", { env: { ROSTER_CALLBACK_ALLOWLIST: "0.8.8.8" } }),
+    (e) => e.status === 400 && /blocked/.test(e.message),
+  );
+});
+
+test("startup warns that *.host allowlist entries never match", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rf-wild-"));
+  const child = spawn(process.execPath, [join(repoRoot, "server/index.mjs")], {
+    cwd: repoRoot,
+    detached: true,
+    env: {
+      ...process.env,
+      ROSTER_CALLBACK_ALLOWLIST: "*.hooks.example, hooks.internal:443",
+      ROSTER_CALLBACK_SECRET: "",
+      ROSTER_SKIP_ONBOARDING: "1",
+      ROSTER_API_HOST: "127.0.0.1",
+      ROSTER_API_PORT: String(21000 + Math.floor(Math.random() * 20000)),
+      ROSTER_DATA_DIR: join(dir, "data"),
+      ROSTER_OPENCODE_DIR: join(dir, "oc"),
+      ROSTER_WORKSPACE: join(dir, "ws"),
+      ROSTER_HARNESS_AUTOSTART: "0",
+      ROSTER_DISABLE_ROUTINES: "1",
+      OPENCODE_BIN: "/nonexistent/opencode",
+      HOME: dir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const kill = () => {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  };
+  try {
+    const start = Date.now();
+    while (!/never matches/.test(stderr)) {
+      if (Date.now() - start > 8000) throw new Error(`no wildcard warning in: ${stderr}`);
+      if (child.exitCode != null) throw new Error(`core exited ${child.exitCode}: ${stderr}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.match(stderr, /\*\.hooks\.example/);
+  } finally {
+    kill();
+    await Promise.race([
+      new Promise((resolve) => {
+        if (child.exitCode != null) resolve();
+        else child.once("exit", resolve);
+      }),
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]);
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -2,15 +2,15 @@
 
 Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only and does not publish them on the host. 8787 is mcp-flow.
 
-Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`.
+Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`. The callback-secret routes stay closed in that mode: they need an owner or admin session, and they return **403** when no auth is configured.
 
-Existing `.roster-flow/state.json` without an `onboarding` field is treated as already complete.
+Existing `.roster-flow/state.json` without an `onboarding` field is treated as already complete. CORE writes `state.json` (callback secret, session tokens, password hashes) with mode `0600`, and sets that mode on an existing file when it loads.
 
 All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, `qa`, …).
 
 ## Setup and auth
 
-Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`.
+Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`. `GET` and `POST /api/v1/jobs/callback-secret` are the exception: they require an owner or admin session in every mode, including when onboarding is skipped.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -281,8 +281,8 @@ Persistent work a caller hands to a seat or a team. Same bearer auth as the rest
 | POST | `/api/v1/jobs/:id/files` | `{ name, content, encoding?: "utf8"\|"base64" }` stores bytes. **413** over the cap |
 | GET | `/api/v1/jobs/:id/files/:name` | `{ name, size, sha256, encoding: "base64", content }` |
 | POST | `/api/v1/jobs/:id/messages` | Follow-up `{ text }` into an open job. Wakes the assignee |
-| GET | `/api/v1/jobs/callback-secret` | `admin`. The callback signing secret, header names, and signing string |
-| POST | `/api/v1/jobs/callback-secret/rotate` | `admin`. Replace the secret. **409** when `ROSTER_CALLBACK_SECRET` is set |
+| GET | `/api/v1/jobs/callback-secret` | Owner or admin session, or an `admin` API token for that user. **403** with no such session, including `ROSTER_SKIP_ONBOARDING=1`, the demo token, and when no auth is configured. `Cache-Control: no-store`. These responses do not send a CORS allow-origin |
+| POST | `/api/v1/jobs/callback-secret/rotate` | Same gate. Replace the secret. **409** when `ROSTER_CALLBACK_SECRET` is set. The previous secret stays valid for `ROSTER_CALLBACK_GRACE_MS` (default 10 minutes) |
 
 `POST /api/v1/jobs`:
 
@@ -313,30 +313,31 @@ Status: `queued`, `running`, `needs_human`, `done`, `failed`, `cancelled`. Termi
 
 `callbackUrl` must be `http` or `https` and must not carry credentials (`https://user:pass@…` is **400**). Job responses never include credentials in `callbackUrl`.
 
-CORE resolves the host once, checks every address it returns, and connects only to one of those addresses. The `Host` header and TLS SNI stay the original hostname, so certificates are still checked against it. A DNS answer that changes between the check and the connect cannot move the request. This runs at submit (a bad URL is **400**) and again at every delivery. Redirects are not followed.
+CORE resolves the host once, checks every address it returns, and connects only to one of those addresses. The `Host` header and TLS SNI stay the original hostname, so certificates are still checked against it. A DNS answer that changes between the check and the connect cannot move the request. The lookup gives up after `ROSTER_CALLBACK_DNS_TIMEOUT_MS` milliseconds (default 5000); a lookup that exceeds it is **400** `callbackUrl host lookup timed out`. This runs at submit (a bad URL is **400**) and again at every delivery. Redirects are not followed.
 
 Blocked addresses (**400**):
 
-- IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`.
-- IPv6: `::/96` (unspecified, loopback, IPv4-compatible `::a.b.c.d`), `64:ff9b::/96`, `64:ff9b:1::/48`, `2001::/32` (Teredo), `2001:db8::/32`, `2002::/16` (6to4), `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`.
+- IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24` (deprecated 6to4 anycast), `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`.
+- IPv6: `::/96` (unspecified, loopback, IPv4-compatible `::a.b.c.d`), `64:ff9b::/96`, `64:ff9b:1::/48`, `100::/64` (discard-only), `2001::/32` (Teredo), `2001:2::/48` (benchmarking), `2001:10::/28` (ORCHIDv1), `2001:db8::/32`, `2002::/16` (6to4), `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`.
 - IPv4-mapped `::ffff:a.b.c.d` is judged by the IPv4 inside it. For every form that embeds IPv4 (mapped, compatible, NAT64, 6to4, Teredo server and client), the embedded address is checked too.
 - Link-local and cloud metadata: `169.254.0.0/16` (includes `169.254.169.254` and `169.254.170.2`), `fe80::/10`, `fd00:ec2::254`, `100.100.100.200`, `168.63.129.16`, and any IPv6 form that embeds one of them.
+- `0.0.0.0/8` stays blocked even when the host is listed, including an address embedded in IPv6.
 
-`ROSTER_CALLBACK_ALLOWLIST` lets named hosts resolve to otherwise blocked addresses, for example a harness on a private network. It never allows link-local or metadata addresses.
+`ROSTER_CALLBACK_ALLOWLIST` lets named hosts resolve to otherwise blocked addresses, for example a harness on a private network. It never allows link-local or metadata addresses. `64:ff9b::/96` (DNS64) stays blocked by default. A deployment that reaches its receiver only through DNS64 can name that receiver in `ROSTER_CALLBACK_ALLOWLIST`. The metadata block still applies, including a metadata address embedded in a DNS64 or NAT64 form.
 
-- Comma-separated `host` or `host:port`. IPv6 literals are `[addr]` or `[addr]:port`.
-- Matching is exact and case-insensitive. There are no wildcards and no subdomain matching. A bare `host` matches any port; `host:port` matches only that port (`80` and `443` are the defaults for `http` and `https`).
+- Comma-separated `host` or `host:port`. Prefer `host:port` so the callback stays on the port you chose. IPv6 literals are `[addr]` or `[addr]:port`, and they are normalized before compare (`2001:0db8::1` and `2001:db8::1` are the same entry).
+- Matching is exact and case-insensitive. There are no wildcards and no subdomain matching. An entry such as `*.host` never matches; CORE warns about it at startup. A bare `host` matches any port; `host:port` matches only that port (`80` and `443` are the defaults for `http` and `https`).
 - Entries must be ASCII. Write internationalized names in punycode (`xn--bcher-kva.example`, not `bücher.example`). URL parsing punycodes the callback host, so a non-ASCII entry would never match; CORE ignores it.
 
 #### Callback delivery and signatures
 
-On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set. That includes a job that lands in `needs_human` at submit because its assignee is a human seat.
+On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set. That includes a job that lands in `needs_human` at submit because its assignee is a human seat. The POST does not block job creation or `POST /api/v1/jobs/:id/complete`. CORE sends it afterward, reuses the same timestamp and signature on each try, and retries a transport failure twice (after 200ms, then 800ms). `job.callback` is filled in when the attempt finishes, so the complete response can still show `callback: null`.
 
 ```json
 { "event": "job.status", "job": { "id": "job-…", "status": "done", "result": "…" } }
 ```
 
-Every callback is signed with HMAC-SHA256 using the org's callback secret. CORE runs one org per instance, so there is one secret per instance. It is generated on first use and stored in state. `ROSTER_CALLBACK_SECRET` overrides it. Read it with `GET /api/v1/jobs/callback-secret` (`admin`) and rotate it with `POST /api/v1/jobs/callback-secret/rotate`. `GET /api/v1/state` never includes it.
+Every callback is signed with HMAC-SHA256 using the instance callback secret. There is one secret per instance, and each instance needs its own value. It is generated on first use and stored in state. `ROSTER_CALLBACK_SECRET`, when set, must be at least 32 bytes, overrides the stored secret, and disables rotate. Read it with `GET /api/v1/jobs/callback-secret` (owner or admin) and rotate it with `POST /api/v1/jobs/callback-secret/rotate`. For `ROSTER_CALLBACK_GRACE_MS` after a rotate (default 10 minutes) the response includes `previous: { secret, until }` and receivers should accept either secret until `until`. `GET /api/v1/state` never includes it.
 
 | Header | Value |
 |---|---|
@@ -350,8 +351,9 @@ To verify:
 
 1. Read the raw body bytes. Do not re-serialize parsed JSON.
 2. Reject if `X-Roster-Timestamp` is more than 300 seconds from your clock. This limits replay.
-3. Compute `HMAC-SHA256(secret, timestamp + "." + jobId + "." + body)` as hex, prefix `v1=`, and compare it to `X-Roster-Signature` with a constant-time compare.
+3. Compute `HMAC-SHA256(secret, timestamp + "." + jobId + "." + body)` as hex, prefix `v1=`, and compare it to `X-Roster-Signature` with a constant-time compare. During the rotation grace window, try the previous secret the same way.
 4. Check that `X-Roster-Job-Id` equals `job.id` in the body.
+5. Drop a duplicate delivery inside that 300 second window when `(jobId, ts, signature)` matches one you already accepted. Retries reuse that triple.
 
 ```js
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -467,7 +469,7 @@ Settings UI at `/app/settings` writes these.
 }
 ```
 
-Literal keys go to `.roster-flow/auth.json` (gitignored) and `{env:VAR}` is preferred in `opencode.json`, same idea as OpenChamber writing OpenCode config + auth.
+Literal keys go to `.roster-flow/auth.json` (gitignored, mode `0600`; an existing file is tightened to `0600` when it is read) and `{env:VAR}` is preferred in `opencode.json`, same idea as OpenChamber writing OpenCode config + auth.
 
 ## GitHub cards
 
@@ -499,7 +501,7 @@ Streamable HTTP room gateway. mcp-flow is tools; this is seats, channels, and th
 
 ## API tokens
 
-`Authorization: Bearer rf_...` is accepted on every route. Scopes: `read` (GET/HEAD), `write` (other methods), `admin` (`/api/v1/tokens*`, `/api/v1/setup/*`, `/api/v1/jobs/callback-secret*`). Session logins are not scope-limited.
+`Authorization: Bearer rf_...` is accepted on every route. Scopes: `read` (GET/HEAD), `write` (other methods), `admin` (`/api/v1/tokens*`, `/api/v1/setup/*`, `/api/v1/jobs/callback-secret*`). Session logins are not scope-limited. Callback-secret routes also require that user to be an owner or admin. A missing session is **403** there even when `ROSTER_SKIP_ONBOARDING=1`.
 
 | Method | Path | Notes |
 | --- | --- | --- |
