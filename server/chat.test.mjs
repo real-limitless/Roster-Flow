@@ -17,7 +17,7 @@ import {
   seatModelPlan,
   deps,
 } from "./chat.mjs";
-import { deps as busDeps } from "./bus.mjs";
+import { deps as busDeps, wakeSeat } from "./bus.mjs";
 import { emit, listTrace, resetTrace } from "./trace.mjs";
 
 // A fresh data dir boots without a company until onboarding; these tests need the starter seats.
@@ -891,6 +891,7 @@ test("a 30s provider keeps the thinking row until the reply and posts no failure
   deps.followTicks = 1;
   deps.followDelayMs = 0;
   deps.pullAssistant = async () => [];
+  deps.wakeSeat = wakeSeat;
   busDeps.harnessStatus = () => ({ harness: "up" });
   busDeps.createSession = async () => ({ id: "ses_slow30" });
   busDeps.promptSession = async () => undefined;
@@ -947,6 +948,7 @@ test("an over-budget seat is told it is over its token budget", async () => {
   deps.knownLoadedModels = () => null;
   deps.keyStatus = () => ({ providerID: "xai", modelID: "m", configured: true, connected: true, loaded: true });
   deps.followTicks = 0;
+  deps.wakeSeat = wakeSeat;
   busDeps.harnessStatus = () => ({ harness: "up" });
   busDeps.promptSession = async () => {
     throw new Error("an over-budget seat is not prompted");
