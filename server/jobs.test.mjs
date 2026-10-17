@@ -15,12 +15,15 @@ import { bootCore } from "./test-helpers.mjs";
 import {
   CALLBACK_HEADERS,
   CALLBACK_SECRET_MIN_BYTES,
+  DEFAULT_CALLBACK_DNS_TIMEOUT_MS,
   DEFAULT_CALLBACK_GRACE_MS,
+  MAX_CALLBACK_DNS_TIMEOUT_MS,
   MAX_CALLBACK_GRACE_MS,
   applyWake,
   assertCallbackSecret,
   callbackAddressBlocked,
   callbackAllowlist,
+  callbackDnsTimeoutMs,
   callbackGraceMs,
   callbackSecretInfo,
   callbackAllowlistWarnings,
@@ -1172,7 +1175,11 @@ test("the callback queue records callback_queue_full and does not send", async (
   const jobs = [];
   try {
     for (let i = 0; i < 1004; i++) {
-      const created = await createJob(state, { target: "build", brief: `q${i}`, callbackUrl: `https://q${i}.example/cb` }, caller);
+      const created = await createJob(
+        state,
+        { target: "build", brief: `q${i}`, callbackUrl: `https://q${i}.example/cb` },
+        { ...caller, tokenId: `tok-q-${i}` },
+      );
       jobs.push(created);
       void settleQuiet(state, deps, created, { result: "ok" }, { retryDelaysMs: [] });
     }
@@ -1263,6 +1270,166 @@ test("a hanging host does not delay another host beyond one slot", async () => {
     for (const list of gates.values()) for (const release of list) release();
     await flushCallbacks();
   }
+});
+
+test("a queued callback checks the cooldown again when its slot opens", async () => {
+  const state = emptyState();
+  const { deps } = harness(state, async () => ({ offline: true }));
+  let calls = 0;
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  deps.deliverCallback = async () => {
+    calls += 1;
+    await gate;
+    return { ok: false, error: "timeout", at: new Date().toISOString() };
+  };
+  const jobs = [];
+  try {
+    for (let i = 0; i < 4; i++) {
+      const job = await createJob(state, { target: "build", brief: `c${i}`, callbackUrl: "https://cool.example/cb" }, caller);
+      jobs.push(job);
+      void settleQuiet(state, deps, job, { result: "ok" }, { retryDelaysMs: [] });
+    }
+    for (let i = 0; i < 50 && calls < 1; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(calls, 1);
+    release();
+    await flushCallbacks();
+    assert.equal(calls, 3);
+    assert.equal(getJob(state, jobs[3].id).callback.error, "timeout");
+  } finally {
+    release();
+    await flushCallbacks();
+  }
+});
+
+test("each host:port queue stops at 50 and another port still runs", async () => {
+  const state = emptyState();
+  const { deps } = harness(state, async () => ({ offline: true }));
+  const started = [];
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  deps.deliverCallback = async (job) => {
+    started.push(new URL(job.callbackUrl).port || "443");
+    await gate;
+    return { ok: true, status: 204, at: new Date().toISOString() };
+  };
+  const jobs = [];
+  try {
+    for (let i = 0; i < 52; i++) {
+      const job = await createJob(
+        state,
+        { target: "build", brief: `p${i}`, callbackUrl: "https://ports.example/cb" },
+        { ...caller, tokenId: `tok-p-${i}` },
+      );
+      jobs.push(job);
+      void settleQuiet(state, deps, job, { result: "ok" }, { retryDelaysMs: [] });
+    }
+    const other = await createJob(
+      state,
+      { target: "build", brief: "other-port", callbackUrl: "https://ports.example:8443/cb" },
+      { ...caller, tokenId: "tok-other-port" },
+    );
+    void settleQuiet(state, deps, other, { result: "ok" }, { retryDelaysMs: [] });
+    for (let i = 0; i < 50 && started.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(started.filter((port) => port === "443").length, 1);
+    assert.ok(started.includes("8443"));
+    assert.equal(getJob(state, jobs[51].id).callback.error, "callback_queue_full");
+    assert.equal(getJob(state, other.id).callback, null);
+  } finally {
+    release();
+    await flushCallbacks();
+  }
+});
+
+test("one token can queue 100 callbacks and the next is callback_queue_full", async () => {
+  const state = emptyState();
+  const { deps } = harness(state, async () => ({ offline: true }));
+  let started = 0;
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  deps.deliverCallback = async () => {
+    started += 1;
+    await gate;
+    return { ok: true, status: 204, at: new Date().toISOString() };
+  };
+  const mine = { ...caller, tokenId: "tok-cap" };
+  const jobs = [];
+  try {
+    for (let i = 0; i < 104; i++) {
+      const job = await createJob(state, { target: "build", brief: `u${i}`, callbackUrl: `https://user${i}.example/cb` }, mine);
+      jobs.push(job);
+      void settleQuiet(state, deps, job, { result: "ok" }, { retryDelaysMs: [] });
+    }
+    const other = await createJob(
+      state,
+      { target: "build", brief: "someone else", callbackUrl: "https://someone.example/cb" },
+      { ...caller, userId: "usr-2", tokenId: "tok-other" },
+    );
+    void settleQuiet(state, deps, other, { result: "waiting" }, { retryDelaysMs: [] });
+    for (let i = 0; i < 50 && started < 3; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(started, 3);
+    assert.equal(getJob(state, jobs[103].id).callback.error, "callback_queue_full");
+    assert.equal(getJob(state, other.id).callback, null);
+  } finally {
+    release();
+    await flushCallbacks();
+  }
+});
+
+test("a DNS lookup timeout stays dns_failed and cools down that host:port", async () => {
+  const state = emptyState();
+  const { deps } = harness(state, async () => ({ offline: true }));
+  delete deps.deliverCallback;
+  let lookups = 0;
+  const lookup = () => {
+    lookups += 1;
+    return new Promise(() => {});
+  };
+  const opts = { lookup, dnsTimeoutMs: 20, retryDelaysMs: [] };
+  for (let i = 0; i < 3; i++) {
+    const job = await createJob(state, { target: "build", brief: `d${i}`, callbackUrl: "https://dns-cool.example/cb" }, caller);
+    await settleQuiet(state, deps, job, { result: "ok" }, opts);
+    await flushCallbacks();
+    assert.equal(getJob(state, job.id).callback.error, "dns_failed");
+  }
+  assert.equal(lookups, 3);
+  const parked = await createJob(state, { target: "build", brief: "d3", callbackUrl: "https://dns-cool.example/cb" }, caller);
+  await settleQuiet(state, deps, parked, { result: "ok" }, opts);
+  assert.equal(lookups, 3);
+  assert.equal(getJob(state, parked.id).callback.error, "timeout");
+  const otherPort = await createJob(state, { target: "build", brief: "d4", callbackUrl: "https://dns-cool.example:8443/cb" }, caller);
+  await settleQuiet(state, deps, otherPort, { result: "ok" }, opts);
+  await flushCallbacks();
+  assert.equal(lookups, 4);
+  assert.equal(getJob(state, otherPort.id).callback.error, "dns_failed");
+});
+
+test("callback DNS timeout is clamped to 30s", () => {
+  assert.equal(callbackDnsTimeoutMs({}), DEFAULT_CALLBACK_DNS_TIMEOUT_MS);
+  assert.equal(callbackDnsTimeoutMs({ ROSTER_CALLBACK_DNS_TIMEOUT_MS: "60000" }), MAX_CALLBACK_DNS_TIMEOUT_MS);
+  assert.equal(callbackDnsTimeoutMs({ ROSTER_CALLBACK_DNS_TIMEOUT_MS: "1500" }), 1500);
+  assert.equal(callbackDnsTimeoutMs({}, 120000), MAX_CALLBACK_DNS_TIMEOUT_MS);
+});
+
+test("reading an old callback error drops the socket address", async () => {
+  const state = emptyState();
+  const job = await createJob(state, { target: "build", brief: "old", callbackUrl: "https://hooks.example/cb" }, caller);
+  state.jobs[0].callback = {
+    ok: false,
+    status: null,
+    error: "connect ECONNREFUSED 10.0.0.8:54321",
+    at: "2026-04-11T12:00:00.000Z",
+  };
+  const pub = getJob(state, job.id);
+  assert.equal(pub.callback.error, "connect_failed");
+  assert.equal(JSON.stringify(pub).includes("10.0.0.8"), false);
+  assert.equal(JSON.stringify(pub).includes("54321"), false);
 });
 
 test("a host that keeps timing out fails fast", async () => {

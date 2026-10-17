@@ -22,6 +22,7 @@ export const CALLBACK_SECRET_MIN_BYTES = 32;
 export const DEFAULT_CALLBACK_GRACE_MS = 10 * 60 * 1000;
 export const MAX_CALLBACK_GRACE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_CALLBACK_DNS_TIMEOUT_MS = 5000;
+export const MAX_CALLBACK_DNS_TIMEOUT_MS = 30_000;
 /** Gaps between delivery attempts. Three tries: immediately, then these delays. */
 export const CALLBACK_RETRY_DELAYS_MS = [200, 800];
 const TERMINAL = new Set(TERMINAL_STATUSES);
@@ -83,7 +84,7 @@ export function publicJob(job) {
     channel: job.channel,
     callbackUrl: publicCallbackUrl(job.callbackUrl),
     wake: job.wake ? { ...job.wake } : null,
-    callback: job.callback ? { ...job.callback } : null,
+    callback: publicCallback(job.callback),
     reportedBy: job.reportedBy || null,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
@@ -97,6 +98,14 @@ function requireJob(state, id) {
   const job = (state.jobs || []).find((j) => j.id === id);
   if (!job) throw fail(404, "job not found");
   return job;
+}
+
+function publicCallback(callback) {
+  if (!callback) return null;
+  const copy = { ...callback };
+  if (copy.error) copy.error = callbackErrorCode(copy.error);
+  else if (!copy.ok && copy.status != null) copy.error = callbackErrorCode("", copy.status);
+  return copy;
 }
 
 export function getJob(state, id) {
@@ -356,16 +365,20 @@ function withTimeout(promise, ms, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function clampDnsTimeout(ms) {
+  return Math.min(MAX_CALLBACK_DNS_TIMEOUT_MS, ms);
+}
+
 export function callbackDnsTimeoutMs(env = process.env, override) {
   if (override != null && override !== "") {
     const picked = Number(override);
-    if (Number.isFinite(picked) && picked > 0) return picked;
+    if (Number.isFinite(picked) && picked > 0) return clampDnsTimeout(picked);
   }
   const raw = env?.ROSTER_CALLBACK_DNS_TIMEOUT_MS;
   if (raw == null || String(raw).trim() === "") return DEFAULT_CALLBACK_DNS_TIMEOUT_MS;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_CALLBACK_DNS_TIMEOUT_MS;
-  return n;
+  return clampDnsTimeout(n);
 }
 
 async function callbackAddresses(host, lookupImpl, timeoutMs) {
@@ -977,7 +990,12 @@ export function postPinned(target, { headers, body, timeoutMs }) {
  */
 export async function deliverCallback(job, { secret, timeoutMs = 5000, now = Date.now, timestamp: timestampOpt, ...opts } = {}) {
   if (!job?.callbackUrl) return { skipped: true };
-  const failed = (err, status = null) => ({ ok: false, status, error: callbackErrorCode(err, status), at: nowIso() });
+  const failed = (err, status = null) => {
+    const error = callbackErrorCode(err, status);
+    const text = String(typeof err === "string" ? err : err?.message || "");
+    const strike = error === "timeout" || /lookup timed out/i.test(text);
+    return { ok: false, status, error, ...(strike ? { strike: true } : {}), at: nowIso() };
+  };
   if (!secret) return failed("callback signing secret is not configured");
   let target;
   try {
@@ -1027,6 +1045,8 @@ const pendingCallbacks = new Set();
 const CALLBACK_DELIVERY_CONCURRENCY = 3;
 const CALLBACK_HOST_CONCURRENCY = 1;
 const CALLBACK_QUEUE_MAX = 1000;
+const CALLBACK_HOST_QUEUE_MAX = 50;
+const CALLBACK_CALLER_QUEUE_MAX = 100;
 const HOST_TIMEOUT_LIMIT = 3;
 const HOST_TIMEOUT_WINDOW_MS = 60_000;
 let callbackInFlight = 0;
@@ -1036,10 +1056,26 @@ const hostTimeoutStrikes = new Map();
 
 function callbackHostKey(job) {
   try {
-    return canonicalHost(new URL(job.callbackUrl).hostname) || "";
+    const url = new URL(job.callbackUrl);
+    const host = canonicalHost(url.hostname);
+    if (!host) return "";
+    const port = url.port || (url.protocol === "https:" ? "443" : "80");
+    return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
   } catch {
     return "";
   }
+}
+
+function callbackCallerKey(job) {
+  if (job?.caller?.tokenId) return `token:${job.caller.tokenId}`;
+  if (job?.caller?.userId) return `user:${job.caller.userId}`;
+  return "";
+}
+
+function pendingCount(match) {
+  let n = 0;
+  for (const waiter of callbackWaiters) if (match(waiter)) n += 1;
+  return n;
 }
 
 function hostCanStart(host) {
@@ -1052,17 +1088,21 @@ function grantCallbackSlot(host) {
   hostInFlight.set(host, (hostInFlight.get(host) || 0) + 1);
 }
 
-function reserveCallbackSlot(host) {
+function reserveCallbackSlot(host, caller) {
   if (hostCanStart(host)) {
     grantCallbackSlot(host);
     return { full: false, wait: null };
   }
-  if (callbackWaiters.length >= CALLBACK_QUEUE_MAX) return { full: true };
+  const hostWaiting = pendingCount((waiter) => waiter.host === host);
+  const callerWaiting = caller ? pendingCount((waiter) => waiter.caller === caller) : 0;
+  if (callbackWaiters.length >= CALLBACK_QUEUE_MAX || hostWaiting >= CALLBACK_HOST_QUEUE_MAX || callerWaiting >= CALLBACK_CALLER_QUEUE_MAX) {
+    return { full: true };
+  }
   let wake;
   const wait = new Promise((resolve) => {
     wake = resolve;
   });
-  callbackWaiters.push({ host, wake });
+  callbackWaiters.push({ host, caller, wake });
   return { full: false, wait };
 }
 
@@ -1112,11 +1152,7 @@ export function flushCallbacks() {
 function scheduleCallback(deps, job, opts = {}) {
   if (!shouldCallback(job)) return;
   const host = callbackHostKey(job);
-  let snapshot = publicJob(job);
-  deps.mutate((s) => {
-    const live = (s.jobs || []).find((j) => j.id === job.id) || job;
-    snapshot = publicJob(live);
-  });
+  const callerKey = callbackCallerKey(job);
   const record = (attempt) => {
     deps.mutate((s) => {
       recordCallback(s, job.id, attempt);
@@ -1126,15 +1162,24 @@ function scheduleCallback(deps, job, opts = {}) {
     record({ ok: false, error: "timeout", at: nowIso() });
     return;
   }
-  const slot = reserveCallbackSlot(host);
+  const slot = reserveCallbackSlot(host, callerKey);
   if (slot.full) {
     record({ ok: false, error: "callback_queue_full", at: nowIso() });
     return;
   }
+  let snapshot = publicJob(job);
+  deps.mutate((s) => {
+    const live = (s.jobs || []).find((j) => j.id === job.id) || job;
+    snapshot = publicJob(live);
+  });
   const delays = opts.retryDelaysMs || CALLBACK_RETRY_DELAYS_MS;
   const task = (async () => {
     if (slot.wait) await slot.wait;
     try {
+      if (hostCoolingDown(host)) {
+        record({ ok: false, error: "timeout", at: nowIso() });
+        return;
+      }
       const timestamp = String(Math.floor((opts.now ? opts.now() : Date.now()) / 1000));
       let secret;
       deps.mutate((s) => {
@@ -1153,7 +1198,7 @@ function scheduleCallback(deps, job, opts = {}) {
         if (!callbackRetryable(attempt)) break;
       }
       if (attempt?.skipped) return;
-      if (attempt?.error === "timeout") noteHostTimeout(host);
+      if (attempt?.error === "timeout" || attempt?.strike) noteHostTimeout(host);
       record(attempt);
     } finally {
       releaseCallbackSlot(host);
