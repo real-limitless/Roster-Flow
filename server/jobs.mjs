@@ -392,11 +392,16 @@ async function callbackAddresses(host, lookupImpl, timeoutMs) {
   return addresses;
 }
 
+function literalCallbackAddress(host) {
+  if (isIP(host)) return host;
+  return decimalIPv4(host);
+}
+
 /**
- * Syntax and scheme only. No DNS. Job create uses this so a hanging lookup
- * cannot stall `POST /api/v1/jobs`.
+ * Syntax, scheme, and IP literals. No DNS. Job create uses this so a hanging
+ * lookup cannot stall `POST /api/v1/jobs`. A literal address is judged here.
  */
-export function callbackUrlSyntax(raw) {
+export function callbackUrlSyntax(raw, env = process.env) {
   if (raw == null || raw === "") return null;
   const s = String(raw).trim();
   if (s.length > 2048) throw fail(400, "callbackUrl is too long");
@@ -410,6 +415,13 @@ export function callbackUrlSyntax(raw) {
   if (url.username || url.password) throw fail(400, "callbackUrl must not contain credentials");
   const host = canonicalHost(url.hostname);
   if (!host) throw fail(400, "callbackUrl host is required");
+  const literal = literalCallbackAddress(host);
+  if (literal) {
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    const matchHost = canonicalHost(literal);
+    const allowlisted = callbackAllowlist(env).some((e) => e.host === matchHost && (e.port == null || e.port === port));
+    if (callbackAddressBlocked(literal, { allowlisted })) throw fail(400, "callbackUrl resolves to a blocked address");
+  }
   return url.toString();
 }
 
@@ -421,7 +433,7 @@ export function callbackUrlSyntax(raw) {
  * Delivery connects only to the returned `addresses`.
  */
 export async function resolveCallback(raw, { env = process.env, lookup: lookupImpl = lookup, dnsTimeoutMs } = {}) {
-  const href = callbackUrlSyntax(raw);
+  const href = callbackUrlSyntax(raw, env);
   if (!href) return null;
   const url = new URL(href);
   const host = canonicalHost(url.hostname);
@@ -660,8 +672,8 @@ function placeJob(state, body, caller, callbackUrl) {
   return publicJob(job);
 }
 
-export async function createJob(state, body = {}, caller = {}) {
-  const callbackUrl = callbackUrlSyntax(body.callbackUrl);
+export async function createJob(state, body = {}, caller = {}, opts = {}) {
+  const callbackUrl = callbackUrlSyntax(body.callbackUrl, opts.env);
   return placeJob(state, body, caller, callbackUrl);
 }
 
@@ -759,13 +771,29 @@ export function parseSince(raw) {
   return new Date(t).toISOString();
 }
 
+const CALLBACK_ERROR_CODES = new Set(["dns_failed", "blocked", "timeout", "connect_failed", "callback_queue_full", "signing_secret"]);
+
+/** Fixed code for `job.callback.error`. Never a raw socket message. */
+export function callbackErrorCode(err, status = null) {
+  const text = String(typeof err === "string" ? err : err?.message || err?.code || "");
+  if (CALLBACK_ERROR_CODES.has(text) || /^http_\d{3}$/.test(text)) return text;
+  if (text === "callback_queue_full" || err?.code === "callback_queue_full") return "callback_queue_full";
+  if (status != null && Number.isInteger(Number(status)) && Number(status) >= 100 && Number(status) <= 599) return `http_${Number(status)}`;
+  if (/signing secret/i.test(text)) return "signing_secret";
+  if (/blocked|credentials|must be an http|too long|host is required/i.test(text)) return "blocked";
+  if (/lookup timed out|did not resolve|ENOTFOUND|EAI_AGAIN|EAI_NONAME|getaddrinfo/i.test(text) || err?.code === "ENOTFOUND" || err?.code === "EAI_AGAIN") return "dns_failed";
+  if (/timed out|ETIMEDOUT/i.test(text) || err?.code === "ETIMEDOUT") return "timeout";
+  return "connect_failed";
+}
+
 export function recordCallback(state, id, attempt) {
   const job = requireJob(state, id);
+  const error = attempt.ok ? null : callbackErrorCode(attempt.error, attempt.error ? null : attempt.status);
   job.callback = {
     at: attempt.at || nowIso(),
     ok: Boolean(attempt.ok),
     status: attempt.status ?? null,
-    error: attempt.error || null,
+    error,
   };
   job.updatedAt = nowIso();
   pushEvent(job, "callback", { ok: job.callback.ok, status: job.callback.status });
@@ -949,7 +977,7 @@ export function postPinned(target, { headers, body, timeoutMs }) {
  */
 export async function deliverCallback(job, { secret, timeoutMs = 5000, now = Date.now, timestamp: timestampOpt, ...opts } = {}) {
   if (!job?.callbackUrl) return { skipped: true };
-  const failed = (err, status = null) => ({ ok: false, status, error: String(err?.message || err).slice(0, 300), at: nowIso() });
+  const failed = (err, status = null) => ({ ok: false, status, error: callbackErrorCode(err, status), at: nowIso() });
   if (!secret) return failed("callback signing secret is not configured");
   let target;
   try {
@@ -971,8 +999,8 @@ export async function deliverCallback(job, { secret, timeoutMs = 5000, now = Dat
         [CALLBACK_HEADERS.signature]: signCallback(secret, timestamp, job.id, body),
       },
     });
-    if (res.status >= 300 && res.status < 400) return failed("callback redirect blocked", res.status);
-    return { ok: res.status >= 200 && res.status < 300, status: res.status, at: nowIso() };
+    if (res.status < 200 || res.status >= 300) return failed("", res.status);
+    return { ok: true, status: res.status, at: nowIso() };
   } catch (err) {
     return failed(err);
   }
@@ -982,34 +1010,94 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeCallbackAttempt(attempt) {
+  if (!attempt || attempt.ok || attempt.skipped) return attempt;
+  return { ...attempt, error: callbackErrorCode(attempt.error, attempt.error ? null : attempt.status) };
+}
+
 function callbackRetryable(attempt) {
   if (!attempt || attempt.ok || attempt.skipped) return false;
-  if (typeof attempt.status === "number" && attempt.status < 500) return false;
-  return !/blocked|credentials|redirect|signing secret|must be an http|too long/.test(String(attempt.error || ""));
+  const code = String(attempt.error || "");
+  if (code === "blocked" || code === "callback_queue_full" || code === "signing_secret") return false;
+  if (/^http_(\d{3})$/.test(code)) return Number(code.slice(5)) >= 500;
+  return code === "timeout" || code === "connect_failed" || code === "dns_failed";
 }
 
 const pendingCallbacks = new Set();
-const CALLBACK_DELIVERY_CONCURRENCY = 2;
+const CALLBACK_DELIVERY_CONCURRENCY = 3;
+const CALLBACK_HOST_CONCURRENCY = 1;
+const CALLBACK_QUEUE_MAX = 1000;
+const HOST_TIMEOUT_LIMIT = 3;
+const HOST_TIMEOUT_WINDOW_MS = 60_000;
 let callbackInFlight = 0;
-const callbackSlotWaiters = [];
+const hostInFlight = new Map();
+const callbackWaiters = [];
+const hostTimeoutStrikes = new Map();
 
-function takeCallbackSlot() {
-  if (callbackInFlight < CALLBACK_DELIVERY_CONCURRENCY) {
-    callbackInFlight += 1;
-    return Promise.resolve();
+function callbackHostKey(job) {
+  try {
+    return canonicalHost(new URL(job.callbackUrl).hostname) || "";
+  } catch {
+    return "";
   }
-  return new Promise((resolve) => {
-    callbackSlotWaiters.push(resolve);
-  });
 }
 
-function releaseCallbackSlot() {
-  const next = callbackSlotWaiters.shift();
-  if (next) {
-    next();
+function hostCanStart(host) {
+  if (callbackInFlight >= CALLBACK_DELIVERY_CONCURRENCY) return false;
+  return (hostInFlight.get(host) || 0) < CALLBACK_HOST_CONCURRENCY;
+}
+
+function grantCallbackSlot(host) {
+  callbackInFlight += 1;
+  hostInFlight.set(host, (hostInFlight.get(host) || 0) + 1);
+}
+
+function reserveCallbackSlot(host) {
+  if (hostCanStart(host)) {
+    grantCallbackSlot(host);
+    return { full: false, wait: null };
+  }
+  if (callbackWaiters.length >= CALLBACK_QUEUE_MAX) return { full: true };
+  let wake;
+  const wait = new Promise((resolve) => {
+    wake = resolve;
+  });
+  callbackWaiters.push({ host, wake });
+  return { full: false, wait };
+}
+
+function releaseCallbackSlot(host) {
+  callbackInFlight = Math.max(0, callbackInFlight - 1);
+  const left = (hostInFlight.get(host) || 1) - 1;
+  if (left <= 0) hostInFlight.delete(host);
+  else hostInFlight.set(host, left);
+  for (let i = 0; i < callbackWaiters.length; i++) {
+    if (!hostCanStart(callbackWaiters[i].host)) continue;
+    const [waiter] = callbackWaiters.splice(i, 1);
+    grantCallbackSlot(waiter.host);
+    waiter.wake();
     return;
   }
-  callbackInFlight -= 1;
+}
+
+function hostCoolingDown(host, now = Date.now()) {
+  const row = hostTimeoutStrikes.get(host);
+  if (!row) return false;
+  if (now - row.at > HOST_TIMEOUT_WINDOW_MS) {
+    hostTimeoutStrikes.delete(host);
+    return false;
+  }
+  return row.count >= HOST_TIMEOUT_LIMIT;
+}
+
+function noteHostTimeout(host, now = Date.now()) {
+  const row = hostTimeoutStrikes.get(host);
+  if (!row || now - row.at > HOST_TIMEOUT_WINDOW_MS) {
+    hostTimeoutStrikes.set(host, { count: 1, at: now });
+    return;
+  }
+  row.count += 1;
+  row.at = now;
 }
 
 /** Tests wait for background delivery. Submit and complete do not. */
@@ -1023,35 +1111,52 @@ export function flushCallbacks() {
  */
 function scheduleCallback(deps, job, opts = {}) {
   if (!shouldCallback(job)) return;
-  const timestamp = String(Math.floor((opts.now ? opts.now() : Date.now()) / 1000));
+  const host = callbackHostKey(job);
+  let snapshot = publicJob(job);
+  deps.mutate((s) => {
+    const live = (s.jobs || []).find((j) => j.id === job.id) || job;
+    snapshot = publicJob(live);
+  });
+  const record = (attempt) => {
+    deps.mutate((s) => {
+      recordCallback(s, job.id, attempt);
+    });
+  };
+  if (hostCoolingDown(host)) {
+    record({ ok: false, error: "timeout", at: nowIso() });
+    return;
+  }
+  const slot = reserveCallbackSlot(host);
+  if (slot.full) {
+    record({ ok: false, error: "callback_queue_full", at: nowIso() });
+    return;
+  }
   const delays = opts.retryDelaysMs || CALLBACK_RETRY_DELAYS_MS;
   const task = (async () => {
-    await takeCallbackSlot();
+    if (slot.wait) await slot.wait;
     try {
+      const timestamp = String(Math.floor((opts.now ? opts.now() : Date.now()) / 1000));
       let secret;
-      let stored = job;
       deps.mutate((s) => {
         secret = ensureCallbackSecret(s, opts.env);
-        const live = (s.jobs || []).find((j) => j.id === job.id) || job;
-        stored = publicJob(live);
       });
-      let attempt = { ok: false, error: "callback was not attempted", at: nowIso() };
+      let attempt = { ok: false, error: "connect_failed", at: nowIso() };
       const tries = delays.length + 1;
       for (let i = 0; i < tries; i++) {
         if (i > 0 && delays[i - 1]) await sleep(delays[i - 1]);
         try {
-          attempt = await (deps.deliverCallback || deliverCallback)(stored, { ...opts, secret, timestamp });
+          attempt = await (deps.deliverCallback || deliverCallback)(snapshot, { ...opts, secret, timestamp });
         } catch (err) {
-          attempt = { ok: false, error: String(err?.message || err).slice(0, 300), at: nowIso() };
+          attempt = { ok: false, error: callbackErrorCode(err), at: nowIso() };
         }
+        attempt = normalizeCallbackAttempt(attempt);
         if (!callbackRetryable(attempt)) break;
       }
       if (attempt?.skipped) return;
-      deps.mutate((s) => {
-        recordCallback(s, job.id, attempt);
-      });
+      if (attempt?.error === "timeout") noteHostTimeout(host);
+      record(attempt);
     } finally {
-      releaseCallbackSlot();
+      releaseCallbackSlot(host);
     }
   })().catch((err) => {
     console.error("callback delivery", err);
@@ -1066,7 +1171,7 @@ function seatLabel(state, seatId, fallback) {
 }
 
 export async function publishNewJob(body, caller, deps, opts) {
-  const callbackUrl = callbackUrlSyntax(body.callbackUrl);
+  const callbackUrl = callbackUrlSyntax(body.callbackUrl, opts?.env);
   let created;
   deps.mutate((s) => {
     created = placeJob(s, body, caller, callbackUrl);

@@ -313,9 +313,13 @@ Status: `queued`, `running`, `needs_human`, `done`, `failed`, `cancelled`. Termi
 
 `callbackUrl` must be `http` or `https` and must not carry credentials (`https://user:pass@…` is **400**). Job responses never include credentials in `callbackUrl`.
 
-Syntax, scheme, length, and credentials are checked when the job is created, and a bad URL is **400**. `POST /api/v1/jobs` does not resolve DNS. The host is resolved on the delivery path: CORE checks every address, and connects only to one of those addresses. The `Host` header and TLS SNI stay the original hostname, so certificates are still checked against it. A DNS answer that changes between the check and the connect cannot move the request. The lookup gives up after `ROSTER_CALLBACK_DNS_TIMEOUT_MS` milliseconds (default 5000). A lookup that times out, fails, or returns a blocked address is not delivered. The attempt is stored on `job.callback` with `ok: false` and the error. Redirects are not followed.
+Syntax, scheme, length, and credentials are checked when the job is created, and a bad URL is **400**. An IP literal is checked then too, with no DNS. `http://169.254.169.254/`, `http://127.0.0.1/`, and `http://[::1]/` are **400** unless that address is allowlisted and is not in a range that stays blocked even when listed (link-local, metadata, and `0.0.0.0/8`).
 
-Blocked addresses (recorded on `job.callback`, never delivered):
+A hostname is not resolved at create. `POST /api/v1/jobs` returns **201** for a name that later resolves to a private address. Delivery resolves it, records `job.callback.ok: false` and `job.callback.error: "blocked"`, and does not send. Clients should read `job.callback` after the attempt, or poll `GET /api/v1/jobs/:id` when `callback` is still null.
+
+On delivery, CORE checks every address and connects only to one of those addresses. The `Host` header and TLS SNI stay the original hostname, so certificates are still checked against it. A DNS answer that changes between the check and the connect cannot move the request. The lookup gives up after `ROSTER_CALLBACK_DNS_TIMEOUT_MS` milliseconds (default 5000). A lookup that times out, fails, or returns a blocked address is not delivered. Redirects are not followed.
+
+Blocked addresses (a literal is **400** at create; a hostname is `job.callback.error: "blocked"` at delivery, and is never sent):
 
 - IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24` (deprecated 6to4 anycast), `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`.
 - IPv6: `::/96` (unspecified, loopback, IPv4-compatible `::a.b.c.d`), `64:ff9b::/96`, `64:ff9b:1::/48`, `100::/64` (discard-only), `2001::/32` (Teredo), `2001:2::/48` (benchmarking), `2001:10::/28` (ORCHIDv1), `2001:db8::/32`, `2002::/16` (6to4), `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`.
@@ -331,11 +335,13 @@ Blocked addresses (recorded on `job.callback`, never delivered):
 
 #### Callback delivery and signatures
 
-On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set. That includes a job that lands in `needs_human` at submit because its assignee is a human seat. The POST does not block job creation or `POST /api/v1/jobs/:id/complete`. CORE sends it afterward, reuses the same timestamp and signature on each try, and retries a transport failure twice (after 200ms, then 800ms). At most two deliveries run at once; the rest wait, so a slow lookup cannot fill the process thread pool.
+On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set. That includes a job that lands in `needs_human` at submit because its assignee is a human seat. The POST does not block job creation or `POST /api/v1/jobs/:id/complete`. CORE sends it afterward. The body is the job as it was when that callback was scheduled, so a `needs_human` callback stays `needs_human` even if the job reaches `done` before the POST goes out. The signature timestamp is taken when a delivery slot opens, then reused for that delivery's retries (after 200ms, then 800ms). Time spent waiting in the queue does not age the signature past the receiver's 300 second window.
 
-**Behavior change:** `POST /api/v1/jobs` and `POST /api/v1/jobs/:id/complete` return `callback: null`. `job.callback` is filled in when the attempt finishes.
+At most three deliveries run at once, and only one per host, which stays under the default libuv thread pool of four. A callback for a host that is not already in flight can start ahead of queued callbacks for a busy host. The waiting queue holds at most 1000 callbacks. Past that, CORE records `callback_queue_full` and does not send. After three deliveries to the same host end in `timeout` within 60 seconds, further callbacks for that host are recorded as `timeout` and are not sent, until 60 seconds after the last timeout.
 
-Pending deliveries are kept in memory only. A restart drops any callback that has not finished. `needs_human` and `done` can arrive out of order. Order deliveries by `job.updatedAt`, and when those timestamps tie treat `done`, `failed`, or `cancelled` as newer than `needs_human`. If a callback you expected does not arrive, poll `GET /api/v1/jobs/:id`.
+**Behavior change:** `POST /api/v1/jobs` and `POST /api/v1/jobs/:id/complete` return `callback: null`. `job.callback` is filled in when the attempt finishes. A queue overflow is written before the response returns, so a following `GET` can already show `callback_queue_full`.
+
+Pending deliveries are kept in memory only. A restart drops any callback that has not finished. If a callback you expected does not arrive, poll `GET /api/v1/jobs/:id`. Order the callbacks you do receive by `job.updatedAt`, and when those timestamps tie treat `done`, `failed`, or `cancelled` as newer than `needs_human`.
 
 ```json
 { "event": "job.status", "job": { "id": "job-…", "status": "done", "result": "…" } }
@@ -385,7 +391,19 @@ function verifyRosterCallback(current, previous, headers, rawBody) {
 }
 ```
 
-The attempt is stored on `job.callback` (`ok`, `status`, `error`). A failed callback does not change the job status. `announce: false` skips the room and bus note (the seat tool uses this when it is already posting the ask).
+The attempt is stored on `job.callback` (`ok`, `status`, `error`). `error` is a fixed code, never a raw socket message, so it does not include an internal address or port:
+
+| `error` | Meaning |
+|---|---|
+| `blocked` | The host resolved to a blocked address, or the URL itself was rejected |
+| `dns_failed` | The lookup failed or hit `ROSTER_CALLBACK_DNS_TIMEOUT_MS` |
+| `timeout` | The connection timed out, or the host is in the short timeout cooldown |
+| `connect_failed` | The connection failed |
+| `http_<status>` | The receiver responded with that HTTP status (redirects included) |
+| `callback_queue_full` | More than 1000 callbacks were already waiting |
+| `signing_secret` | No callback signing secret is configured |
+
+A failed callback does not change the job status. `announce: false` skips the room and bus note (the seat tool uses this when it is already posting the ask).
 
 A seat finishes with `roster_report` `jobId` (optional `status`, `cost`, `tokens`). `roster_ask_human` `jobId` sets `needs_human` and still parks the question on `reports_to`.
 
