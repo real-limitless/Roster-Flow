@@ -353,7 +353,9 @@ test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }
     }
     assert.ok(stub.hits.some((hit) => hit.includes("LONG")), "long provider was not reached");
     const seatY = await hire("StreamY");
-    const yWake = fetch(`${core.base}/api/v1/channels/ship/messages`, {
+    // Room wakes carry the room's recent messages, so StreamY is woken from another room;
+    // in #ship its prompt would include StreamX's LONG trigger and the stub would answer it.
+    const yWake = fetch(`${core.base}/api/v1/channels/general/messages`, {
       method: "POST",
       headers,
       body: JSON.stringify({ text: "please @StreamY answer after", who: "You" }),
@@ -373,7 +375,8 @@ test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }
     assert.equal(room.filter((m) => m.runId === xRow.runId && m.seatId === seatX.id).length, 1);
     assert.equal((state.runs || []).find((item) => item.id === xRow.runId)?.status, "done");
     assert.equal((state.runs || []).find((item) => item.id === yRow.runId)?.status, "done");
-    assert.ok(room.some((m) => m.seatId === seatY.id && String(m.text).includes("stub-reply-ok")));
+    const general = (state.messages || []).filter((m) => m.channel === "general");
+    assert.ok(general.some((m) => m.seatId === seatY.id && m.runId === yRow.runId && String(m.text).includes("stub-reply-ok")));
     const yHit = stub.hits.findIndex((hit) => hit.includes("StreamY") || hit.includes(seatY.id));
     const xHit = stub.hits.findIndex((hit) => hit.includes("LONG"));
     assert.ok(xHit >= 0 && yHit > xHit, `x=${xHit} y=${yHit}`);
