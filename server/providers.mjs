@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { normalizeModelId } from "./seed.mjs";
-import { outputTokenLimit } from "./model-defaults.mjs";
+import { contextTokenLimit, outputTokenLimit } from "./model-defaults.mjs";
 import { authPath, opencodeDir as ocDir } from "./paths.mjs";
 import { getState } from "./store.mjs";
 
@@ -135,8 +135,11 @@ export function providerModelIdsInUse(providerId, state) {
   return [...ids];
 }
 
-function modelBlock(id, name, output) {
-  return { name: String(name || id), limit: { output: outputTokenLimit(output) } };
+function modelBlock(id, name, output, context) {
+  return {
+    name: String(name || id),
+    limit: { context: contextTokenLimit(context), output: outputTokenLimit(output) },
+  };
 }
 
 export function upsertProvider(body, state = getState()) {
@@ -153,13 +156,14 @@ export function upsertProvider(body, state = getState()) {
     const mid = String(m?.id || m || "").trim();
     if (!mid) continue;
     const output = m && typeof m === "object" ? (m.limit?.output ?? m.max_tokens ?? m.maxTokens) : undefined;
+    const context = m && typeof m === "object" ? m.limit?.context : undefined;
     const name = m && typeof m === "object" ? m.name : mid;
-    models[mid] = modelBlock(mid, name, output);
+    models[mid] = modelBlock(mid, name, output, context);
   }
   for (const mid of providerModelIdsInUse(id, state)) {
     if (models[mid]) continue;
     const prev = previous[mid];
-    models[mid] = modelBlock(mid, prev?.name, prev?.limit?.output);
+    models[mid] = modelBlock(mid, prev?.name, prev?.limit?.output, prev?.limit?.context);
   }
   const apiKeyEnv = String(body.apiKeyEnv || "").trim();
   const block = {

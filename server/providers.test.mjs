@@ -102,6 +102,7 @@ test("upsertProvider keeps models a seat still uses and never writes a completio
     );
     const models = readOpenCodeConfig().provider.featherless.models;
     assert.equal(models["Qwen/Qwen2.5-Coder-32B-Instruct"].limit.output, 512);
+    assert.ok(models["Qwen/Qwen2.5-Coder-32B-Instruct"].limit.context > 0);
     assert.equal(models["meta-llama/Llama-3.3-70B-Instruct"].name, "Llama 3.3 70B");
     assert.ok(models["meta-llama/Llama-3.3-70B-Instruct"].limit.output >= 512);
     assert.ok(models["team-only"].limit.output >= 512);

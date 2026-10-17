@@ -18,7 +18,7 @@
  *       provider's current models, and every featherless model a seat or
  *       team already uses.
  */
-import { FEATHERLESS_CHAT_ID, FEATHERLESS_CODER_ID, outputTokenLimit } from "../server/model-defaults.mjs";
+import { contextTokenLimit, FEATHERLESS_CHAT_ID, FEATHERLESS_CODER_ID, outputTokenLimit } from "../server/model-defaults.mjs";
 
 export const FEATHERLESS_MODEL_DEFAULTS = [
   { id: FEATHERLESS_CODER_ID, name: "Qwen2.5 Coder 32B" },
@@ -35,8 +35,12 @@ export const FEATHERLESS = {
   models: FEATHERLESS_MODEL_DEFAULTS,
 };
 
-function listedModel(id, name, output) {
-  return { id, name: name || id, limit: { output: outputTokenLimit(output) } };
+function listedModel(id, name, output, context) {
+  return {
+    id,
+    name: name || id,
+    limit: { context: contextTokenLimit(context), output: outputTokenLimit(output) },
+  };
 }
 
 /**
@@ -46,15 +50,15 @@ function listedModel(id, name, output) {
  */
 export function featherlessModels(assignedRefs = [], current = []) {
   const byId = new Map(FEATHERLESS_MODEL_DEFAULTS.map((m) => [m.id, listedModel(m.id, m.name)]));
-  const add = (id, name, output) => {
+  const add = (id, name, output, context) => {
     const mid = String(id || "").trim();
     if (!mid || byId.has(mid)) return;
-    byId.set(mid, listedModel(mid, name, output));
+    byId.set(mid, listedModel(mid, name, output, context));
   };
   for (const item of current) {
     if (!item) continue;
     if (typeof item === "string") add(item);
-    else add(item.id || item.modelID, item.name, item.limit?.output ?? item.max_tokens);
+    else add(item.id || item.modelID, item.name, item.limit?.output ?? item.max_tokens, item.limit?.context);
   }
   for (const ref of assignedRefs) {
     const raw = String(ref || "").trim();
