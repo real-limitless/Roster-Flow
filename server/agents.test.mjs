@@ -15,6 +15,7 @@ test("hiring with model '' does not store the built-in opencode provider", () =>
   const seat = hireSeat(emptyState(), { name: "Blank Model", model: "", job: "Unset." });
   assert.notEqual(seat.model, "opencode/longcat-2.5-preview-free");
   assert.notEqual(seat.model, "xai/grok-4");
+  assert.notEqual(seat.model, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
   const connected = [
     { providerID: "opencode", modelID: "longcat-2.5-preview-free", connected: true },
     { providerID: "featherless", modelID: "stub-model", connected: true },

@@ -848,7 +848,7 @@ test("both harnesses load featherless and a channel mention gets a reply", { tim
     ROSTER_PROVIDER_NAME: "Featherless",
     ROSTER_PROVIDER_BASE_URL: `http://127.0.0.1:${stub.port}/v1`,
     ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
-    ROSTER_PROVIDER_MODELS: "stub-model",
+    ROSTER_PROVIDER_MODELS: "deepseek-ai/DeepSeek-V4.1-Flash",
     FEATHERLESS_API_KEY: "stub-key",
     ROSTER_PROVIDER_TURN_MS: "8000",
     XAI_API_KEY: "",
@@ -877,7 +877,7 @@ test("both harnesses load featherless and a channel mention gets a reply", { tim
       body: JSON.stringify({
         id: "wiki-scribe",
         name: "Wiki Scribe",
-        model: "featherless/stub-model",
+        model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash",
         job: "Answer in the wiki room.",
       }),
     });
@@ -892,6 +892,10 @@ test("both harnesses load featherless and a channel mention gets a reply", { tim
     assert.equal(res.status, 201, JSON.stringify(body));
     const row = (body.wakeResults || []).find((item) => item.seat === "wiki-scribe");
     assert.equal(row?.started, true, JSON.stringify(body.wakeResults || body));
+    const after = await (await fetch(`${core.base}/api/v1/health`)).json();
+    const scribe = (after.seats || []).find((item) => item.seat === "wiki-scribe");
+    assert.equal(scribe?.model, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
+    assert.equal(scribe?.ready, true, JSON.stringify(scribe));
     const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
     const run = (state.runs || []).find((item) => item.id === row.runId);
     assert.equal(run?.status, "done", JSON.stringify(run));

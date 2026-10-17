@@ -136,23 +136,33 @@ test("one unhirable seat does not mark the company harness down", () => {
       { id: "human", name: "You", kind: "human", model: "featherless/stub-model" },
     ],
   };
-  assert.equal(harness.seatProviderGap(state, ["opencode", "featherless"]), null);
-  const mixed = harness.seatReadiness(state, ["opencode"]);
+  const opencodeOnly = [{ providerID: "opencode", modelID: "big-pickle" }];
+  const qwenOnly = [...opencodeOnly, { providerID: "featherless", modelID: "Qwen/Qwen2.5-Coder-32B-Instruct" }];
+  const withFlash = [...qwenOnly, { providerID: "featherless", modelID: "deepseek-ai/DeepSeek-V4.1-Flash" }];
+  assert.equal(harness.seatProviderGap(state, withFlash), null);
+  const mixed = harness.seatReadiness(state, qwenOnly);
   assert.equal(mixed.find((row) => row.seat === "wiki-scribe").ready, false);
   assert.match(mixed.find((row) => row.seat === "wiki-scribe").error, /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
-  assert.match(mixed.find((row) => row.seat === "wiki-scribe").error, /loaded \[opencode\]/);
+  assert.match(mixed.find((row) => row.seat === "wiki-scribe").error, /Qwen\/Qwen2\.5-Coder-32B-Instruct/);
   assert.equal(mixed.find((row) => row.seat === "build").ready, true);
   assert.equal(harness.companyHarnessReady(true, mixed), true);
-  assert.equal(harness.seatProviderGap(state, ["opencode"]), null);
-  const onlyBad = harness.seatReadiness({ seats: [wiki] }, ["opencode"]);
+  assert.equal(harness.seatProviderGap(state, opencodeOnly), null);
+  const providerOnly = harness.seatReadiness(state, ["featherless"]);
+  assert.equal(providerOnly.find((row) => row.seat === "wiki-scribe").ready, false);
+  assert.match(providerOnly.find((row) => row.seat === "wiki-scribe").error, /DeepSeek-V4\.1-Flash/);
+  const loaded = harness.seatReadiness(state, withFlash);
+  assert.equal(loaded.find((row) => row.seat === "wiki-scribe").ready, true);
+  const onlyBad = harness.seatReadiness({ seats: [wiki] }, qwenOnly);
   assert.equal(harness.companyHarnessReady(true, onlyBad), false);
   assert.match(harness.seatProviderGap({ seats: [wiki] }, []), /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
-  assert.match(harness.seatProviderGap({ seats: [wiki] }, ["opencode"]), /loaded \[opencode\]/);
-  const report = harness.harnessSeatReport(state, { harness: "up", loadedProviders: ["opencode"] });
+  assert.match(harness.seatProviderGap({ seats: [wiki] }, opencodeOnly), /loaded \[opencode\/big-pickle\]/);
+  const report = harness.harnessSeatReport(state, { harness: "up", loadedModels: opencodeOnly });
   assert.equal(report.harnessReady, true);
   assert.equal(report.harnessError, null);
-  assert.equal(harness.harnessSeatReport(state, { harness: "offline", loadedProviders: [] }).harnessReady, false);
-  assert.equal(harness.harnessSeatReport({ seats: [wiki] }, { harness: "up", loadedProviders: ["opencode"] }).harnessReady, false);
+  assert.equal(report.seats.find((row) => row.seat === "wiki-scribe").ready, false);
+  assert.equal(harness.harnessSeatReport(state, { harness: "offline", loadedModels: [] }).harnessReady, false);
+  assert.equal(harness.harnessSeatReport({ seats: [wiki] }, { harness: "up", loadedModels: qwenOnly }).harnessReady, false);
+  assert.match(harness.harnessSeatReport({ seats: [wiki] }, { harness: "up", loadedModels: qwenOnly }).harnessError, /DeepSeek-V4\.1-Flash/);
 });
 
 test("serveChildEnv passes through every {env:VAR} a provider block references", () => {

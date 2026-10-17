@@ -85,20 +85,45 @@ export function shouldAutostartHarness(state, env = process.env, configured = pr
   return Boolean(configured);
 }
 
+/**
+ * Env model list plus every model a seat or team already assigns on this provider.
+ * A short ROSTER_PROVIDER_MODELS value must not drop DeepSeek-V4.1-Flash or Qwen.
+ */
+export function withSeatModels(spec, state) {
+  if (!spec?.id) return spec;
+  const prefix = `${String(spec.id).trim().toLowerCase()}/`;
+  const models = [...(spec.models || [])];
+  const have = new Set(models.map((m) => m.id));
+  const refs = [];
+  for (const seat of state?.seats || []) refs.push(seat?.model, seat?.fallbackModel);
+  for (const team of state?.teams || []) {
+    refs.push(team?.defaultModel, team?.fallbackModel, ...(team?.allowedModels || []));
+  }
+  for (const ref of refs) {
+    const raw = String(ref || "").trim();
+    if (!raw.toLowerCase().startsWith(prefix)) continue;
+    const id = raw.slice(prefix.length);
+    if (!id || have.has(id)) continue;
+    have.add(id);
+    models.push({ id, name: id });
+  }
+  return { ...spec, models };
+}
+
 /** Idempotent. No-op when ROSTER_PROVIDER_ID is unset. Does not throw on a missing model list. */
-export function seedProviderFromEnv(env = process.env) {
+export function seedProviderFromEnv(env = process.env, state) {
   const id = String(env.ROSTER_PROVIDER_ID || "").trim();
   if (!id) return { seeded: false };
   const spec = providerFromEnv(env);
   if (!spec) return { seeded: false, reason: "ROSTER_PROVIDER_MODELS is required to seed a provider" };
-  const provider = upsertProvider(spec);
+  const provider = upsertProvider(withSeatModels(spec, state ?? getState()));
   return { seeded: true, provider };
 }
 
 export async function autostartHarness({ ensureFn = ensure, state = getState(), env = process.env } = {}) {
   // Seed before the auto check so a provider written on this boot counts.
   try {
-    seedProviderFromEnv(env);
+    seedProviderFromEnv(env, getState() || state);
   } catch (err) {
     console.error(`Provider seed from env failed: ${err.message}`);
   }

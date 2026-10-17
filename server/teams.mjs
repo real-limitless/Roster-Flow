@@ -1,3 +1,4 @@
+import { FEATHERLESS_CHAT_MODEL } from "./model-defaults.mjs";
 import { genericTemplate, normalizeModelId, normalizeSeat, slugify, supervisorTemplate } from "./seed.mjs";
 import { STRATEGIES } from "./models.mjs";
 import { attachTeamToProject } from "./projects.mjs";
@@ -78,7 +79,7 @@ export function createStaffedTeam(state, body = {}) {
     throw err;
   }
   const name = body.name?.startsWith("@") ? body.name : `@${String(body.name || id).replace(/^@/, "")}`;
-  const defaultModel = normalizeModelId(body.defaultModel) || "xai/grok-4";
+  const defaultModel = normalizeModelId(body.defaultModel) || FEATHERLESS_CHAT_MODEL;
   const team = {
     id,
     name,

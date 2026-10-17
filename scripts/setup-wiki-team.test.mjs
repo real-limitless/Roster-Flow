@@ -28,8 +28,36 @@ test("setup-wiki-team registers Featherless by env ref, project, and @wiki team"
   const ids = calls[2].body.specialists.map((s) => s.id);
   assert.deepEqual(ids, ["wiki-architect", "wiki-scribe", "wiki-diagrammer", "wiki-editor"]);
   assert.ok(calls[2].body.specialists.every((s) => s.model.startsWith("featherless/")));
+  assert.equal(calls[2].body.defaultModel, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
+  const modelIds = calls[0].body.models.map((m) => m.id);
+  assert.ok(modelIds.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.ok(modelIds.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+  for (const spec of calls[2].body.specialists) {
+    assert.ok(modelIds.includes(spec.model.slice("featherless/".length)), spec.model);
+  }
+  assert.equal(out.model, "deepseek-ai/DeepSeek-V4.1-Flash");
   assert.equal(out.teamCreated, true);
   assert.ok(calls.every((c) => c.headers.authorization === "Bearer rf_test"));
+});
+
+test("setup-wiki-team adds a non-default WIKI_MODEL and accepts a featherless/ ref", async () => {
+  const custom = fakeCore();
+  await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test", WIKI_MODEL: "Qwen/Qwen2.5-Coder-32B-Instruct" }, fetchImpl: custom.fetchImpl, log() {} });
+  const ids = custom.calls[0].body.models.map((m) => m.id);
+  assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+  assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.equal(custom.calls[2].body.defaultModel, "featherless/Qwen/Qwen2.5-Coder-32B-Instruct");
+  assert.ok(custom.calls[2].body.specialists.every((s) => s.model === "featherless/Qwen/Qwen2.5-Coder-32B-Instruct"));
+
+  const prefixed = fakeCore();
+  const out = await setupWikiTeam({
+    env: { ROSTER_API_TOKEN: "rf_test", WIKI_MODEL: "featherless/org/custom-model" },
+    fetchImpl: prefixed.fetchImpl,
+    log() {},
+  });
+  assert.equal(out.model, "org/custom-model");
+  assert.equal(prefixed.calls[2].body.defaultModel, "featherless/org/custom-model");
+  assert.ok(prefixed.calls[0].body.models.some((m) => m.id === "org/custom-model"));
 });
 
 test("setup-wiki-team is idempotent: on 409 it only hires missing specialists", async () => {

@@ -296,7 +296,7 @@ test("team inspector shows seat count and hire specialist", async ({ page, reque
   await expect(page.getByTestId("team-seat-count")).toBeVisible();
   const count = Number(await page.getByTestId("team-seat-count").innerText());
   expect(count).toBeGreaterThanOrEqual(4);
-  await expect(page.getByTestId("team-models")).toContainText("xai/grok-4");
+  await expect(page.getByTestId("team-models")).toContainText("featherless/deepseek-ai/DeepSeek-V4.1-Flash");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("conversation-modal")).toHaveCount(0);
 

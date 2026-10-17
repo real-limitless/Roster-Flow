@@ -309,6 +309,7 @@ export function status(kind = COMPANY) {
     workspace: s.workspace,
     config: inst?.config?.file || configPaths(k).file,
     loadedProviders: inst?.healthy ? loadedProviderIds(inst.loaded) : [],
+    loadedModels: inst?.healthy && Array.isArray(inst.loaded) ? inst.loaded : [],
     plugin: "roster-flow-opencode",
     pid: inst?.pid ?? null,
   };
@@ -344,20 +345,32 @@ export async function liveCombinedStatus() {
   return combinedStatus();
 }
 
-/** Error when this seat's provider is absent from a known loaded-id list. */
-export function seatModelGap(seat, loadedIds) {
+/** `provider/model` refs from `{ providerID, modelID }` rows. Bare provider ids do not count. */
+function loadedModelRefs(loaded) {
+  const refs = [];
+  for (const item of loaded) {
+    if (!item || typeof item !== "object") continue;
+    const providerID = String(item.providerID || "").trim();
+    const modelID = String(item.modelID || "").trim();
+    if (providerID && modelID) refs.push(`${providerID}/${modelID}`);
+  }
+  return refs;
+}
+
+/** Error when this seat's exact model is absent from a known loaded-model list. */
+export function seatModelGap(seat, loaded) {
   if (!seat || seat.kind !== "bot" || seat.mcpGuest) return null;
   const adapter = String(seat.adapter || "opencode").toLowerCase();
   if (adapter && adapter !== "opencode") return null;
-  if (!Array.isArray(loadedIds)) return null;
+  if (!Array.isArray(loaded)) return null;
   const model = String(seat.model || "").trim();
   if (!model) return null;
   const providerID = model.split("/")[0];
   if (!providerID || isBuiltinProvider(providerID)) return null;
-  const have = new Set(loadedIds);
-  if (have.has(providerID)) return null;
+  const refs = loadedModelRefs(loaded);
+  if (refs.includes(model)) return null;
   const label = seat.system ? "system" : "company";
-  return `${seat.name || seat.id} needs ${model}; ${label} harness loaded [${[...have].join(", ") || "none"}]`;
+  return `${seat.name || seat.id} needs ${model}; ${label} harness loaded [${refs.join(", ") || "none"}]`;
 }
 
 /** Per-seat company readiness. System seats are reported on the system serve. */
@@ -396,12 +409,12 @@ export function seatProviderGap(state, loadedIds) {
 /** `seats`, `harnessReady`, and `harnessError` for /health and /harness. */
 export function harnessSeatReport(state, status) {
   const serveUp = status?.harness === "up";
-  const loadedIds = Array.isArray(status?.loadedProviders) ? status.loadedProviders : [];
-  const seats = seatReadiness(state, serveUp ? loadedIds : []).map((row) =>
+  const loaded = Array.isArray(status?.loadedModels) ? status.loadedModels : null;
+  const seats = seatReadiness(state, serveUp ? loaded : []).map((row) =>
     serveUp ? row : { ...row, ready: false, error: "company harness is offline" },
   );
   const harnessReady = companyHarnessReady(serveUp, seats);
-  const harnessError = serveUp ? seatProviderGap(state, loadedIds) : null;
+  const harnessError = serveUp ? seatProviderGap(state, loaded) : null;
   return { seats, harnessReady, harnessError };
 }
 
