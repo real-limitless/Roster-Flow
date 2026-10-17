@@ -14,9 +14,11 @@
  *       Settings → API tokens, POST /api/v1/tokens, or scripts/create-token.mjs.
  * Env:  ROSTER_API (default http://127.0.0.1:8790), WIKI_PROJECT_ID (wiki-flow-docs),
  *       WIKI_MODEL (default deepseek-ai/DeepSeek-V4.1-Flash). The provider
- *       models list is the catalog plus every model this script assigns.
+ *       models list is the catalog, the models this script assigns, the
+ *       provider's current models, and every featherless model a seat or
+ *       team already uses.
  */
-import { FEATHERLESS_CHAT_ID, FEATHERLESS_CODER_ID } from "../server/model-defaults.mjs";
+import { FEATHERLESS_CHAT_ID, FEATHERLESS_CODER_ID, outputTokenLimit } from "../server/model-defaults.mjs";
 
 export const FEATHERLESS_MODEL_DEFAULTS = [
   { id: FEATHERLESS_CODER_ID, name: "Qwen2.5 Coder 32B" },
@@ -33,15 +35,31 @@ export const FEATHERLESS = {
   models: FEATHERLESS_MODEL_DEFAULTS,
 };
 
-/** Catalog defaults plus every assigned featherless model id, so a seat cannot point at a model the provider omits. */
-export function featherlessModels(assignedRefs = []) {
-  const byId = new Map(FEATHERLESS_MODEL_DEFAULTS.map((m) => [m.id, { ...m }]));
+function listedModel(id, name, output) {
+  return { id, name: name || id, limit: { output: outputTokenLimit(output) } };
+}
+
+/**
+ * Catalog defaults, models already on the provider, and every assigned
+ * featherless model id. A rerun must not drop a model another seat still uses.
+ * Refs for a different provider are ignored.
+ */
+export function featherlessModels(assignedRefs = [], current = []) {
+  const byId = new Map(FEATHERLESS_MODEL_DEFAULTS.map((m) => [m.id, listedModel(m.id, m.name)]));
+  const add = (id, name, output) => {
+    const mid = String(id || "").trim();
+    if (!mid || byId.has(mid)) return;
+    byId.set(mid, listedModel(mid, name, output));
+  };
+  for (const item of current) {
+    if (!item) continue;
+    if (typeof item === "string") add(item);
+    else add(item.id || item.modelID, item.name, item.limit?.output ?? item.max_tokens);
+  }
   for (const ref of assignedRefs) {
     const raw = String(ref || "").trim();
     if (!raw) continue;
-    const id = raw.startsWith("featherless/") ? raw.slice("featherless/".length) : raw;
-    if (!id || byId.has(id)) continue;
-    byId.set(id, { id, name: id });
+    if (raw.toLowerCase().startsWith("featherless/")) add(raw.slice("featherless/".length));
   }
   return [...byId.values()];
 }
@@ -77,6 +95,15 @@ function client(base, token, fetchImpl) {
   };
 }
 
+async function readList(call, path) {
+  const res = await call(path);
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(`ROSTER_API_TOKEN rejected (${res.status}): ${res.data?.error || "check that it is live and has write scope"}`);
+  }
+  if (!res.ok || !Array.isArray(res.data)) return [];
+  return res.data;
+}
+
 function coreError(step, res) {
   const error = String(res.data?.error || "");
   const detail = String(res.data?.detail || "");
@@ -104,9 +131,16 @@ export async function setupWikiTeam({
   if (!env.FEATHERLESS_API_KEY) log("warn: FEATHERLESS_API_KEY is not set; seats will be configured but cannot run until it is.");
 
   const specialists = wikiSpecialists(model);
+  const providers = await readList(call, "/api/v1/providers");
+  const seats = await readList(call, "/api/v1/seats");
+  const teams = await readList(call, "/api/v1/teams");
+  const current = providers.find((p) => p?.id === "featherless")?.models;
+  const inUse = [];
+  for (const seat of seats) inUse.push(seat?.model, seat?.fallbackModel);
+  for (const team of teams) inUse.push(team?.defaultModel, team?.fallbackModel, ...(team?.allowedModels || []));
   const provider = {
     ...FEATHERLESS,
-    models: featherlessModels([`featherless/${model}`, ...specialists.map((s) => s.model)]),
+    models: featherlessModels([`featherless/${model}`, ...specialists.map((s) => s.model), ...inUse], Array.isArray(current) ? current : []),
   };
   const prov = await call("/api/v1/providers", { method: "PUT", body: JSON.stringify(provider) });
   if (prov.status === 401 || prov.status === 403) {

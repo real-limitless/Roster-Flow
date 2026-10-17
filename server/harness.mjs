@@ -347,16 +347,18 @@ export async function liveCombinedStatus() {
   return combinedStatus();
 }
 
-/** `provider/model` refs from `{ providerID, modelID }` rows. Bare provider ids do not count. */
-function loadedModelRefs(loaded) {
-  const refs = [];
-  for (const item of loaded) {
+const LOADED_MODEL_CAP = 5;
+
+/** Model ids the serve loaded for one provider. Bare provider ids do not count. */
+function loadedIdsForProvider(providerID, loaded) {
+  const ids = [];
+  for (const item of loaded || []) {
     if (!item || typeof item !== "object") continue;
-    const providerID = String(item.providerID || "").trim();
+    if (String(item.providerID || "").trim() !== providerID) continue;
     const modelID = String(item.modelID || "").trim();
-    if (providerID && modelID) refs.push(`${providerID}/${modelID}`);
+    if (modelID) ids.push(modelID);
   }
-  return refs;
+  return ids;
 }
 
 /** Error when this seat's exact model is absent from a known loaded-model list. */
@@ -369,10 +371,12 @@ export function seatModelGap(seat, loaded) {
   if (!model) return null;
   const providerID = model.split("/")[0];
   if (!providerID || isBuiltinProvider(providerID)) return null;
-  const refs = loadedModelRefs(loaded);
-  if (refs.includes(model)) return null;
-  const label = seat.system ? "system" : "company";
-  return `${seat.name || seat.id} needs ${model}; ${label} harness loaded [${refs.join(", ") || "none"}]`;
+  const ids = loadedIdsForProvider(providerID, loaded);
+  if (ids.some((id) => `${providerID}/${id}` === model)) return null;
+  const shown = ids.slice(0, LOADED_MODEL_CAP);
+  const extra = ids.length - shown.length;
+  const more = extra > 0 ? ` +${extra} more` : "";
+  return `${seat.name || seat.id} needs ${model}; ${providerID} loaded [${shown.join(", ") || "none"}]${more}`;
 }
 
 /** Per-seat company readiness. System seats are reported on the system serve. */

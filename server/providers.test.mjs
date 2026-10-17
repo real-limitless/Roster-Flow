@@ -67,6 +67,52 @@ test("endpointAccepts rejects a closed port and accepts an open one", async () =
   }
 });
 
+test("upsertProvider keeps models a seat still uses and never writes a completion cap below 512", async () => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { opencodeDir } = await import("./paths.mjs");
+  const { upsertProvider, readOpenCodeConfig } = await import("./providers.mjs");
+  const path = join(opencodeDir, "opencode.json");
+  const raw = readFileSync(path, "utf8");
+  const cfg = JSON.parse(raw);
+  cfg.provider = cfg.provider || {};
+  cfg.provider.featherless = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "Featherless",
+    options: { apiKey: "{env:FEATHERLESS_API_KEY}" },
+    models: {
+      "Qwen/Qwen2.5-Coder-32B-Instruct": { name: "Qwen" },
+      "meta-llama/Llama-3.3-70B-Instruct": { name: "Llama 3.3 70B" },
+      "unused-model": { name: "Unused" },
+    },
+  };
+  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  try {
+    upsertProvider(
+      {
+        id: "featherless",
+        name: "Featherless",
+        apiKeyEnv: "FEATHERLESS_API_KEY",
+        models: [{ id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen", limit: { output: 64 } }],
+      },
+      {
+        seats: [{ model: "featherless/meta-llama/Llama-3.3-70B-Instruct" }],
+        teams: [{ allowedModels: ["featherless/team-only", "openai/gpt-5"] }],
+      },
+    );
+    const models = readOpenCodeConfig().provider.featherless.models;
+    assert.equal(models["Qwen/Qwen2.5-Coder-32B-Instruct"].limit.output, 512);
+    assert.equal(models["meta-llama/Llama-3.3-70B-Instruct"].name, "Llama 3.3 70B");
+    assert.ok(models["meta-llama/Llama-3.3-70B-Instruct"].limit.output >= 512);
+    assert.ok(models["team-only"].limit.output >= 512);
+    assert.equal(models["unused-model"], undefined);
+    assert.equal(models["gpt-5"], undefined);
+    assert.equal(models["openai/gpt-5"], undefined);
+  } finally {
+    writeFileSync(path, raw);
+  }
+});
+
 test("serveChildEnv passes wiki-flow env through to opencode serve", async () => {
   const { serveChildEnv } = await import("./providers.mjs");
   const env = serveChildEnv({ PATH: "/bin", WIKIFLOW_URL: "http://wiki", WIKIFLOW_TOKEN: "tok" });

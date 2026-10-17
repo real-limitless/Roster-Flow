@@ -185,7 +185,11 @@ test("one unhirable seat does not mark the company harness down", () => {
   const onlyBad = harness.seatReadiness({ seats: [wiki] }, qwenOnly);
   assert.equal(harness.companyHarnessReady(true, onlyBad), false);
   assert.match(harness.seatProviderGap({ seats: [wiki] }, []), /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
-  assert.match(harness.seatProviderGap({ seats: [wiki] }, opencodeOnly), /loaded \[opencode\/big-pickle\]/);
+  assert.match(harness.seatProviderGap({ seats: [wiki] }, opencodeOnly), /featherless loaded \[none\]/);
+  assert.doesNotMatch(harness.seatProviderGap({ seats: [wiki] }, opencodeOnly), /big-pickle/);
+  const many = Array.from({ length: 7 }, (_, i) => ({ providerID: "featherless", modelID: `m${i}` }));
+  assert.match(harness.seatModelGap(wiki, many), /featherless loaded \[m0, m1, m2, m3, m4\] \+2 more/);
+  assert.doesNotMatch(harness.seatModelGap(wiki, many), /m5/);
   const report = harness.harnessSeatReport(state, { harness: "up", loadedModels: opencodeOnly });
   assert.equal(report.harnessReady, true);
   assert.equal(report.harnessError, null);

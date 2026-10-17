@@ -37,16 +37,20 @@
       },
       "models": {
         "Qwen/Qwen2.5-Coder-32B-Instruct": {
-          "name": "Qwen2.5 Coder 32B"
+          "name": "Qwen2.5 Coder 32B",
+          "limit": { "output": 8192 }
         },
         "meta-llama/Meta-Llama-3.1-70B-Instruct": {
-          "name": "Llama 3.1 70B"
+          "name": "Llama 3.1 70B",
+          "limit": { "output": 8192 }
         },
         "deepseek-ai/DeepSeek-V3-0324": {
-          "name": "DeepSeek V3"
+          "name": "DeepSeek V3",
+          "limit": { "output": 8192 }
         },
         "deepseek-ai/DeepSeek-V4.1-Flash": {
-          "name": "DeepSeek V4.1 Flash"
+          "name": "DeepSeek V4.1 Flash",
+          "limit": { "output": 8192 }
         }
       }
     }
@@ -84,16 +88,20 @@
       },
       "models": {
         "Qwen/Qwen2.5-Coder-32B-Instruct": {
-          "name": "Qwen2.5 Coder 32B"
+          "name": "Qwen2.5 Coder 32B",
+          "limit": { "output": 8192 }
         },
         "meta-llama/Meta-Llama-3.1-70B-Instruct": {
-          "name": "Llama 3.1 70B"
+          "name": "Llama 3.1 70B",
+          "limit": { "output": 8192 }
         },
         "deepseek-ai/DeepSeek-V3-0324": {
-          "name": "DeepSeek V3"
+          "name": "DeepSeek V3",
+          "limit": { "output": 8192 }
         },
         "deepseek-ai/DeepSeek-V4.1-Flash": {
-          "name": "DeepSeek V4.1 Flash"
+          "name": "DeepSeek V4.1 Flash",
+          "limit": { "output": 8192 }
         }
       }
     }
