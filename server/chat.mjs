@@ -1,7 +1,9 @@
 import { getState, mutate, uid } from "./store.mjs";
 import { blockLatestRun, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
-import { resolveMembers } from "./channels.mjs";
+import { resolveMembers, responderCandidates } from "./channels.mjs";
+import { isOpenCodeAdapter } from "./adapters.mjs";
+import { seatOverBudget } from "./budget.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import {
   ensure,
@@ -74,7 +76,9 @@ export function implicitTargets(channelId, state = getState()) {
     return [];
   }
   if (id.startsWith("session-")) return [];
-  return [{ to: CONDUCTOR_ID, reason: "channel" }];
+  const room = (state.channels || []).find((c) => c.id === id) || { id, seatIds: [], teamIds: [] };
+  const candidates = responderCandidates(room, state);
+  return [{ to: candidates[0], reason: "implicit", candidates }];
 }
 
 export function collectWakeTargets(channelId, text, state = getState()) {
@@ -83,10 +87,10 @@ export function collectWakeTargets(channelId, text, state = getState()) {
   const seen = new Set();
   const notify = [];
 
-  function add(to, reason) {
+  function add(to, reason, extra = {}) {
     if (!to || seen.has(to)) return;
     seen.add(to);
-    targets.push({ to, reason });
+    targets.push({ to, reason, ...extra });
   }
 
   const wantChannel = mentions.some((m) => m.kind === "channel");
@@ -107,7 +111,7 @@ export function collectWakeTargets(channelId, text, state = getState()) {
   }
 
   if (!targets.length) {
-    for (const t of implicitTargets(channelId, state)) add(t.to, t.reason);
+    for (const { to, reason, ...extra } of implicitTargets(channelId, state)) add(to, reason, extra);
   }
 
   return { mentions, targets, notify };
@@ -213,10 +217,46 @@ async function ensureForTarget(to, channelId) {
   }
 }
 
-async function wakeOneTarget(channelId, text, from, target) {
-  const ready = await ensureForTarget(target.to, channelId);
-  const seatId = resolvedSeatId(target.to, getState());
+function seatOf(id, state = getState()) {
+  return (state.seats || []).find((s) => s.id === id) || null;
+}
+
+/** Null when the seat can take a wake now, else a short reason. */
+export function responderSkipReason(seat, state = getState()) {
+  if (!seat) return "not on the chart";
+  if (seat.status === "paused") return seat.pauseReason === "budget" ? "paused (budget)" : "paused";
+  if (seatOverBudget(seat)) return "over its token budget";
+  if (!isOpenCodeAdapter(seat)) return null;
+  const plan = seatModelPlan(seat, deps.knownLoadedModels?.(harnessKindForSeat(seat)) ?? null);
+  return plan.ok ? null : plan.hint || `${seat.model || "no model"} is not usable`;
+}
+
+/** Put the first awake candidate first. When nobody is awake the order is kept so the first seat reports why. */
+export function pickResponder(candidates, state = getState()) {
+  const skipped = [];
+  for (const id of candidates) {
+    const why = responderSkipReason(seatOf(id, state), state);
+    if (!why) return { order: [id, ...candidates.filter((c) => c !== id)], skipped };
+    skipped.push({ seat: id, why });
+  }
+  return { order: [...candidates], skipped: [] };
+}
+
+function skipLine(skipped, state = getState()) {
+  return skipped.map((s) => `${seatOf(s.seat, state)?.name || s.seat} (${s.why.replace(/\.$/, "")})`).join("; ");
+}
+
+async function wakeTarget(channelId, text, from, target) {
+  const state = getState();
+  const seatId = resolvedSeatId(target.to, state);
+  const direct = seatOf(seatId, state);
   rememberSessionRoom(seatId, channelId);
+  const meta = { from, kind: target.reason, channel: channelId, announce: false, ...(target.meta || {}) };
+  if (direct && direct.kind === "bot" && !direct.mcpGuest && !isOpenCodeAdapter(direct)) {
+    emit({ scope: "chat", step: "seat.wake", channel: channelId, seat: seatId, detail: { reason: target.reason, adapter: direct.adapter } });
+    return deps.wakeSeat(target.to, text, { ...meta, announce: true });
+  }
+  const ready = await ensureForTarget(target.to, channelId);
   if (!ready.ok) return { offline: true, seat: seatId, harness: ready.kind, error: ready.error, started: false };
   const loaded = await Promise.resolve(deps.loadedModels?.(ready.kind)).catch(() => null);
   const plan = seatModelPlan(ready.seat, loaded ?? null);
@@ -236,7 +276,7 @@ async function wakeOneTarget(channelId, text, from, target) {
     });
   }
   if (!plan.ok) {
-    const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
+    const woke = await deps.wakeSeat(target.to, text, meta);
     return {
       ...woke,
       seat: woke?.seat || seatId,
@@ -253,7 +293,7 @@ async function wakeOneTarget(channelId, text, from, target) {
     seat: seatId,
     detail: { reason: target.reason, model, harness: ready.kind },
   });
-  const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
+  const woke = await deps.wakeSeat(target.to, text, meta);
   if (woke?.paused) {
     statusMessage(channelId, `${ready.seat?.name || seatId} is paused — wake skipped.`);
   } else if (woke?.offline) {
@@ -266,25 +306,88 @@ async function wakeOneTarget(channelId, text, from, target) {
   return woke;
 }
 
-async function runWakes(channelId, text, from, targets) {
-  const since = Date.now();
-  const settled = await Promise.allSettled(targets.map((target) => wakeOneTarget(channelId, text, from, target)));
-  const results = settled.map((item) =>
-    item.status === "fulfilled"
-      ? item.value
-      : { started: false, error: String(item.reason?.message || item.reason || "wake failed") },
+/** Wake every target at once. An implicit target falls through its candidates while a seat is paused or has no usable model. */
+async function startWakes(channelId, text, from, targets) {
+  const settled = await Promise.allSettled(
+    targets.map(async (target) => {
+      const order = target.candidates?.length ? target.candidates : [target.to];
+      let woke = null;
+      for (let i = 0; i < order.length; i++) {
+        woke = await wakeTarget(channelId, text, from, { ...target, to: order[i] });
+        const retry = woke && (woke.nokey || woke.paused) && i < order.length - 1;
+        if (!retry) break;
+        const next = seatOf(order[i + 1]);
+        statusMessage(channelId, `Trying ${next?.name || order[i + 1]} instead.`);
+      }
+      return woke;
+    }),
   );
-  const seats = results
-    .filter((w) => w && w.started !== false && !w.nokey && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human)))
+  return settled.map((item) =>
+    item.status === "fulfilled" ? item.value : { started: false, error: String(item.reason?.message || item.reason || "wake failed") },
+  );
+}
+
+function repliers(results) {
+  return results
+    .filter((w) => w && w.started !== false && !w.nokey && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human && !w.guest)))
     .map((w) => w.seat)
-    .filter(Boolean);
-  if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since });
-  return results;
+    .filter((id) => id && isOpenCodeAdapter(seatOf(id) || {}));
+}
+
+const implicitInflight = new Map();
+
+export function resetChatRuntime() {
+  implicitInflight.clear();
+  followingSeats.clear();
+}
+
+function queueImplicit(channelId, text) {
+  const slot = implicitInflight.get(channelId);
+  slot.queued.push(text);
+  const seat = seatOf(slot.seatId);
+  if (slot.queued.length === 1) statusMessage(channelId, `${seat?.name || slot.seatId} is still answering. Your next message goes to them when they finish.`);
+  emit({ scope: "chat", step: "chat.queued", channel: channelId, seat: slot.seatId, detail: { queued: slot.queued.length } });
+}
+
+function runImplicit(channelId, text, from, target) {
+  const slot = { seatId: target.to, queued: [] };
+  implicitInflight.set(channelId, slot);
+  const since = Date.now();
+  const started = startWakes(channelId, text, from, [target]);
+  const pending = started
+    .then(async (results) => {
+      const seats = repliers(results);
+      if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since });
+      return results;
+    })
+    .finally(() => {
+      if (implicitInflight.get(channelId) !== slot) return;
+      implicitInflight.delete(channelId);
+      if (!slot.queued.length) return;
+      const woke = slot.seatId;
+      const follow = slot.queued.length === 1 ? slot.queued[0] : `Follow-up messages:\n${slot.queued.map((t) => `- ${t}`).join("\n")}`;
+      void runImplicit(channelId, follow, from, { ...target, to: woke, candidates: [woke] }).pending.catch(() => undefined);
+    });
+  return { started, pending };
 }
 
 export function routeChannelMessage({ channelId, text, from = "you", wake = true }) {
   const state = getState();
-  const { mentions, targets, notify } = collectWakeTargets(channelId, text, state);
+  const collected = collectWakeTargets(channelId, text, state);
+  const { mentions, notify } = collected;
+  let targets = collected.targets;
+  const author = seatOf(from, state);
+  const implicit = targets.length > 0 && targets.every((t) => t.reason === "implicit");
+  if (implicit && author?.kind === "bot") targets = [];
+
+  if (implicit && targets.length) {
+    const picked = pickResponder(targets[0].candidates || [targets[0].to], state);
+    targets = [{ ...targets[0], to: picked.order[0], candidates: picked.order }];
+    if (picked.skipped.length) {
+      statusMessage(channelId, `Skipped ${skipLine(picked.skipped, state)}.`);
+      emit({ level: "warn", scope: "chat", step: "chat.skip", channel: channelId, detail: { skipped: picked.skipped } });
+    }
+  }
 
   emit({
     scope: "chat",
@@ -306,25 +409,45 @@ export function routeChannelMessage({ channelId, text, from = "you", wake = true
     postBus({ from, to: id, kind: "notify", text, wake: false, channel: channelId });
   }
 
+  if (wake && implicit && targets.length && implicitInflight.has(channelId)) {
+    queueImplicit(channelId, text);
+    const none = Promise.resolve([]);
+    return { mentions, wakes: 0, notify, targets: [], queued: true, started: none, pending: none };
+  }
+
   if (wake && targets.length) {
     const first = targets[0];
     const seatId = resolvedSeatId(first.to, state);
-    const seat = (state.seats || []).find((s) => s.id === seatId);
-    const kind = seat ? harnessKindForSeat(seat) : "company";
-    const h = deps.harnessStatus(kind);
-    const plan = seatModelPlan(seat, deps.knownLoadedModels?.(kind) ?? null);
-    if (h.harness !== "up") statusMessage(channelId, `Starting ${kind} harness…`);
-    else statusMessage(channelId, `Waking ${seat?.name || seatId} (${plan.model || seat?.model || "default"})…`);
-    if (plan.hint) statusMessage(channelId, plan.hint);
+    const seat = seatOf(seatId, state);
+    if (seat && isOpenCodeAdapter(seat)) {
+      const kind = harnessKindForSeat(seat);
+      const h = deps.harnessStatus(kind);
+      const plan = seatModelPlan(seat, deps.knownLoadedModels?.(kind) ?? null);
+      if (h.harness !== "up") statusMessage(channelId, `Starting ${kind} harness…`);
+      else statusMessage(channelId, `Waking ${seat?.name || seatId} (${plan.model || seat?.model || "default"})…`);
+      if (plan.hint) statusMessage(channelId, plan.hint);
+    } else if (!seat) {
+      const h = deps.harnessStatus("company");
+      if (h.harness !== "up") statusMessage(channelId, "Starting company harness…");
+    }
   }
-  const pending =
-    wake && targets.length
-      ? runWakes(channelId, text, from, targets)
-      : Promise.resolve([]);
+  let started = Promise.resolve([]);
+  let pending = started;
+  if (wake && targets.length && implicit) {
+    ({ started, pending } = runImplicit(channelId, text, from, targets[0]));
+  } else if (wake && targets.length) {
+    const since = Date.now();
+    started = startWakes(channelId, text, from, targets);
+    pending = started.then(async (results) => {
+      const seats = repliers(results);
+      if (seats.length) await followChannel(channelId, seats, deps.followTicks, { since });
+      return results;
+    });
+  }
   if (wake && !targets.length) {
-    emit({ level: "warn", scope: "chat", step: "chat.nowake", channel: channelId, detail: { from } });
+    emit({ level: "warn", scope: "chat", step: "chat.nowake", channel: channelId, detail: { from, reason: implicit ? "bot author" : "no target" } });
   }
-  return { mentions, wakes: wake ? targets.length : 0, notify, targets, pending };
+  return { mentions, wakes: wake ? targets.length : 0, notify, targets, started, pending };
 }
 
 function absorbBusSeats(channelId, seats) {
@@ -369,9 +492,18 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
         for (const p of parts) {
           if (!p.id || seen.has(p.id)) continue;
           seen.add(p.id);
-          if (alreadyMirrored(channelId, seatId, p)) continue;
+          if (since && p.created && p.created < since) continue;
+          const runId = latestRunId(seatId);
+          if (alreadyMirrored(channelId, seatId, p)) {
+            // The bus or session sync can post the reply before this loop reads it; it still answers this wake.
+            if (mirroredReply(channelId, seatId, p, runId)) {
+              posted += 1;
+              replies += 1;
+            }
+            continue;
+          }
           const seat = getState().seats.find((s) => s.id === seatId);
-          postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id });
+          postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id, runId });
           posted += 1;
           replies += 1;
           emit({
@@ -404,9 +536,9 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
           !failed.has(id) &&
           (getState().runs || []).some((r) => r.seatId === id && (r.status === "starting" || r.status === "running")),
       );
-      if (!stillOpen) break;
+      // A room wake is usually done when this loop starts; give its transcript a few polls to show the reply.
       settledPolls += 1;
-      if (settledPolls >= 8) break;
+      if (settledPolls >= (stillOpen ? 8 : 3)) break;
       await new Promise((r) => setTimeout(r, deps.followDelayMs));
     }
     const waiting = [...seats].filter((id) => {
@@ -435,9 +567,26 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
       if (ticks > 0) blockLatestRun(first, hint || "did not reply");
     }
   } finally {
-    followingSeats.delete(channelId);
+    if (followingSeats.get(channelId) === seats) followingSeats.delete(channelId);
   }
   return replies;
+}
+
+/** This seat's reply in this room for an OpenCode message, matched by its id or by this run's text, else null. */
+function mirroredReply(channelId, seatId, part, runId) {
+  return (
+    (getState().messages || []).find(
+      (m) =>
+        !m.system &&
+        m.channel === channelId &&
+        m.seatId === seatId &&
+        ((part.id && m.sessionId === part.id) || (runId && m.runId === runId && m.text === part.text)),
+    ) || null
+  );
+}
+
+function latestRunId(seatId) {
+  return [...(getState().runs || [])].reverse().find((r) => r.seatId === seatId)?.id || null;
 }
 
 export function mirrorTranscript(channelId, seatId, parts) {
@@ -447,6 +596,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
     if (!p?.id || !p.text) continue;
     if (looksLikeWakePrompt(p.text)) continue;
     if (alreadyMirrored(channelId, seatId, p)) continue;
+    if (p.role === "user" && getState().messages.some((m) => m.text === p.text && m.channel === channelId)) continue;
     const role = p.role === "user" ? "human" : "bot";
     const who = role === "human" ? "You" : seat?.name || seatId;
     posted.push(

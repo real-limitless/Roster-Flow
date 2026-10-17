@@ -22,6 +22,19 @@ test("promptBody tells the seat which job to finish", () => {
   assert.match(text, /roster_report/);
 });
 
+test("promptBody asks an un-mentioned responder for a plain-text reply in that room", () => {
+  const seat = { name: "Channel", role: "Conductor", job: "Conduct", tools: ["bus"], deny: [] };
+  const text = promptBody(seat, "channel", "Anyone here", { from: "you", kind: "implicit", channel: "general" }, null).parts[0].text;
+  assert.match(text, /A human wrote in #general without mentioning anyone/);
+  assert.match(text, /Reply in plain text, briefly, as yourself\. Roster-flow posts your text to #general\./);
+  assert.match(text, /Do not use roster_report for this reply/);
+  assert.doesNotMatch(text, /Use roster_send_message \/ roster_handoff \/ roster_report to talk/);
+  const mentioned = promptBody(seat, "channel", "@channel hi", { from: "you", kind: "mention-seat", channel: "ship" }, null).parts[0].text;
+  assert.match(mentioned, /Reply in plain text\. Roster-flow posts your text to #ship\./);
+  const mail = promptBody(seat, "channel", "hi", { from: "build", kind: "send_message" }, null).parts[0].text;
+  assert.doesNotMatch(mail, /Reply in plain text/);
+});
+
 test("a seat with no model prompts the loaded fallback and writes it onto the agent", async () => {
   const prompts = [];
   const prev = { ...deps };
@@ -167,6 +180,64 @@ test("wakeSeat starts a run id and puts it on the prompt", async () => {
     const run = (getState().runs || []).find((r) => r.id === result.runId);
     assert.equal(run?.status, "done");
     assert.equal(run?.seatId, "build");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a room wake whose reply the follow loop already mirrored is not posted again", async () => {
+  const prev = { ...deps };
+  const channel = `posted-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_posted" });
+  deps.promptSession = async () => {
+    mutate((s) => {
+      s.messages = [
+        ...s.messages,
+        { id: `m-${channel}`, channel, who: "Eng.Build", kind: "bot", seatId: "build", text: "Room reply.", sessionId: "msg_room", mirrored: true },
+      ];
+    });
+  };
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () =>
+    Object.assign(Promise.resolve({ reached: true, done: true, text: "Room reply.", messageId: "msg_room" }), { cancel() {} });
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    const woke = await wakeSeat("build", "status?", { from: "you", kind: "mention-seat", channel });
+    assert.equal(woke.started, true);
+    const posted = getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.");
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].runId, woke.runId);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a reused session posts only this turn's reply, not earlier turns from the transcript", async () => {
+  const prev = { ...deps };
+  const channel = `reused-${Date.now()}`;
+  const old = "An earlier answer that is longer than the new one.";
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_reused" });
+  deps.promptSession = async () => undefined;
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, done: true, text: "New." }), { cancel() {} });
+  deps.sessionMessages = async () => [
+    { info: { id: "msg_old", role: "assistant", time: { created: Date.now() - 60000 } }, parts: [{ type: "text", text: old }] },
+    { info: { id: "msg_new", role: "assistant", time: { created: Date.now() + 1 } }, parts: [{ type: "text", text: "New." }] },
+  ];
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    await wakeSeat("build", "status?", { from: "product", kind: "handoff", channel });
+    const texts = getState().messages.filter((m) => m.channel === channel && !m.system).map((m) => m.text);
+    assert.deepEqual(texts, ["New."]);
   } finally {
     Object.assign(deps, prev);
   }

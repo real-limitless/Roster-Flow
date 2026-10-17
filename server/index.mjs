@@ -40,7 +40,7 @@ import { attachPtyServer } from "./pty.mjs";
 import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
 import { createChannel, patchChannel } from "./channels.mjs";
-import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
+import { postMessage, resetChatRuntime, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { attachConnector, listConnectors, publicConnector, removeConnector, searchKnowledge } from "./knowledge.mjs";
@@ -527,6 +527,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const st = resetState();
+      resetChatRuntime();
       try {
         syncBotAgents(st.seats, st.teams);
       } catch {
@@ -1184,7 +1185,7 @@ const server = createServer(async (req, res) => {
       const routed = text
         ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
         : { mentions: [], wakes: [], notify: [], pending: Promise.resolve([]) };
-      const wakeResults = (await routed.pending || []).map((row) => publishedWake(row));
+      const wakeResults = (await (routed.started || routed.pending) || []).map((row) => publishedWake(row));
       json(res, 201, {
         ...msg,
         mentions: routed.mentions,
@@ -1193,6 +1194,7 @@ const server = createServer(async (req, res) => {
         runId: wakeResults[0]?.runId ?? null,
         started: wakeResults.length ? wakeResults.every((row) => row.started) : false,
         wakeResults,
+        ...(routed.queued ? { queued: true } : {}),
         messages: getState().messages.filter((m) => m.channel === id),
       });
       return;

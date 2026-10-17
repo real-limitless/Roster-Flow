@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before } from "node:test";
 import { emptyState } from "./seed.mjs";
-import { getState, mutate } from "./store.mjs";
+import { getState, mutate, save } from "./store.mjs";
 import { assistantText, sessionTranscript, bindSessionMeta } from "./harness.mjs";
 import {
   collectWakeTargets,
@@ -16,12 +16,19 @@ import {
 import { deps as busDeps } from "./bus.mjs";
 import { emit, listTrace, resetTrace } from "./trace.mjs";
 
+// A fresh data dir boots without a company until onboarding; these tests need the starter seats.
+before(() => {
+  if (!getState().seats?.some((seat) => seat.id === "channel")) mutate(() => emptyState());
+});
+
 test("implicit targets cover channel, team, project, and DM rooms", () => {
   const state = emptyState();
   assert.deepEqual(
-    implicitTargets("ship", state).map((t) => t.to),
+    implicitTargets("general", state).map((t) => t.to),
     ["channel"],
   );
+  assert.deepEqual(implicitTargets("ship", state)[0].candidates.slice(0, 2), ["product", "devops"]);
+  assert.equal(implicitTargets("ship", state)[0].reason, "implicit");
   assert.deepEqual(
     implicitTargets("team-eng", state).map((t) => t.to),
     ["team:eng"],
@@ -44,7 +51,7 @@ test("collectWakeTargets uses mentions when present and implicit otherwise", () 
   assert.ok(mentioned.targets.some((t) => t.to === "build"));
   assert.ok(!mentioned.targets.some((t) => t.to === "channel"));
 
-  const plain = collectWakeTargets("ship", "hello there", state);
+  const plain = collectWakeTargets("general", "hello there", state);
   assert.deepEqual(
     plain.targets.map((t) => t.to),
     ["channel"],
@@ -64,7 +71,7 @@ test("routeChannelMessage posts a system line when harness cannot start", async 
   deps.followTicks = 0;
   const before = getState().messages.length;
   try {
-    const routed = routeChannelMessage({ channelId: "ship", text: "plain hello for routing" });
+    const routed = routeChannelMessage({ channelId: "general", text: "plain hello for routing" });
     assert.equal(routed.wakes, 1);
     await routed.pending;
     const added = getState().messages.slice(before);
@@ -86,7 +93,7 @@ test("routeChannelMessage posts a key warning and does not wait for a model", as
   deps.followTicks = 0;
   const before = getState().messages.length;
   try {
-    const routed = routeChannelMessage({ channelId: "ship", text: "need a reply from Channel" });
+    const routed = routeChannelMessage({ channelId: "general", text: "need a reply from Channel" });
     assert.equal(routed.wakes, 1);
     const immediate = getState().messages.slice(before);
     assert.ok(immediate.some((m) => /Waking Channel/.test(m.text) && m.system));
@@ -117,7 +124,7 @@ test("routeChannelMessage falls back to a connected OpenCode model", async () =>
   deps.followDelayMs = 0;
   const before = getState().messages.length;
   try {
-    const routed = routeChannelMessage({ channelId: "ship", text: "hi from fallback test" });
+    const routed = routeChannelMessage({ channelId: "general", text: "hi from fallback test" });
     assert.equal(routed.wakes, 1);
     const results = await routed.pending;
     assert.equal(woke, "channel");
@@ -280,14 +287,17 @@ test("followChannel posts a provider 401 instead of waiting for a reply that nev
 
 test("mirrorTranscript skips wake prompts and does not duplicate", () => {
   const channel = `test-mirror-${Date.now()}`;
+  const a1 = `a1-${Date.now()}`;
   const first = mirrorTranscript(channel, "build", [
-    { id: "u1", role: "user", text: "You are Eng.Build (Implement) on the Roster-flow org chart.\nJob: Own a worktree." },
-    { id: "a1", role: "assistant", text: "Working the webhook." },
+    { id: `u1-${Date.now()}`, role: "user", text: "You are Eng.Build (Implement) on the Roster-flow org chart.\nJob: Own a worktree." },
+    { id: a1, role: "assistant", text: "Working the webhook." },
   ]);
   assert.equal(first.length, 1);
   assert.equal(first[0].text, "Working the webhook.");
-  const again = mirrorTranscript(channel, "build", [{ id: "a1", role: "assistant", text: "Working the webhook." }]);
+  const again = mirrorTranscript(channel, "build", [{ id: a1, role: "assistant", text: "Working the webhook." }]);
   assert.equal(again.length, 0);
+  const elsewhere = mirrorTranscript(`${channel}-other`, "build", [{ id: a1, role: "assistant", text: "Working the webhook." }]);
+  assert.equal(elsewhere.length, 0);
 });
 
 test("assistantText reads nested OpenCode message shapes", () => {
@@ -407,4 +417,206 @@ test("trace ring keeps newest events", () => {
   const all = listTrace();
   assert.equal(all.length, 2);
   assert.equal(all[1].step, "two");
+});
+
+function stubAwake(overrides = {}) {
+  const calls = [];
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = (model) => ({ providerID: String(model).split("/")[0], modelID: "m", configured: true, connected: true, loaded: null });
+  deps.pullFailure = async () => null;
+  deps.followTicks = 2;
+  deps.followDelayMs = 0;
+  deps.wakeSeat = async (to, text, meta) => {
+    calls.push({ to, text, meta });
+    return { sessionId: `ses-${to}`, seat: to, runId: `run-${calls.length}`, started: true };
+  };
+  Object.assign(deps, overrides);
+  return calls;
+}
+
+function withChannelPatch(id, patch) {
+  const ch = getState().channels.find((c) => c.id === id);
+  const before = { ...ch, seatIds: [...ch.seatIds], teamIds: [...ch.teamIds] };
+  Object.assign(ch, patch);
+  return () => {
+    Object.assign(ch, before);
+    save();
+  };
+}
+
+test("Anyone here in #general wakes the fallback seat and mirrors its plain-text reply into #general", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  const replyId = `msg-anyone-${Date.now()}`;
+  const calls = stubAwake({
+    pullAssistant: async () => [{ id: replyId, text: "Yes, Channel here. What do you need?", created: Date.now() + 10 }],
+  });
+  try {
+    const routed = routeChannelMessage({ channelId: "general", text: "Anyone here" });
+    assert.equal(routed.wakes, 1);
+    const started = await routed.started;
+    assert.equal(started[0].started, true);
+    await routed.pending;
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].to, "channel");
+    assert.equal(calls[0].meta.kind, "implicit");
+    assert.equal(calls[0].meta.channel, "general");
+    const reply = getState().messages.find((m) => m.sessionId === replyId);
+    assert.equal(reply?.channel, "general");
+    assert.equal(reply?.seatId, "channel");
+    assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.reply" && e.channel === "general"));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a channel lead answers un-mentioned messages", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { leadSeatId: "build" });
+  const calls = stubAwake({ pullAssistant: async () => [] , followTicks: 0 });
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "status?" });
+    await routed.pending;
+    assert.equal(calls[0].to, "build");
+  } finally {
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("a paused lead is skipped with one System line and the next seat answers", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { leadSeatId: "build" });
+  const build = getState().seats.find((s) => s.id === "build");
+  const was = { status: build.status, pauseReason: build.pauseReason };
+  build.status = "paused";
+  build.pauseReason = "owner";
+  const calls = stubAwake({ pullAssistant: async () => [], followTicks: 0 });
+  const before = getState().messages.length;
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "who is on?" });
+    await routed.pending;
+    assert.equal(calls[0].to, "product");
+    const skips = getState().messages.slice(before).filter((m) => m.system && /^Skipped /.test(m.text));
+    assert.equal(skips.length, 1);
+    assert.match(skips[0].text, /Eng\.Build \(paused\)/);
+  } finally {
+    Object.assign(build, was);
+    restore();
+    save();
+    Object.assign(deps, prev);
+  }
+});
+
+test("when no candidate has a usable model the first one reports why and nothing is sent", async () => {
+  const prev = { ...deps };
+  const calls = [];
+  stubAwake({
+    keyStatus: () => ({ providerID: "xai", modelID: "grok-4", configured: true, connected: false }),
+    fallbackModel: () => null,
+    wakeSeat: async (to) => {
+      calls.push(to);
+      return { seat: to, runId: "run-nokey-all", started: false, error: "No API key for xai." };
+    },
+  });
+  const before = getState().messages.length;
+  try {
+    const routed = routeChannelMessage({ channelId: "general", text: "Anyone here" });
+    const results = await routed.pending;
+    assert.deepEqual(calls, ["channel"]);
+    assert.equal(results[0].nokey, true);
+    assert.equal(results[0].started, false);
+    assert.equal(results[0].runId, "run-nokey-all");
+    assert.ok(getState().messages.slice(before).some((m) => m.system && /No API key for xai/.test(m.text)));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("an un-mentioned post by a bot seat wakes nobody", async () => {
+  const prev = { ...deps };
+  const calls = stubAwake();
+  try {
+    const routed = routeChannelMessage({ channelId: "general", text: "status update", from: "build" });
+    await routed.pending;
+    assert.equal(routed.wakes, 0);
+    assert.equal(calls.length, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("followChannel ignores assistant messages created before the wake and posts each message id once", async () => {
+  const prev = { ...deps };
+  const channel = `since-${Date.now()}`;
+  const old = { id: `msg-old-${Date.now()}`, text: "Reply meant for #ship.", created: Date.now() - 60_000 };
+  const fresh = { id: `msg-new-${Date.now()}`, text: "Here.", created: Date.now() + 5 };
+  deps.pullAssistant = async () => [old, fresh];
+  deps.pullFailure = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = () => ({ providerID: "x", modelID: "m", configured: true, connected: true, loaded: null });
+  deps.followDelayMs = 0;
+  try {
+    const replies = await followChannel(channel, ["channel"], 2, { since: Date.now() });
+    assert.equal(replies, 1);
+    const posted = getState().messages.filter((m) => m.channel === channel && !m.system);
+    assert.deepEqual(posted.map((m) => m.text), ["Here."]);
+    assert.equal(await followChannel(`${channel}-b`, ["channel"], 1, { since: 0 }), 1);
+    assert.ok(!getState().messages.some((m) => m.channel === `${channel}-b` && m.text === "Here."));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a reply that session sync already posted in the room still answers the wake", async () => {
+  const prev = { ...deps };
+  const channel = `synced-${Date.now()}`;
+  const reply = { id: `msg-synced-${Date.now()}`, text: "Synced first.", created: Date.now() + 5 };
+  mirrorTranscript(channel, "channel", [{ ...reply, role: "assistant" }]);
+  deps.pullAssistant = async () => [reply];
+  deps.pullFailure = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = () => ({ providerID: "x", modelID: "m", configured: true, connected: true, loaded: null });
+  deps.followDelayMs = 0;
+  try {
+    assert.equal(await followChannel(channel, ["channel"], 2, { since: Date.now() }), 1);
+    const room = getState().messages.filter((m) => m.channel === channel);
+    assert.deepEqual(room.map((m) => m.text), ["Synced first."]);
+    assert.equal(await followChannel(`${channel}-other`, ["channel"], 1, { since: 0 }), 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("messages sent while the responder is answering are queued and delivered as one follow-up", async () => {
+  const prev = { ...deps };
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const calls = stubAwake({ followTicks: 1 });
+  deps.pullAssistant = async () => {
+    await gate;
+    return [];
+  };
+  try {
+    const first = routeChannelMessage({ channelId: "general", text: "Anyone here" });
+    await first.started;
+    const second = routeChannelMessage({ channelId: "general", text: "hello?" });
+    const third = routeChannelMessage({ channelId: "general", text: "ping" });
+    assert.equal(second.queued, true);
+    assert.equal(third.queued, true);
+    assert.equal(calls.length, 1);
+    deps.pullAssistant = async () => [];
+    release();
+    await first.pending;
+    for (let i = 0; i < 50 && calls.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].to, "channel");
+    assert.match(calls[1].text, /hello\?/);
+    assert.match(calls[1].text, /ping/);
+  } finally {
+    Object.assign(deps, prev);
+  }
 });
