@@ -41,6 +41,7 @@ const ALLOWED = [
   ["GET", `/api/v1/channels`],
   ["GET", `/api/v1/channels/${ID}`],
   ["GET", `/api/v1/channels/${ID}/messages`],
+  ["GET", `/api/v1/channels/${ID}/thinking`],
   ["GET", `/api/v1/sessions/${ID}/room`],
   ["POST", `/api/v1/messages`],
   ["POST", `/api/v1/bus/send`],

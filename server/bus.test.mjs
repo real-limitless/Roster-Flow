@@ -7,7 +7,8 @@ import { syncSeatAgent } from "./agents.mjs";
 import { readOpenCodeConfig } from "./providers.mjs";
 import { providerTurnVerdict } from "./harness.mjs";
 import { blockLatestRun, roomForApiCall, SHIP_FALLBACK_NOTE, waitForIdleServe } from "./bus.mjs";
-import { deps, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
+import { deps, isPass, meterTurn, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
+import { meterWake } from "./budget.mjs";
 import { bootCore } from "./test-helpers.mjs";
 import { liveRoomSession } from "./room-sessions.mjs";
 import { getState, mutate } from "./store.mjs";
@@ -159,6 +160,34 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
   assert.equal([...(getState().runs || [])].reverse().find((r) => r.id === "run-ok")?.status, "running");
   assert.equal(blockLatestRun("qa", "did not reply"), "run-start");
   assert.equal((getState().runs || []).find((r) => r.id === "run-start")?.status, "blocked");
+});
+
+test("providerTurnVerdict finishes an empty completion and an idle turn with no text", () => {
+  const state = { userIds: new Set(), assistantIds: new Set() };
+  const empty = providerTurnVerdict(
+    {
+      type: "message.updated",
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop" } },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(empty.done, true);
+  assert.equal(empty.empty, true);
+  assert.equal(empty.reached, false);
+  assert.equal(empty.text, "");
+  const premature = providerTurnVerdict({ type: "session.idle", properties: { sessionID: "s2" } }, "s2", { userIds: new Set() });
+  assert.equal(premature, null);
+  const quiet = { userIds: new Set(), assistantIds: new Set() };
+  providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s2", info: { id: "a9", role: "assistant", time: { created: 5 } } } },
+    "s2",
+    quiet,
+  );
+  const idle = providerTurnVerdict({ type: "session.idle", properties: { sessionID: "s2" } }, "s2", quiet);
+  assert.equal(idle.done, true);
+  assert.equal(idle.empty, true);
+  assert.equal(idle.reached, false);
 });
 
 test("wakeSeat starts a run id and puts it on the prompt", async () => {
@@ -727,6 +756,63 @@ test("room wakes tell the seat how to bring someone in, and hop wakes say who me
   const hop = roomReplyLines({ channel: "ship", kind: "mention-seat", thread: { hop: 2, from: "product", maxHops: 4 } });
   assert.equal(hop[0], "@product mentioned you in #ship (hop 2 of 4). Answer them; @mention someone else only if they must act.");
   assert.deepEqual(roomReplyLines({ kind: "send_message" }), []);
+});
+
+test("team-mode wakes are told to reply PASS when they have nothing to add", () => {
+  const lines = roomReplyLines({ channel: "ship", kind: "implicit", teamMode: true });
+  assert.ok(lines.some((l) => l.includes("otherwise reply with exactly PASS")));
+  assert.ok(isPass("PASS") && isPass(" pass. ") && !isPass("PASS: I disagree"));
+});
+
+test("a PASS reply finishes the run without posting in the room", async () => {
+  const prev = { ...deps };
+  const channel = `pass-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_pass" });
+  deps.promptSession = async () => undefined;
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, done: true, text: "PASS", messageId: "msg_pass" }), { cancel() {} });
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    const woke = await wakeSeat("build", "anyone?", { from: "you", kind: "implicit", channel, teamMode: true, announce: false });
+    assert.equal(woke.started, true);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "done");
+    assert.equal(getState().messages.filter((m) => m.channel === channel && !m.system).length, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("meterTurn corrects the wake's usage row from the session's reported tokens", async () => {
+  const prev = { ...deps };
+  const runId = `run-meter-${Date.now()}`;
+  const was = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "build")));
+  mutate((s) => {
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.tokenBudget = 0;
+    meterWake(s, { seatId: "build", runId, inputTokens: 100, outputTokens: 200, channelId: "ship" });
+  });
+  const spentAfterEstimate = getState().seats.find((s) => s.id === "build").spent;
+  deps.sessionMessages = async (id) => {
+    assert.equal(id, "ses-meter");
+    return [{ info: { role: "assistant", time: { created: Date.now() }, cost: 0.004, tokens: { input: 900, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] }];
+  };
+  try {
+    const out = await meterTurn("build", { sessionId: "ses-meter", runId });
+    assert.equal(out.row.tokens, 1000);
+    assert.equal(out.row.channelId, "ship");
+    assert.equal(getState().seats.find((s) => s.id === "build").spent, spentAfterEstimate + 700);
+    assert.equal(await meterTurn("build", { sessionId: "ses-meter", runId: null }), null);
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      s.seats = s.seats.map((x) => (x.id === "build" ? was : x));
+      s.usage = (s.usage || []).filter((r) => r.runId !== runId);
+    });
+  }
 });
 
 test("a later wake posts the same text again", async () => {

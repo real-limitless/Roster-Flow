@@ -568,8 +568,15 @@ test("a provider that accepts the request and sends nothing stays blocked", { ti
     for (const body of bodies) {
       const run = (state.runs || []).find((item) => item.id === body.runId);
       assert.equal(run?.status, "blocked", JSON.stringify(run));
-      assert.ok(
+      // The provider accepted the request and is still holding the stream, so this is not a terminal failure yet.
+      assert.equal(
+        (state.messages || []).some((m) => m.runId === body.runId && m.seatId === seat.id && !m.system),
+        false,
+        body.runId,
+      );
+      assert.equal(
         (state.messages || []).some((m) => m.channel === "ship" && m.system && String(m.text).includes(body.runId)),
+        false,
         body.runId,
       );
     }

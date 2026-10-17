@@ -102,7 +102,8 @@ test("patchChannel sets respond and limits, and rejects unknown modes and bad li
   assert.equal(ch.respond, "quiet");
   assert.deepEqual(ch.limits, { implicitPerMinute: 2 });
   assert.equal(roomLimits(ch).implicitPerMinute, 2);
-  assert.throws(() => patchChannel(state, "ship", { respond: "team" }), /respond must be one of lead, conductor, quiet/);
+  assert.throws(() => patchChannel(state, "ship", { respond: "loud" }), /respond must be one of lead, team, conductor, quiet/);
+  assert.throws(() => patchChannel(state, "ship", { limits: { fanout: 11 } }), /limits.fanout must be a whole number from 1 to 10/);
   assert.throws(() => patchChannel(state, "ship", { limits: { implicitPerMinute: 0 } }), /whole number/);
   assert.equal(state.channels.find((c) => c.id === "ship").respond, "quiet");
   patchChannel(state, "ship", { limits: { implicitPerMinute: null } });
@@ -161,4 +162,20 @@ test("a team room the client drafted before modes existed gets the supervisor as
   assert.deepEqual(eng.teamIds, ["eng"]);
   assert.equal(eng.leadSeatId, "eng-supervisor");
   assert.equal(eng.respond, "lead");
+});
+
+test("a room over its daily token budget reads as quiet, and publicChannel reports the budget", async () => {
+  const { effectiveRespond, roomBudget } = await import("./channels.mjs");
+  const state = emptyState();
+  const ship = state.channels.find((c) => c.id === "ship");
+  const now = Date.parse("2026-10-16T10:00:00.000Z");
+  assert.equal(roomBudget(ship, state, now), null);
+  ship.limits = { tokensPerDay: 500 };
+  state.usage = [{ channelId: "ship", tokens: 200, time: "2026-10-16T09:00:00.000Z" }];
+  assert.deepEqual(roomBudget(ship, state, now), { tokensPerDay: 500, spentToday: 200, over: false, quietUntil: null });
+  state.usage.push({ channelId: "ship", tokens: 300, time: "2026-10-16T09:30:00.000Z" });
+  assert.deepEqual(roomBudget(ship, state, now), { tokensPerDay: 500, spentToday: 500, over: true, quietUntil: "2026-10-17T00:00:00.000Z" });
+  assert.equal(effectiveRespond(ship, state, now), "quiet");
+  ship.respond = "team";
+  assert.equal(effectiveRespond(ship, state, Date.parse("2026-10-17T00:01:00.000Z")), "team");
 });

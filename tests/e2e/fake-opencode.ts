@@ -7,7 +7,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  */
 export type FakePrompt = { sessionId: string; title: string; agent?: string; model?: unknown; text: string };
 type Part = { type: string; text: string };
-type Msg = { info: { id: string; sessionID?: string; role: string; time: { created: number; completed?: number }; providerID?: string; modelID?: string }; parts: Part[] };
+type Tokens = { input: number; output: number; reasoning: number; cache: { read: number; write: number } };
+type Msg = {
+  info: { id: string; sessionID?: string; role: string; time: { created: number; completed?: number }; providerID?: string; modelID?: string; tokens?: Tokens; cost?: number };
+  parts: Part[];
+};
 
 export type FakeOpenCode = {
   port: number;
@@ -20,12 +24,16 @@ export async function startFakeOpenCode(opts: {
   port: number;
   providers: Record<string, string[]>;
   reply: (prompt: FakePrompt) => string | null;
-  delayMs?: number;
+  delayMs?: number | ((prompt: FakePrompt) => number);
+  /** Tokens and cost reported on each assistant message, like OpenCode's `info.tokens` / `info.cost`. */
+  usage?: (prompt: FakePrompt) => { tokens: Tokens; cost: number } | null;
 }): Promise<FakeOpenCode> {
   const sessions: FakeOpenCode["sessions"] = new Map();
   const prompts: FakePrompt[] = [];
-  let n = 0;
   const streams = new Set<ServerResponse>();
+  let n = 0;
+  // Real OpenCode ids never repeat; a fresh prefix keeps a restarted fake from reusing an old session id.
+  const run = Math.random().toString(36).slice(2, 8);
   const publish = (evt: unknown) => {
     for (const res of streams) res.write(`data: ${JSON.stringify(evt)}\n\n`);
   };
@@ -67,7 +75,7 @@ export async function startFakeOpenCode(opts: {
     if (path === "/session" && method === "GET") return send(res, 200, [...sessions.values()].map(({ id, title }) => ({ id, title })));
     if (path === "/session" && method === "POST") {
       const body = await read(req);
-      const id = `ses_fake_${++n}`;
+      const id = `ses_fake_${run}_${++n}`;
       sessions.set(id, { id, title: String(body.title || id), messages: [] });
       return send(res, 200, { id, title: body.title || id });
     }
@@ -88,10 +96,13 @@ export async function startFakeOpenCode(opts: {
       prompts.push(prompt);
       ses.messages.push({ info: { id: `msg_u_${++n}`, role: "user", time: { created: Date.now() } }, parts: [{ type: "text", text }] });
       const answer = opts.reply(prompt);
+      publish({ type: "session.status", properties: { sessionID: ses.id, status: { type: "busy" } } });
+      const delay = typeof opts.delayMs === "function" ? opts.delayMs(prompt) : opts.delayMs ?? 150;
       setTimeout(() => {
         // OpenCode reports a completed assistant turn once the provider answers; a null reply is a turn with nothing to post.
         const now = Date.now();
-        const info = { id: `msg_a_${++n}`, sessionID: ses.id, role: "assistant", time: { created: now, completed: now } };
+        const used = answer ? opts.usage?.(prompt) || null : null;
+        const info = { id: `msg_a_${++n}`, sessionID: ses.id, role: "assistant", time: { created: now, completed: now }, ...(used || {}) };
         if (answer) {
           ses.messages.push({ info, parts: [{ type: "text", text: answer }] });
           const part = { id: `prt_${++n}`, sessionID: ses.id, messageID: info.id, type: "text", text: answer };
@@ -99,7 +110,7 @@ export async function startFakeOpenCode(opts: {
         }
         publish({ type: "message.updated", properties: { sessionID: ses.id, info } });
         publish({ type: "session.idle", properties: { sessionID: ses.id } });
-      }, opts.delayMs ?? 150);
+      }, delay);
       res.writeHead(204);
       return res.end();
     }

@@ -113,6 +113,18 @@ test("serveEnv sets OPENCODE_CONFIG and OPENCODE_CONFIG_DIR for both serves", ()
   assert.equal(system.FEATHERLESS_API_KEY, "k");
 });
 
+test("turnUsage sums tokens and cost of the turn's assistant messages, tool steps included", () => {
+  const msgs = [
+    { info: { role: "user", time: { created: 100 } }, parts: [] },
+    { info: { role: "assistant", time: { created: 50 }, tokens: { input: 999, output: 999, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] },
+    { info: { role: "assistant", time: { created: 110 }, cost: 0.01, tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 300, write: 1 } } }, parts: [] },
+    { info: { role: "assistant", time: { created: 120 }, cost: 0.02, tokens: { input: 150, output: 30, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "done" }] },
+  ];
+  const u = harness.turnUsage(msgs, 100);
+  assert.deepEqual({ ...u, cost: Number(u.cost.toFixed(4)) }, { input: 250, output: 50, reasoning: 5, cacheRead: 300, cacheWrite: 1, cost: 0.03, messages: 2 });
+  assert.equal(harness.turnUsage([{ info: { role: "assistant", time: { created: 1 } } }]), null);
+});
+
 test("serveEnv gives the plugin CORE's internal token unless ROSTER_API_TOKEN is set", async () => {
   const { internalPluginToken, isInternalPluginToken } = await import("./internal-token.mjs");
   const env = harness.serveEnv("company", { PATH: "/bin" });

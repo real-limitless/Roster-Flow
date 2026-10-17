@@ -3,10 +3,22 @@ import type { Channel, RespondMode, RoomLimits, Seat, SeatRoom, Team } from "../
 import { api } from "../../lib/api";
 
 export const CONDUCTOR_ID = "channel";
-const LIMIT_DEFAULTS: Required<RoomLimits> = { implicitPerMinute: 4, maxHops: 4, maxBotWakesPerThread: 8 };
+const LIMIT_DEFAULTS: Record<keyof RoomLimits, number | null> = {
+  implicitPerMinute: 4,
+  fanout: 3,
+  maxHops: 4,
+  maxBotWakesPerThread: 8,
+  tokensPerDay: null,
+};
+const LIMIT_MAX: Partial<Record<keyof RoomLimits, number>> = { fanout: 10, tokensPerDay: 1_000_000_000 };
 
 const MODES: { id: RespondMode; label: string; hint: string }[] = [
   { id: "lead", label: "Lead replies", hint: "The lead answers un-mentioned messages. With no lead set, the next awake member does." },
+  {
+    id: "team",
+    label: "Team replies",
+    hint: "Up to the fan-out number of awake members are asked, lead first. Members with nothing to add reply PASS, which is not posted.",
+  },
   { id: "conductor", label: "Conductor replies", hint: "The Channel conductor answers un-mentioned messages." },
   { id: "quiet", label: "Quiet", hint: "Un-mentioned messages wake nobody. People in the room get a notification." },
 ];
@@ -30,8 +42,10 @@ export function leadChoices(channel: Channel, teams: Team[], roster: Seat[]): Se
 export function responderLabel(channel: Channel | undefined, roster: Seat[]): string | null {
   if (!channel) return null;
   const mode = channel.respond || "lead";
+  if (channel.budget?.over) return "Quiet (budget)";
   if (mode === "quiet") return "Quiet";
   if (mode === "conductor") return "Conductor replies";
+  if (mode === "team") return "Team replies";
   const id = channel.leadSeatId || channel.responderSeatId;
   const name = roster.find((s) => s.id === id)?.name || id;
   if (!name) return null;
@@ -70,7 +84,7 @@ export function RoomReplySettings({
         </select>
       </label>
       <p className="micro">{MODES.find((m) => m.id === mode)?.hint}</p>
-      {mode === "lead" && (
+      {(mode === "lead" || mode === "team") && (
         <label className="kv-label">
           Lead
           <select
@@ -101,6 +115,9 @@ export function RoomReplySettings({
           onPatch={onPatch}
         />
       )}
+      {mode === "team" && (
+        <LimitInput channel={channel} name="fanout" label="Members asked per message" testId="room-fanout" onPatch={onPatch} />
+      )}
       <LimitInput channel={channel} name="maxHops" label="Bot hops per thread" testId="room-max-hops" onPatch={onPatch} />
       <LimitInput
         channel={channel}
@@ -109,6 +126,20 @@ export function RoomReplySettings({
         testId="room-max-bot-wakes"
         onPatch={onPatch}
       />
+      <LimitInput
+        channel={channel}
+        name="tokensPerDay"
+        label="Daily token budget"
+        testId="room-tokens-per-day"
+        placeholder="No limit"
+        onPatch={onPatch}
+      />
+      {channel.budget && (
+        <p className={`micro room-budget-line ${channel.budget.over ? "warn" : ""}`} data-testid="room-budget">
+          Today: {channel.budget.spentToday.toLocaleString()} of {channel.budget.tokensPerDay.toLocaleString()} tokens
+          {channel.budget.over ? ". Over budget: un-mentioned messages wake nobody until 00:00 UTC." : "."}
+        </p>
+      )}
     </div>
   );
 }
@@ -119,31 +150,34 @@ function LimitInput({
   name,
   label,
   testId,
+  placeholder,
   onPatch,
 }: {
   channel: Channel;
   name: keyof RoomLimits;
   label: string;
   testId: string;
+  placeholder?: string;
   onPatch: (body: Partial<Channel>) => void;
 }) {
   const current = channel.limits?.[name];
+  const max = LIMIT_MAX[name] ?? 1000;
   return (
     <label className="kv-label">
       {label}
       <input
         type="number"
         min={1}
-        max={1000}
+        max={max}
         data-testid={testId}
         key={`${channel.id}-${name}-${current ?? "default"}`}
         defaultValue={current ?? ""}
-        placeholder={String(LIMIT_DEFAULTS[name])}
+        placeholder={placeholder ?? String(LIMIT_DEFAULTS[name])}
         onBlur={(e) => {
           const raw = e.target.value.trim();
           const next = raw ? Number(raw) : null;
           if ((next ?? undefined) === current) return;
-          if (next !== null && (!Number.isInteger(next) || next < 1)) return;
+          if (next !== null && (!Number.isInteger(next) || next < 1 || next > max)) return;
           onPatch({ limits: { [name]: next as number } });
         }}
       />

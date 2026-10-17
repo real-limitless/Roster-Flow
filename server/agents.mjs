@@ -62,6 +62,13 @@ function agentBody(seat) {
   return `Persona: ${persona}\nInstructions: ${instructions}${project}${knowledge}${skills}\n`;
 }
 
+/** Tool steps one wake may take: 4 for the conductor and supervisors, 8 for specialists, or the seat's own `steps`. */
+export function agentSteps(seat = {}) {
+  const own = Number(seat.steps);
+  if (Number.isInteger(own) && own > 0) return own;
+  return seat.id === "channel" || seat.seatType === "supervisor" ? 4 : 8;
+}
+
 function agentModel(seat) {
   return normalizeModelId(seat?.model) || "";
 }
@@ -93,6 +100,7 @@ export function agentMarkdown(seat) {
     `description: ${yamlEscape(seat.job || seat.name)}`,
     `mode: ${mode}`,
     ...(model ? [`model: ${yamlEscape(model)}`] : []),
+    `steps: ${agentSteps(seat)}`,
     ...(Object.keys(perm).length ? ["permission:", ...permissionYaml(perm)] : []),
     "---",
     agentBody(seat).trim(),
@@ -106,6 +114,7 @@ function agentConfigEntry(seat) {
     description: seat.job || seat.name,
     mode: seat.seatType === "supervisor" ? "primary" : "all",
     ...(model ? { model } : {}),
+    steps: agentSteps(seat),
     prompt: agentBody(seat).trim(),
     ...(Object.keys(permissionFor(seat)).length ? { permission: permissionFor(seat) } : {}),
   };

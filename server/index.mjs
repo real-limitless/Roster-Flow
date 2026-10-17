@@ -42,7 +42,7 @@ import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
 import { channelsForSeat, createChannel, patchChannel, publicChannel } from "./channels.mjs";
 import { sessionRoom } from "./room-sessions.mjs";
 import { INTERNAL_SEAT_FIELDS, internalTokenAllows, isInternalPluginToken } from "./internal-token.mjs";
-import { postMessage, resetChatRuntime, routeChannelMessage, startSessionSync } from "./chat.mjs";
+import { postMessage, resetChatRuntime, roomThinking, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { attachConnector, listConnectors, publicConnector, removeConnector, searchKnowledge } from "./knowledge.mjs";
@@ -692,6 +692,7 @@ const server = createServer(async (req, res) => {
         projectId: url.searchParams.get("projectId") || undefined,
         teamId: url.searchParams.get("teamId") || undefined,
         seatId: url.searchParams.get("seatId") || undefined,
+        channelId: url.searchParams.get("channelId") || undefined,
       });
       if (url.searchParams.get("format") === "csv") {
         const body = usageCsv(rows);
@@ -1190,6 +1191,11 @@ const server = createServer(async (req, res) => {
         return;
       }
       json(res, 200, publicChannel(updated, getState()));
+      return;
+    }
+    const chThinking = pathname.match(/^\/api\/v1\/channels\/([^/]+)\/thinking$/);
+    if (chThinking && method === "GET") {
+      json(res, 200, roomThinking(decodeURIComponent(chThinking[1])));
       return;
     }
     const chMsg = pathname.match(/^\/api\/v1\/channels\/([^/]+)\/messages$/);
