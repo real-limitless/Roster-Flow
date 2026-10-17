@@ -1,9 +1,10 @@
 /** Write Roster-flow bot seats through to OpenCode agent files + opencode.json. */
-import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { normalizeModelId } from "./seed.mjs";
 import { opencodeDir, systemWorkspace } from "./paths.mjs";
-import { normalizeOpenCodeConfig, readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
+import { serveStartedAt } from "./harness.mjs";
+import { firstConnectedModel, modelAllowedInConfig, normalizeOpenCodeConfig, readOpenCodeConfig, writeOpenCodeConfig } from "./providers.mjs";
 
 const agentsDir = join(opencodeDir, "agents");
 const systemRoot = systemWorkspace;
@@ -61,15 +62,37 @@ function agentBody(seat) {
   return `Persona: ${persona}\nInstructions: ${instructions}${project}${knowledge}${skills}\n`;
 }
 
+function agentModel(seat) {
+  return normalizeModelId(seat?.model) || "";
+}
+
+/**
+ * Model string safe to persist. A bad id is dropped, or replaced with a
+ * configured connected model the serve can actually call. Never the built-in
+ * `opencode` provider.
+ */
+export function modelForDisk(seat) {
+  const requested = agentModel(seat);
+  if (requested && modelAllowedInConfig(requested)) return requested;
+  const fallback = firstConnectedModel();
+  const ref = fallback?.providerID && fallback?.modelID ? `${fallback.providerID}/${fallback.modelID}` : "";
+  if (ref && modelAllowedInConfig(ref)) return ref;
+  return "";
+}
+
+function seatForDisk(seat) {
+  return { ...seat, model: modelForDisk(seat) };
+}
+
 export function agentMarkdown(seat) {
   const mode = seat.seatType === "supervisor" ? "primary" : "all";
-  const model = normalizeModelId(seat.model) || "xai/grok-4";
+  const model = agentModel(seat);
   const perm = permissionFor(seat);
   return [
     "---",
     `description: ${yamlEscape(seat.job || seat.name)}`,
     `mode: ${mode}`,
-    `model: ${yamlEscape(model)}`,
+    ...(model ? [`model: ${yamlEscape(model)}`] : []),
     ...(Object.keys(perm).length ? ["permission:", ...permissionYaml(perm)] : []),
     "---",
     agentBody(seat).trim(),
@@ -78,10 +101,11 @@ export function agentMarkdown(seat) {
 }
 
 function agentConfigEntry(seat) {
+  const model = agentModel(seat);
   return {
     description: seat.job || seat.name,
     mode: seat.seatType === "supervisor" ? "primary" : "all",
-    model: normalizeModelId(seat.model) || "xai/grok-4",
+    ...(model ? { model } : {}),
     prompt: agentBody(seat).trim(),
     ...(Object.keys(permissionFor(seat)).length ? { permission: permissionFor(seat) } : {}),
   };
@@ -105,24 +129,40 @@ function writeSystemOpenCodeConfig(seat) {
   return clean;
 }
 
+function agentFile(seat) {
+  return seat?.system ? join(systemAgentsDir, `${seat.id}.md`) : join(agentsDir, `${seat.id}.md`);
+}
+
+/** True when the running serve started before this seat's agent file, so it has not loaded it. */
+export function agentNeedsServeRestart(seat, kind = "company") {
+  const started = serveStartedAt(kind);
+  if (!started) return false;
+  const file = agentFile(seat);
+  if (!existsSync(file)) return true;
+  const disk = seatForDisk(seat);
+  if (readFileSync(file, "utf8") !== agentMarkdown(disk)) return true;
+  return statSync(file).mtimeMs > started;
+}
+
 export function syncSeatAgent(seat) {
   if (!seat || seat.kind !== "bot" || seat.mcpGuest) return null;
   const adapter = String(seat.adapter || "opencode").toLowerCase();
   if (adapter && adapter !== "opencode") return null;
+  const disk = seatForDisk(seat);
   if (seat.system) {
     mkdirSync(systemAgentsDir, { recursive: true });
     const file = join(systemAgentsDir, `${seat.id}.md`);
-    writeFileSync(file, agentMarkdown(seat));
-    writeSystemOpenCodeConfig(seat);
+    writeFileSync(file, agentMarkdown(disk));
+    writeSystemOpenCodeConfig(disk);
     return file;
   }
   mkdirSync(agentsDir, { recursive: true });
   const file = join(agentsDir, `${seat.id}.md`);
-  writeFileSync(file, agentMarkdown(seat));
+  writeFileSync(file, agentMarkdown(disk));
   const cfg = readOpenCodeConfig();
   cfg.agent = { ...(cfg.agents || {}), ...(cfg.agent || {}) };
   delete cfg.agents;
-  cfg.agent[seat.id] = agentConfigEntry(seat);
+  cfg.agent[seat.id] = agentConfigEntry(disk);
   writeOpenCodeConfig(cfg);
   return file;
 }

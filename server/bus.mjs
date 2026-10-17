@@ -10,8 +10,10 @@ import {
   loadedModels,
   describeOpenCodeError,
   lastAssistantFailure,
+  watchProviderTurn,
+  ensure,
 } from "./harness.mjs";
-import { isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
+import { isBuiltinProvider, isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
@@ -20,6 +22,7 @@ import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
 import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
 import { estimateTokens, meterWake } from "./budget.mjs";
+import { agentNeedsServeRestart, syncSeatAgent } from "./agents.mjs";
 
 export const deps = {
   createSession,
@@ -27,6 +30,8 @@ export const deps = {
   sessionMessages,
   harnessStatus,
   loadedModels,
+  watchProviderTurn,
+  ensure,
 };
 
 function modelRef(model) {
@@ -39,6 +44,25 @@ function sessionMap(state, seat) {
 }
 
 const pendingWakes = new WeakMap();
+const inflightWakes = new Map();
+
+export function publishedWake(woke) {
+  return {
+    seat: woke?.seat || null,
+    runId: woke?.runId ?? null,
+    started: woke?.started === true,
+  };
+}
+
+export function blockLatestRun(seatId, reason) {
+  const runs = getState().runs || [];
+  // A run that already reached the provider stays running. Only an in-flight
+  // start can be blocked from here.
+  const run = [...runs].reverse().find((r) => r.seatId === seatId && r.status === "starting");
+  if (!run) return null;
+  noteRun(run.id, seatId, "blocked", reason || "did not start");
+  return run.id;
+}
 
 function noteRun(runId, seatId, status, reason) {
   if (!runId) return;
@@ -54,6 +78,55 @@ function noteRun(runId, seatId, status, reason) {
     run.reason = reason || null;
     run.updatedAt = new Date().toISOString();
   });
+}
+
+const restartWaiting = new Set();
+
+function serveBusy(kind, exceptRunId) {
+  const seats = getState().seats || [];
+  return (getState().runs || []).some((run) => {
+    if (!run || run.id === exceptRunId || restartWaiting.has(run.id)) return false;
+    // A turn that has not finished owns the serve. The HTTP started flag is
+    // not consulted: starting and running are both busy.
+    if (run.status !== "starting" && run.status !== "running") return false;
+    const seat = seats.find((item) => item.id === run.seatId);
+    if (!seat) return true;
+    return harnessKindForSeat(seat) === kind;
+  });
+}
+
+const restartChains = new Map();
+
+async function restartWhenIdle(kind, runId, stillNeeded) {
+  const prev = restartChains.get(kind) || Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  restartChains.set(kind, prev.then(() => gate, () => gate));
+  await prev.catch(() => undefined);
+  try {
+    if (!stillNeeded()) return;
+    await waitForIdleServe(kind, runId);
+    if (!stillNeeded()) return;
+    await (deps.ensure || ensure)({ kind, forceRestart: true });
+  } finally {
+    release();
+  }
+}
+
+/** Hold a serve restart until every other run on this harness has finished. */
+export async function waitForIdleServe(kind, exceptRunId, timeoutMs = Number(process.env.ROSTER_RESTART_WAIT_MS) || 90000) {
+  const start = Date.now();
+  while (serveBusy(kind, exceptRunId)) {
+    if (Date.now() - start >= timeoutMs) {
+      const err = new Error("the harness is busy with another run, so this seat was not loaded");
+      err.status = 409;
+      err.code = "HARNESS_BUSY";
+      throw err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 async function announceWake(meta, text) {
@@ -162,12 +235,22 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
       if (t) t.rrIndex = team.rrIndex;
     });
   }
-  const chain = modelChainForSeat(seat, team);
+  const explicit = String(seat?.model || "").trim();
+  const chain = modelChainForSeat(seat, team).filter((ref) => {
+    const providerID = String(ref || "").split("/")[0];
+    if (isBuiltinProvider(providerID) && String(ref) !== explicit) return false;
+    return true;
+  });
   const loaded = await deps.loadedModels(kind).catch(() => null);
   const resolved = chain.length ? chain.map((m) => resolveUsableModel(seat, m, loaded)) : [resolveUsableModel(seat, undefined, loaded)];
   // Sending a model OpenCode did not load fails inside the serve (prompt_async
   // still returns 204), so the seat would never reply. Stop here instead.
-  const refs = resolved.filter((m) => !m?.providerID || isLoadedModel(loaded, m.providerID, m.modelID) !== false);
+  // The built-in `opencode` provider is not a fallback: it is loaded but unconfigured.
+  const refs = resolved.filter((m) => {
+    if (!m?.providerID || !m?.modelID) return false;
+    if (isBuiltinProvider(m.providerID)) return false;
+    return isLoadedModel(loaded, m.providerID, m.modelID) !== false;
+  });
   if (!refs.length) {
     const want = modelRef(resolved[0]) || seat.model || "the seat model";
     const have = loadedProviderIds(loaded);
@@ -178,23 +261,110 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
     err.status = 409;
     throw err;
   }
+  let sid = sessionId;
+  const first = refs[0];
+  const seeded = { ...seat, model: modelRef(first) || seat.model || "" };
+  if (agentNeedsServeRestart(seeded, kind)) {
+    // OpenCode reads agents at process start. A seat hired after boot is invisible
+    // until the serve is restarted. Restarting kills every in-flight stream, so
+    // this seat waits until the serve is idle instead of restarting immediately.
+    syncSeatAgent(seeded);
+    restartWaiting.add(meta.runId);
+    try {
+      await restartWhenIdle(kind, meta.runId, () => agentNeedsServeRestart(seeded, kind));
+    } finally {
+      restartWaiting.delete(meta.runId);
+    }
+    mutate((s) => {
+      const key = sessionKeyForKind(kind);
+      if (s[key]) delete s[key][to];
+    });
+    sid = await ensureSeatSession(to);
+    if (!sid) {
+      const err = new Error("no session");
+      err.status = 409;
+      throw err;
+    }
+  }
   let lastErr = null;
   for (const model of refs) {
-    const body = promptBody(seat, to, text, meta, model);
+    const body = promptBody(seat, to, text, meta, {
+      providerID: model.providerID,
+      modelID: model.modelID,
+    });
+    const askedAt = Date.now();
+    const watch = (deps.watchProviderTurn || watchProviderTurn)(sid, kind, undefined, { askedAt });
     try {
-      await deps.promptSession(sessionId, body, kind);
+      let outcome;
+      if (watch.unwatched) {
+        await deps.promptSession(sid, body, kind);
+        outcome = await watch;
+      } else {
+        let promptError = null;
+        const prompt = deps.promptSession(sid, body, kind).catch((err) => {
+          promptError = err;
+          return null;
+        });
+        outcome = await Promise.race([
+          watch,
+          prompt.then(() => (promptError ? Promise.reject(promptError) : watch)),
+        ]);
+      }
+      if (!outcome?.reached || outcome.error) {
+        const err = new Error(outcome?.error || "the provider did not respond in time");
+        err.code = outcome?.error ? outcome.code || "PROVIDER_ERROR" : "PROVIDER_TIMEOUT";
+        err.status = 502;
+        if (!outcome?.done && !outcome?.cancelled) {
+          err.lateReply = watch.rest;
+          err.askedAt = askedAt;
+          err.sid = sid;
+          err.kind = kind;
+        }
+        throw err;
+      }
+      noteRun(meta.runId, to, "running", null);
+      let final = outcome;
+      if (!outcome.done && watch.rest) final = await watch.rest;
+      if (final?.error && !final?.text && !outcome.text) {
+        const err = new Error(final.error);
+        err.code = final.code || "PROVIDER_ERROR";
+        err.status = 502;
+        throw err;
+      }
+      let providerText = final?.text || outcome.text || "";
+      let messageId = final?.messageId || outcome.messageId || null;
+      try {
+        // A reused session still holds earlier turns. Keep only assistant messages created after this prompt.
+        const replies = assistantText(await deps.sessionMessages(sid, kind)).filter((m) => m.text);
+        const dated = replies.some((m) => m.created);
+        const fresh = dated ? replies.filter((m) => m.created && m.created >= askedAt) : replies.slice(-1);
+        const polled = fresh.map((m) => m.text).join("\n");
+        if (polled) providerText = polled;
+        if (fresh.length) messageId = fresh[fresh.length - 1].id || messageId;
+      } catch {
+        /* the streamed text is enough */
+      }
       emit({
         scope: "chat",
         step: "seat.prompted",
         seat: to,
         channel: meta.channel || null,
-        detail: { sessionId, model, harness: kind },
+        detail: { sessionId: sid, model, harness: kind },
       });
-      return { sessionId, seat: to, model, harness: kind };
+      return { sessionId: sid, seat: to, model, harness: kind, providerText, messageId };
     } catch (err) {
+      if (!err.lateReply) watch.cancel?.();
       if (err.status === 404) throw err;
       const described = describeOpenCodeError(err, { model: modelRef(model), kind });
-      lastErr = Object.assign(new Error(described.message), { status: described.status, code: described.code, cause: err });
+      lastErr = Object.assign(new Error(described.message), {
+        status: described.status,
+        code: described.code || err.code,
+        cause: err,
+        lateReply: err.lateReply,
+        askedAt: err.askedAt,
+        sid: err.sid,
+        kind: err.kind,
+      });
     }
   }
   if (lastErr) throw lastErr;
@@ -218,6 +388,43 @@ function meterPromptedWake(to, text, meta, result, started) {
   return result;
 }
 
+async function postSeatReply(to, seat, runMeta, reply, messageId) {
+  if (!reply || !runMeta?.channel || !runMeta.runId) return;
+  const { postMessage } = await import("./chat.mjs");
+  const existing = (getState().messages || []).find(
+    (m) =>
+      m.channel === runMeta.channel &&
+      m.seatId === to &&
+      !m.system &&
+      ((m.runId === runMeta.runId && m.text === reply) || (messageId && m.sessionId === messageId)),
+  );
+  if (existing) {
+    if (!existing.runId || (messageId && !existing.sessionId)) {
+      mutate((s) => {
+        const msg = (s.messages || []).find((m) => m.id === existing.id);
+        if (!msg) return;
+        if (!msg.runId) msg.runId = runMeta.runId;
+        if (messageId && !msg.sessionId) msg.sessionId = messageId;
+      });
+    }
+    return;
+  }
+  postMessage(runMeta.channel, seat.name, "bot", reply, {
+    seatId: to,
+    mirrored: true,
+    runId: runMeta.runId,
+    ...(messageId ? { sessionId: messageId } : {}),
+  });
+}
+
+async function recoverLateReply(to, seat, runMeta, reply, messageId) {
+  const run = (getState().runs || []).find((item) => item.id === runMeta.runId);
+  if (!run || (run.status !== "blocked" && run.status !== "starting")) return;
+  noteRun(runMeta.runId, to, "running", null);
+  await postSeatReply(to, seat, runMeta, reply, messageId);
+  noteRun(runMeta.runId, to, "done", null);
+}
+
 async function finishPrompted(to, seat, text, runMeta, result, started) {
   const metered = meterPromptedWake(to, text, runMeta, result, started);
   if (metered.paused) {
@@ -226,6 +433,8 @@ async function finishPrompted(to, seat, text, runMeta, result, started) {
     return { ...metered, runId: runMeta.runId, started: false };
   }
   noteRun(runMeta.runId, to, "running", null);
+  await postSeatReply(to, seat, runMeta, result?.providerText, result?.messageId);
+  noteRun(runMeta.runId, to, "done", null);
   return { ...metered, runId: runMeta.runId, started: true };
 }
 
@@ -235,7 +444,27 @@ function bindRun(meta, seatId) {
   return { ...meta, runId };
 }
 
-export async function wakeSeat(to, text, meta = {}) {
+export function wakeSeat(to, text, meta = {}) {
+  const key = String(to || "");
+  if (key && !key.startsWith("channel:") && !key.startsWith("team:")) {
+    const existing = inflightWakes.get(key);
+    if (existing) return existing;
+    const pending = wakeSeatBody(to, text, meta);
+    inflightWakes.set(key, pending);
+    const clear = () => {
+      if (inflightWakes.get(key) === pending) inflightWakes.delete(key);
+    };
+    pending.then(clear, clear);
+    return pending;
+  }
+  return wakeSeatBody(to, text, meta);
+}
+
+async function wakeSeatBody(to, text, meta = {}) {
+  if (meta.channel && !String(to).startsWith("channel:") && !String(to).startsWith("team:")) {
+    const { rememberSessionRoom } = await import("./chat.mjs");
+    rememberSessionRoom(String(to), meta.channel);
+  }
   if (String(to).startsWith("channel:")) return null;
   if (String(to).startsWith("team:")) {
     const target = teamWakeTarget(to, getState().teams || []);
@@ -354,6 +583,29 @@ export async function wakeSeat(to, text, meta = {}) {
     });
     noteRun(runMeta.runId, to, "blocked", error);
     await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${error}`);
+    if (err.lateReply) {
+      Promise.resolve(err.lateReply)
+        .then(async (final) => {
+          let text = final?.text || "";
+          let messageId = final?.messageId || null;
+          if (err.sid) {
+            try {
+              const rows = assistantText(await deps.sessionMessages(err.sid, err.kind)).filter(
+                (row) => row.text && (!row.created || !err.askedAt || row.created >= err.askedAt),
+              );
+              if (rows.length) {
+                text = rows.map((row) => row.text).join("\n");
+                messageId = rows[rows.length - 1].id || messageId;
+              }
+            } catch {
+              /* keep the streamed text */
+            }
+          }
+          if (text) return recoverLateReply(to, seat, runMeta, text, messageId);
+          return null;
+        })
+        .catch(() => undefined);
+    }
     return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
 }

@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { syncSeatAgent } from "./agents.mjs";
+import { readOpenCodeConfig } from "./providers.mjs";
+import { providerTurnVerdict } from "./harness.mjs";
+import { blockLatestRun, waitForIdleServe } from "./bus.mjs";
 import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
 import { getState, mutate } from "./store.mjs";
 
@@ -13,6 +20,130 @@ test("promptBody tells the seat which job to finish", () => {
   ).parts[0].text;
   assert.match(text, /job-1/);
   assert.match(text, /roster_report/);
+});
+
+test("a seat with no model prompts the loaded fallback and writes it onto the agent", async () => {
+  const prompts = [];
+  const prev = { ...deps };
+  const prevKey = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = "test-key";
+  let priorModel;
+  let priorFallback;
+  let priorTeamFallback;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_fallback" });
+  deps.loadedModels = async () => [{ providerID: "demo-llm", modelID: "demo-small" }];
+  deps.promptSession = async (_id, body) => {
+    prompts.push(body.model);
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    const team = (s.teams || []).find((t) => t.id === "eng");
+    if (team) {
+      priorTeamFallback = team.fallbackModel;
+      team.fallbackModel = "";
+    }
+    if (seat) {
+      seat.status = "idle";
+      priorModel = seat.model;
+      priorFallback = seat.fallbackModel;
+      seat.model = "";
+      seat.fallbackModel = "";
+    }
+  });
+  try {
+    const result = await wakeSeat("build", "ship the webhook", { from: "product", kind: "handoff" });
+    assert.equal(result.started, true);
+    assert.deepEqual(prompts[0], { providerID: "demo-llm", modelID: "demo-small" });
+  } finally {
+    Object.assign(deps, prev);
+    if (prevKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = prevKey;
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      const team = (s.teams || []).find((t) => t.id === "eng");
+      if (seat) {
+        seat.model = priorModel;
+        seat.fallbackModel = priorFallback;
+        syncSeatAgent(seat);
+      }
+      if (team) team.fallbackModel = priorTeamFallback;
+    });
+  }
+});
+
+test("providerTurnVerdict waits for a completed assistant turn and blockLatestRun leaves a success running", () => {
+  const state = { userIds: new Set(), assistantIds: new Set() };
+  const user = providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s1", info: { id: "u1", role: "user" } } },
+    "s1",
+    state,
+  );
+  assert.equal(user, null);
+  const echo = providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "ping", messageID: "u1" } } },
+    "s1",
+    state,
+  );
+  assert.equal(echo, null);
+  const open = providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1 } } } },
+    "s1",
+    state,
+  );
+  assert.equal(open, null);
+  const step = providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "step-start", messageID: "a1" } } },
+    "s1",
+    state,
+  );
+  assert.equal(step.reached, true);
+  assert.equal(step.done, false);
+  const chunk = providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "stub-reply-ok", messageID: "a1" } } },
+    "s1",
+    state,
+  );
+  assert.equal(chunk.reached, true);
+  assert.equal(chunk.done, false);
+  assert.equal(chunk.text, "stub-reply-ok");
+  const done = providerTurnVerdict(
+    {
+      type: "message.updated",
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop", providerID: "stub", modelID: "stub-model" } },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(done.reached, true);
+  assert.equal(done.done, true);
+  assert.equal(done.text, "stub-reply-ok");
+  const failed = providerTurnVerdict(
+    {
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "a2", role: "assistant", error: { name: "APIError", data: { message: "connection refused", statusCode: 502 } }, providerID: "dead", modelID: "dead-model" },
+      },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(failed.reached, false);
+  assert.match(failed.error, /dead/);
+
+  mutate((s) => {
+    s.runs = [
+      ...(s.runs || []),
+      { id: "run-ok", seatId: "build", status: "running", at: new Date().toISOString() },
+      { id: "run-start", seatId: "qa", status: "starting", at: new Date().toISOString() },
+    ];
+  });
+  assert.equal(blockLatestRun("build", "late noreply"), null);
+  assert.equal([...(getState().runs || [])].reverse().find((r) => r.id === "run-ok")?.status, "running");
+  assert.equal(blockLatestRun("qa", "did not reply"), "run-start");
+  assert.equal((getState().runs || []).find((r) => r.id === "run-start")?.status, "blocked");
 });
 
 test("wakeSeat starts a run id and puts it on the prompt", async () => {
@@ -34,7 +165,7 @@ test("wakeSeat starts a run id and puts it on the prompt", async () => {
     assert.ok(result.runId);
     assert.match(prompts[0], new RegExp(`Run: ${result.runId}`));
     const run = (getState().runs || []).find((r) => r.id === result.runId);
-    assert.equal(run?.status, "running");
+    assert.equal(run?.status, "done");
     assert.equal(run?.seatId, "build");
   } finally {
     Object.assign(deps, prev);
@@ -157,6 +288,59 @@ function restoreBuild(model) {
     if (s.sessions) delete s.sessions.build;
   });
 }
+
+test("a bad model is not written into the shared config and does not stop another seat", async () => {
+  const prev = { ...deps };
+  const prompts = [];
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_iso" });
+  deps.loadedModels = async () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  deps.promptSession = async (_id, body) => {
+    prompts.push(body.model);
+  };
+  let priorModel;
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) {
+      priorModel = seat.model;
+      seat.model = "featherless/not-loaded-model";
+      seat.fallbackModel = "";
+      seat.status = "idle";
+    }
+    if (s.sessions) delete s.sessions.build;
+    if (s.sessions) delete s.sessions.qa;
+  });
+  const before = JSON.stringify(readOpenCodeConfig());
+  try {
+    const bad = await wakeSeat("build", "nope", { from: "you", channel: "ship" });
+    assert.equal(bad.started, false);
+    assert.equal(prompts.length, 0);
+    const badRun = (getState().runs || []).find((r) => r.id === bad.runId);
+    assert.equal(badRun?.status, "blocked");
+    assert.equal(JSON.stringify(readOpenCodeConfig()), before);
+    const added = getState().messages.filter((m) => m.channel === "ship" && m.system && String(m.text).includes(bad.runId));
+    assert.ok(added.length);
+
+    deps.loadedModels = async () => [{ providerID: "demo-llm", modelID: "demo-small" }];
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "qa");
+      if (seat) {
+        seat.model = "";
+        seat.fallbackModel = "";
+        seat.status = "idle";
+      }
+    });
+    const good = await wakeSeat("qa", "still works", { from: "you" });
+    assert.notEqual(good.seat, "build");
+    assert.equal(prompts.some((m) => m?.providerID === "opencode"), false);
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      if (seat && priorModel !== undefined) seat.model = priorModel;
+    });
+  }
+});
 
 test("an explicitly assigned model is not swapped for a loaded one", async () => {
   const prev = { ...deps };
@@ -302,5 +486,171 @@ test("wakeSeat recreates session after 404", async () => {
     mutate((s) => {
       if (s.sessions?.build === "ses_fresh") delete s.sessions.build;
     });
+  }
+});
+
+test("a later wake posts the same text again", async () => {
+  const prev = { ...deps };
+  const reply = { reached: true, text: "same-reply", done: true };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_same" });
+  deps.promptSession = async () => ({ ok: true });
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve(reply);
+    pending.rest = pending;
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const first = await wakeSeat("build", "again", { from: "product", channel: "ship" });
+    const second = await wakeSeat("build", "again", { from: "product", channel: "ship" });
+    const posted = (getState().messages || []).filter(
+      (m) => m.text === "same-reply" && (m.runId === first.runId || m.runId === second.runId),
+    );
+    assert.equal(posted.length, 2);
+    assert.equal(posted[0].runId, first.runId);
+    assert.equal(posted[1].runId, second.runId);
+    assert.notEqual(first.runId, second.runId);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a reply that arrives after the start timeout is posted and the run is done", async () => {
+  const prev = { ...deps };
+  let release;
+  const rest = new Promise((resolve) => {
+    release = resolve;
+  });
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_late" });
+  deps.promptSession = async () => ({ ok: true });
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: false, timeout: true, done: false });
+    pending.rest = rest;
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const result = await wakeSeat("build", "slow", { from: "product", channel: "ship" });
+    assert.equal(result.started, false);
+    assert.equal((getState().runs || []).find((r) => r.id === result.runId)?.status, "blocked");
+    release({ reached: true, text: "late-hello", done: true });
+    const start = Date.now();
+    let run;
+    while (Date.now() - start < 1000) {
+      run = (getState().runs || []).find((r) => r.id === result.runId);
+      if (run?.status === "done") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(run?.status, "done");
+    assert.ok(
+      (getState().messages || []).some((m) => m.runId === result.runId && m.text === "late-hello"),
+    );
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("waitForIdleServe holds while another run is streaming", async () => {
+  mutate((s) => {
+    s.runs = [
+      ...(s.runs || []).map((run) =>
+        run.status === "starting" || run.status === "running" ? { ...run, status: "done" } : run,
+      ),
+      { id: "run-stream-x", seatId: "build", status: "running", started: false, at: new Date().toISOString() },
+    ];
+    return null;
+  });
+  let settled = false;
+  const pending = waitForIdleServe("company", "run-y", 2000).then(() => {
+    settled = true;
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(settled, false);
+  mutate((s) => {
+    s.runs = (s.runs || []).map((run) => (run.id === "run-stream-x" ? { ...run, status: "done" } : run));
+    return null;
+  });
+  await pending;
+  assert.equal(settled, true);
+});
+
+test("a wake posts only the assistant message from this run", async () => {
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_hist" });
+  deps.promptSession = async () => ({ ok: true });
+  const freshId = `hist-${Date.now()}`;
+  deps.sessionMessages = async () => [
+    { id: "old", info: { role: "assistant", time: { created: 1 } }, parts: [{ type: "text", text: "old-reply" }] },
+    { id: freshId, info: { role: "assistant", time: { created: Date.now() + 60_000 } }, parts: [{ type: "text", text: "new-reply" }] },
+  ];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: true, text: "old-reply\nnew-reply", done: true });
+    pending.rest = pending;
+    pending.arm = () => {};
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const result = await wakeSeat("build", "next", { from: "product", channel: "ship" });
+    const posted = (getState().messages || []).filter((m) => m.runId === result.runId && m.seatId === "build" && !m.system);
+    assert.equal(
+      posted.length,
+      1,
+      JSON.stringify({
+        started: result.started,
+        messageId: result.messageId,
+        hits: (getState().messages || []).filter((m) => String(m.text).includes("new-reply")).map((m) => ({ runId: m.runId, sessionId: m.sessionId, text: m.text })),
+      }),
+    );
+    assert.equal(posted[0].text, "new-reply");
+    assert.equal(posted[0].sessionId, freshId);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("overlapping wakes share one wakeSeat result", async () => {
+  const prev = { ...deps };
+  let prompts = 0;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_share" });
+  deps.promptSession = async () => {
+    prompts += 1;
+  };
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: true, text: "shared-reply", done: true, messageId: "shared-1" });
+    pending.rest = pending;
+    pending.arm = () => {};
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const first = wakeSeat("build", "one", { from: "product", channel: "ship" });
+    const second = wakeSeat("build", "two", { from: "product", channel: "ship" });
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(prompts, 1);
+    assert.equal(a.started, true);
+    assert.equal(b.started, a.started);
+    assert.equal(b.runId, a.runId);
+  } finally {
+    Object.assign(deps, prev);
   }
 });

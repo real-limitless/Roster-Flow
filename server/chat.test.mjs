@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyState } from "./seed.mjs";
-import { getState } from "./store.mjs";
+import { getState, mutate } from "./store.mjs";
 import { assistantText, sessionTranscript, bindSessionMeta } from "./harness.mjs";
 import {
   collectWakeTargets,
@@ -13,6 +13,7 @@ import {
   seatModelPlan,
   deps,
 } from "./chat.mjs";
+import { deps as busDeps } from "./bus.mjs";
 import { emit, listTrace, resetTrace } from "./trace.mjs";
 
 test("implicit targets cover channel, team, project, and DM rooms", () => {
@@ -79,9 +80,7 @@ test("routeChannelMessage posts a key warning and does not wait for a model", as
   resetTrace();
   deps.harnessStatus = () => ({ harness: "up" });
   deps.ensure = async () => ({ harness: "up" });
-  deps.wakeSeat = async () => {
-    throw new Error("wakeSeat should not run without a key");
-  };
+  deps.wakeSeat = async (to) => ({ seat: to, runId: "run-nokey", started: false, error: "No API key for xai." });
   deps.keyStatus = () => ({ providerID: "xai", modelID: "grok-4", configured: true, connected: false });
   deps.fallbackModel = () => null;
   deps.followTicks = 0;
@@ -92,8 +91,9 @@ test("routeChannelMessage posts a key warning and does not wait for a model", as
     const immediate = getState().messages.slice(before);
     assert.ok(immediate.some((m) => /Waking Channel/.test(m.text) && m.system));
     assert.ok(immediate.some((m) => /No API key for xai/.test(m.text) && m.system));
-    await routed.pending;
-    const added = getState().messages.slice(before);
+    const results = await routed.pending;
+    assert.equal(results[0].runId, "run-nokey");
+    assert.equal(results[0].started, false);
     assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.nokey"));
   } finally {
     Object.assign(deps, prev);
@@ -120,8 +120,9 @@ test("routeChannelMessage falls back to a connected OpenCode model", async () =>
     const routed = routeChannelMessage({ channelId: "ship", text: "hi from fallback test" });
     assert.equal(routed.wakes, 1);
     const results = await routed.pending;
-    assert.equal(woke, null);
+    assert.equal(woke, "channel");
     assert.equal(results[0].started, false);
+    assert.equal(results[0].runId, null);
     const added = getState().messages.slice(before);
     assert.ok(added.some((m) => /not in Settings/.test(m.text) && m.system));
     assert.ok(!added.some((m) => m.text === "Fallback supervisor is awake."));
@@ -198,7 +199,7 @@ test("routeChannelMessage labels the Channel seat with the loaded fallback and w
   let woke = null;
   deps.wakeSeat = async (to) => {
     woke = to;
-    return { sessionId: "ses_loaded", seat: to };
+    return { seat: to, runId: "run-loaded", started: false, error: "model is not loaded by the harness (loaded: opencode, infiniterouter-dev)." };
   };
   deps.pullAssistant = async () => [{ id: `a-loaded-${Date.now()}`, text: "Loaded fallback reply." }];
   deps.pullFailure = async () => null;
@@ -207,17 +208,18 @@ test("routeChannelMessage labels the Channel seat with the loaded fallback and w
   const channel = `loaded-${Date.now()}`;
   try {
     const routed = routeChannelMessage({ channelId: channel, text: "hi loaded" });
-    await routed.pending;
-    assert.equal(woke, null);
+    const results = await routed.pending;
+    assert.equal(woke, "channel");
+    assert.equal(results[0].runId, "run-loaded");
+    assert.equal(results[0].started, false);
     const added = getState().messages.filter((m) => m.channel === channel);
-    assert.ok(added.some((m) => m.system && /is not loaded by the harness \(loaded: opencode, infiniterouter-dev\)/.test(m.text)));
     assert.ok(!added.some((m) => m.text === "Loaded fallback reply."));
   } finally {
     Object.assign(deps, prev);
   }
 });
 
-test("routeChannelMessage does not wake a seat whose provider OpenCode did not load", async () => {
+test("an @mention of a seat whose model is not loaded returns a run with started false", async () => {
   const prev = { ...deps };
   resetTrace();
   deps.harnessStatus = () => ({ harness: "up" });
@@ -226,17 +228,24 @@ test("routeChannelMessage does not wake a seat whose provider OpenCode did not l
   deps.knownLoadedModels = () => BUILTIN_ONLY;
   deps.keyStatus = keyedStatus("featherless", "Qwen/Qwen2.5-Coder-32B-Instruct");
   deps.fallbackModel = () => null;
-  deps.wakeSeat = async () => {
-    throw new Error("wakeSeat should not run when the provider is not loaded");
+  const calls = [];
+  deps.wakeSeat = async (to) => {
+    calls.push(to);
+    return {
+      seat: to,
+      runId: "run-mention",
+      started: false,
+      error: "featherless/Qwen/Qwen2.5-Coder-32B-Instruct is not loaded by the harness (loaded: opencode).",
+    };
   };
   deps.followTicks = 0;
-  const channel = `notloaded-${Date.now()}`;
   try {
-    const routed = routeChannelMessage({ channelId: channel, text: "hi not loaded" });
+    const routed = routeChannelMessage({ channelId: "ship", text: "please @Eng.Build look" });
     const results = await routed.pending;
-    assert.equal(results[0].nokey, true);
-    const added = getState().messages.filter((m) => m.channel === channel);
-    assert.ok(added.some((m) => m.system && /is not loaded by the harness \(loaded: opencode\)/.test(m.text)));
+    const build = results.find((row) => row.seat === "build");
+    assert.ok(calls.includes("build"));
+    assert.equal(build.runId, "run-mention");
+    assert.equal(build.started, false);
     assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.nokey"));
   } finally {
     Object.assign(deps, prev);
@@ -317,6 +326,77 @@ test("providerHint explains a missing seat key", () => {
     assert.match(hint, /Channel/);
   } finally {
     deps.keyStatus = prev;
+  }
+});
+
+test("mentions in one message wake those seats at the same time", async () => {
+  const prev = { ...deps };
+  let active = 0;
+  let max = 0;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => [];
+  deps.knownLoadedModels = () => [];
+  deps.keyStatus = () => ({ providerID: "demo", modelID: "m", configured: true, connected: true, loaded: true });
+  deps.followTicks = 0;
+  deps.wakeSeat = async (to) => {
+    active += 1;
+    max = Math.max(max, active);
+    await new Promise((r) => setTimeout(r, 40));
+    active -= 1;
+    return { seat: to, runId: `run-${to}`, started: true, sessionId: `ses-${to}` };
+  };
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "please @Eng.Build and @QA both look" });
+    const results = await routed.pending;
+    assert.equal(max, 2);
+    assert.deepEqual(results.map((row) => row.seat).sort(), ["build", "qa"]);
+    assert.ok(results.every((row) => row.started === true && row.runId));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("an @mention that does not start reports started false and a blocked run", async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  let priorModel;
+  busDeps.harnessStatus = () => ({ harness: "up" });
+  busDeps.createSession = async () => ({ id: "ses_mention" });
+  busDeps.loadedModels = async () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  busDeps.promptSession = async () => {
+    throw new Error("provider should not be called");
+  };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  deps.knownLoadedModels = () => [{ providerID: "opencode", modelID: "longcat-2.5-preview-free" }];
+  deps.followTicks = 0;
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) {
+      priorModel = seat.model;
+      seat.model = "featherless/not-loaded-model";
+      seat.status = "idle";
+    }
+  });
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "please @Eng.Build check" });
+    const results = await routed.pending;
+    const build = results.find((row) => row.seat === "build");
+    assert.ok(build);
+    assert.equal(build.started, false);
+    assert.ok(build.runId);
+    const run = (getState().runs || []).find((r) => r.id === build.runId);
+    assert.equal(run?.status, "blocked");
+    assert.notEqual(run?.status, "running");
+  } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+    mutate((s) => {
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      if (seat && priorModel !== undefined) seat.model = priorModel;
+    });
   }
 });
 

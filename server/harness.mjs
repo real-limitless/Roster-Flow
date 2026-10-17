@@ -101,7 +101,7 @@ export function serveEnv(kind = COMPANY, base = process.env) {
 
 export function whichOpenCode() {
   const envBin = process.env.OPENCODE_BIN;
-  if (envBin && existsSync(envBin)) return envBin;
+  if (envBin) return existsSync(envBin) ? envBin : null;
   const path = process.env.PATH || "";
   for (const dir of path.split(":")) {
     const cand = join(dir, "opencode");
@@ -292,6 +292,7 @@ async function adoptIfHealthy(kind) {
     healthy: true,
     version: String(h.version || ""),
     loaded: null,
+    startedAt: Date.now(),
   };
   await reconcileSessions(k).catch(() => undefined);
   await loadedModels(k);
@@ -492,6 +493,7 @@ async function ensureOnce({ forceRestart = false, kind = COMPANY } = {}) {
     healthy: false,
     version: null,
     loaded: null,
+    startedAt: Date.now(),
     config: { file: env.OPENCODE_CONFIG, dir: env.OPENCODE_CONFIG_DIR },
   };
 
@@ -589,6 +591,209 @@ export async function promptSession(sessionId, body, kind = COMPANY) {
   );
 }
 
+/**
+ * Decide whether one SSE event shows that this session's provider turn
+ * finished or failed. User echoes are ignored. `state.userIds` collects them.
+ */
+export function serveStartedAt(kind = COMPANY) {
+  return instances[harnessKind(kind)]?.startedAt || 0;
+}
+
+export function providerStartMs() {
+  const n = Number(process.env.ROSTER_PROVIDER_TURN_MS);
+  return Number.isFinite(n) && n > 0 ? n : 6000;
+}
+
+function withMessageId(state, verdict) {
+  if (!verdict) return null;
+  const messageId = state.messageId || null;
+  return messageId ? { ...verdict, messageId } : verdict;
+}
+
+export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() }) {
+  const props = ev?.properties || {};
+  if (!props.sessionID || props.sessionID !== sessionId) return null;
+  if (ev?.type === "message.updated") {
+    const info = props.info || {};
+    if (info.role === "user" && info.id) state.userIds.add(info.id);
+    if (info.role !== "assistant") return null;
+    if (info.id && state.askedAt && Number(info.time?.created || 0) && Number(info.time.created) < state.askedAt) {
+      state.oldIds = state.oldIds || new Set();
+      state.oldIds.add(info.id);
+      return null;
+    }
+    if (info.id) state.assistantIds = state.assistantIds || new Set();
+    if (info.id) {
+      state.assistantIds.add(info.id);
+      state.messageId = info.id;
+    }
+    if (info.id && state.parts?.get(info.id)) state.text = state.parts.get(info.id);
+    if (info.error) {
+      const described = describeOpenCodeError(info.error, {
+        model: info.providerID ? `${info.providerID}/${info.modelID || ""}` : "",
+      });
+      return withMessageId(state, { reached: false, error: described.message, code: described.code, done: true });
+    }
+    if (info.time?.completed && state.text) return withMessageId(state, { reached: true, text: state.text, done: true });
+    // The first assistant text can arrive as a part before this update. That chunk
+    // already means the provider was reached, even though the turn is not done.
+    if (state.text) return withMessageId(state, { reached: true, text: state.text, done: false });
+    return null;
+  }
+  if (ev?.type === "message.part.updated") {
+    const part = props.part || {};
+    if (part.messageID && (state.userIds?.has(part.messageID) || state.oldIds?.has(part.messageID))) return null;
+    if (part.messageID && part.text && part.type !== "step-start" && part.type !== "step-finish") {
+      state.parts = state.parts || new Map();
+      const prev = state.parts.get(part.messageID) || "";
+      const next = String(part.text);
+      // OpenCode sometimes sends the whole part again, and sometimes a delta.
+      const merged = !prev || next.startsWith(prev) ? next : prev.startsWith(next) ? prev : `${prev}${next}`;
+      state.parts.set(part.messageID, merged.length >= prev.length ? merged : prev);
+    }
+    const knownAssistant = part.messageID && state.assistantIds?.has(part.messageID);
+    if (knownAssistant) state.messageId = part.messageID;
+    if (knownAssistant && state.parts?.get(part.messageID)) state.text = state.parts.get(part.messageID);
+    // step-start and the first text/delta are the provider reaching this turn.
+    if (knownAssistant && (state.text || part.type === "step-start" || part.type === "text")) {
+      return withMessageId(state, { reached: true, text: state.text || "", done: false });
+    }
+  }
+  if (state.text && state.assistantIds?.size) return withMessageId(state, { reached: true, text: state.text, done: false });
+  return null;
+}
+
+const eventStreams = new Map();
+
+function closeEventStream(entry) {
+  if (!entry || entry.closed) return;
+  entry.closed = true;
+  entry.ac.abort();
+  entry.reader?.cancel().catch(() => undefined);
+  if (eventStreams.get(entry.baseUrl) === entry) eventStreams.delete(entry.baseUrl);
+}
+
+function eventStream(kind) {
+  const k = harnessKind(kind);
+  const inst = instances[k];
+  if (!inst?.baseUrl) return null;
+  for (const [url, old] of eventStreams) {
+    if (old.kind === k && url !== inst.baseUrl) closeEventStream(old);
+  }
+  const existing = eventStreams.get(inst.baseUrl);
+  if (existing && !existing.closed) return existing;
+  const ac = new AbortController();
+  const entry = { kind: k, baseUrl: inst.baseUrl, ac, listeners: new Set(), reader: null, closed: false };
+  eventStreams.set(inst.baseUrl, entry);
+  entry.task = (async () => {
+    try {
+      const res = await fetch(`${entry.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream" } });
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      entry.reader = reader;
+      const dec = new TextDecoder();
+      let buf = "";
+      while (!entry.closed) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let cut;
+        while ((cut = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, cut);
+          buf = buf.slice(cut + 2);
+          const data = block
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim())
+            .join("\n");
+          if (!data) continue;
+          let ev;
+          try {
+            ev = JSON.parse(data);
+          } catch {
+            continue;
+          }
+          for (const listener of [...entry.listeners]) listener(ev);
+        }
+      }
+    } catch {
+      /* aborted when this serve is replaced */
+    } finally {
+      closeEventStream(entry);
+    }
+  })();
+  return entry;
+}
+
+/**
+ * Watch one shared `GET /event` for this serve.
+ * The timer covers only the first assistant part. The stream stays open for
+ * the rest of the turn and for the life of this baseUrl: closing it per wake
+ * makes OpenCode add another SSE listener and eventually print
+ * MaxListenersExceededWarning into opencode-serve.log.
+ * When this process is not running a serve, the prompt mock is the signal.
+ */
+export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = providerStartMs(), { askedAt = 0 } = {}) {
+  const inst = instances[harnessKind(kind)];
+  if (!inst?.baseUrl || !sessionId) {
+    const verdict = { reached: true, unwatched: true, done: true, text: "" };
+    const idle = Promise.resolve(verdict);
+    idle.rest = idle;
+    idle.arm = () => {};
+    idle.unwatched = true;
+    idle.cancel = () => {};
+    return idle;
+  }
+  const entry = eventStream(kind);
+  const state = { userIds: new Set(), assistantIds: new Set(), oldIds: new Set(), text: "", askedAt };
+  let timer;
+  let listener;
+  let firstSettled = false;
+  let restSettled = false;
+  let resolveFirst;
+  let resolveRest;
+  const promise = new Promise((resolve) => {
+    resolveFirst = resolve;
+  });
+  const rest = new Promise((resolve) => {
+    resolveRest = resolve;
+  });
+  const settleFirst = (verdict) => {
+    if (firstSettled) return;
+    firstSettled = true;
+    clearTimeout(timer);
+    resolveFirst(verdict);
+  };
+  const settleRest = (verdict) => {
+    if (restSettled) return;
+    restSettled = true;
+    clearTimeout(timer);
+    entry.listeners.delete(listener);
+    resolveRest({ ...verdict, text: verdict.text || state.text || "" });
+  };
+  const arm = () => {
+    if (firstSettled || timer) return;
+    timer = setTimeout(() => settleFirst({ reached: false, timeout: true, done: false, text: "" }), timeoutMs);
+  };
+  arm();
+  listener = (ev) => {
+    const verdict = providerTurnVerdict(ev, sessionId, state);
+    if (!verdict) return;
+    const full = verdict.text ? verdict : { ...verdict, text: state.text || "" };
+    if (!firstSettled) settleFirst(full);
+    if (full.done || full.error) settleRest(full);
+  };
+  entry.listeners.add(listener);
+  promise.rest = rest;
+  promise.arm = arm;
+  promise.cancel = () => {
+    const cancelled = { reached: false, cancelled: true, done: true, text: state.text || "" };
+    settleFirst(cancelled);
+    settleRest(cancelled);
+  };
+  return promise;
+}
+
 export async function sessionMessages(sessionId, kind = COMPANY) {
   const data = await ocFetch(`/session/${sessionId}/message`, {}, kind);
   return Array.isArray(data) ? data : data?.messages || [];
@@ -623,7 +828,8 @@ export function assistantText(messages) {
     const role = msg.role || msg.info?.role;
     if (role && role !== "assistant") continue;
     const text = flattenText(msg);
-    if (text) out.push({ id: msg.id || msg.info?.id, text, role: "assistant" });
+    const created = Number(msg.info?.time?.created || msg.time?.created || 0) || null;
+    if (text) out.push({ id: msg.id || msg.info?.id, text, role: "assistant", created });
   }
   return out;
 }

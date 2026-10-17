@@ -2,10 +2,50 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync, existsSync } from "node:fs";
 import { agentMarkdown, permissionFor, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
+import { firstLoadedModel, hireSeat } from "./seats.mjs";
+import { emptyState } from "./seed.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("hiring with model '' does not store the built-in opencode provider", () => {
+  const builtin = [{ providerID: "opencode", modelID: "longcat-2.5-preview-free", connected: true }];
+  assert.equal(firstLoadedModel(builtin, builtin), undefined);
+  const seat = hireSeat(emptyState(), { name: "Blank Model", model: "", job: "Unset." });
+  assert.notEqual(seat.model, "opencode/longcat-2.5-preview-free");
+  assert.notEqual(seat.model, "xai/grok-4");
+  const connected = [
+    { providerID: "opencode", modelID: "longcat-2.5-preview-free", connected: true },
+    { providerID: "featherless", modelID: "stub-model", connected: true },
+  ];
+  assert.equal(
+    firstLoadedModel(
+      [
+        { providerID: "opencode", modelID: "longcat-2.5-preview-free" },
+        { providerID: "featherless", modelID: "stub-model" },
+      ],
+      connected,
+    ),
+    "featherless/stub-model",
+  );
+});
+
+test("agentMarkdown does not invent xai/grok-4 when the seat has no model", () => {
+  const md = agentMarkdown({
+    id: "open",
+    name: "Open",
+    role: "Specialist",
+    kind: "bot",
+    seatType: "specialist",
+    model: "",
+    job: "Unset model.",
+    tools: ["read"],
+    deny: [],
+  });
+  assert.doesNotMatch(md, /grok-4/);
+  assert.doesNotMatch(md, /^model:/m);
+});
 
 test("agentMarkdown uses provider/model and persona", () => {
   const md = agentMarkdown({
@@ -74,7 +114,8 @@ test("syncSeatAgent writes .opencode/agents/<id>.md", () => {
   });
   assert.ok(file && existsSync(file));
   const text = readFileSync(file, "utf8");
-  assert.match(text, /model: xai\/grok-4/);
+  assert.doesNotMatch(text, /grok-4/);
+  assert.doesNotMatch(text, /^model:/m);
 });
 
 test("system seats write into the System workspace pack", () => {
