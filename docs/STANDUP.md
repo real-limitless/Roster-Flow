@@ -59,8 +59,10 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_API_TOKEN` | unset | Register this `rf_…` token once an owner exists. |
 | `ROSTER_API_TOKEN_SCOPES` | all scopes | Comma-separated `read`, `write`, `admin`. |
 | `ROSTER_API_TOKEN_NAME` | `bootstrap` | Label stored on the token. |
-| `ROSTER_CALLBACK_ALLOWLIST` | unset | Job `callbackUrl` hosts allowed to resolve to private or loopback addresses. Comma-separated `host` or `host:port`, exact and case-insensitive, ASCII (punycode) only. Never opens link-local or metadata addresses. See [API.md](API.md#jobs). |
-| `ROSTER_CALLBACK_SECRET` | generated | HMAC key for job callback signatures. Unset: CORE generates one and serves it at `GET /api/v1/jobs/callback-secret`. |
+| `ROSTER_CALLBACK_ALLOWLIST` | unset | Job `callbackUrl` hosts allowed to resolve to private or loopback addresses. Prefer `host:port`. Comma-separated, exact and case-insensitive, ASCII (punycode) only. IPv6 literals are normalized. An entry containing `*` is ignored (CORE warns at startup). Never opens link-local, metadata, or `0.0.0.0/8`. See [API.md](API.md#jobs). |
+| `ROSTER_CALLBACK_SECRET` | generated | HMAC key for job callback signatures. At least 32 bytes. Each instance needs its own value. Unset: CORE generates one and an owner or admin can read it at `GET /api/v1/jobs/callback-secret`. Set: that value is used and rotate is disabled. |
+| `ROSTER_CALLBACK_GRACE_MS` | `600000` | How long the previous callback secret is still accepted after rotate (10 minutes). Values above 24 hours are clamped to 24 hours. CORE always signs with the new secret. A second rotate drops the secret from before the first rotate immediately. |
+| `ROSTER_CALLBACK_DNS_TIMEOUT_MS` | `5000` | DNS lookup timeout for a job `callbackUrl`. Maximum 30000; larger values are clamped. Hostnames are resolved at delivery. IP literals are rejected at create. A lookup timeout is stored as `dns_failed` and counts toward the `host:port` cooldown. |
 | `ROSTER_HARNESS_AUTOSTART` | `auto` | `auto` (start serves once an owner exists and a provider is configured), `1` (start once an owner exists, provider or not), or `0` (never). See [Harness autostart](#harness-autostart). |
 | `ROSTER_PROVIDER_ID` | unset | Provider id to seed, for example `featherless`. |
 | `ROSTER_PROVIDER_NAME` | the id | Display name. |
@@ -201,6 +203,8 @@ npm run owner:reset
 ```
 
 That rewrites the scrypt hash and drops sessions. Seats and runs stay. Do not delete `.roster-flow/state.json` to recover.
+
+`.roster-flow/state.json` holds the callback secret, session tokens, and password hashes. CORE writes it with mode `0600` and sets that mode on an existing file at load. `.roster-flow/auth.json` (provider API keys) is written and tightened the same way.
 
 ## Headless bootstrap (no setup screen)
 

@@ -24,6 +24,8 @@ import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstra
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
 import { pendingWake, postBus, publishedWake, roomForApiCall, wakeSeat, cycleSafe } from "./bus.mjs";
 import {
+  assertCallbackSecret,
+  callbackAllowlistWarnings,
   callbackSecretInfo,
   deliverCallback,
   followUpJob,
@@ -70,16 +72,41 @@ import { allowMcp, isMcpPath, MCP_GUEST_ID, serveMcp } from "./mcp.mjs";
 const PORT = apiPort();
 const HOST = apiHost();
 
-function json(res, code, body) {
+function isCallbackSecretPath(pathname) {
+  return pathname === "/api/v1/jobs/callback-secret" || pathname === "/api/v1/jobs/callback-secret/rotate";
+}
+
+function json(res, code, body, extra) {
   const data = JSON.stringify(body);
-  res.writeHead(code, {
-    "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
-    "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "access-control-expose-headers": "mcp-session-id, mcp-protocol-version",
-  });
+  const headers = { "content-type": "application/json; charset=utf-8" };
+  if (extra?.secret) headers["cache-control"] = "no-store";
+  else {
+    headers["access-control-allow-origin"] = "*";
+    headers["access-control-allow-headers"] = "content-type, authorization, mcp-session-id, mcp-protocol-version";
+    headers["access-control-allow-methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
+    headers["access-control-expose-headers"] = "mcp-session-id, mcp-protocol-version";
+  }
+  res.writeHead(code, headers);
   res.end(data);
+}
+
+function secretJson(res, code, body) {
+  json(res, code, body, { secret: true });
+}
+
+function reply(res, pathname, code, body) {
+  if (isCallbackSecretPath(pathname)) secretJson(res, code, body);
+  else json(res, code, body);
+}
+
+/** Owner or admin session in every mode. The demo token, the internal plugin token, and a server with no passwords are refused. */
+function callbackSecretAllowed(user, token) {
+  if (isInternalPluginToken(token)) return false;
+  if (!user || token === DEMO_TOKEN) return false;
+  const role = user.role || "owner";
+  if (role !== "owner" && role !== "admin") return false;
+  if (!user.passwordHash) return false;
+  return true;
 }
 
 async function setupPayload(state, user) {
@@ -203,6 +230,14 @@ function isPublicPath(method, pathname) {
 }
 
 try {
+  assertCallbackSecret();
+} catch (err) {
+  console.error(err.message || String(err));
+  process.exit(1);
+}
+for (const warning of callbackAllowlistWarnings()) console.warn(warning);
+
+try {
   const seeded = await seedOwnerFromEnv(getState());
   if (seeded.seeded) {
     mutate(() => seeded.state);
@@ -235,7 +270,15 @@ try {
 
 const server = createServer(async (req, res) => {
   try {
-    if (req.method === "OPTIONS") {
+    const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+    const { pathname } = url;
+    const method = req.method || "GET";
+    if (method === "OPTIONS") {
+      if (isCallbackSecretPath(pathname)) {
+        res.writeHead(204, { "cache-control": "no-store" });
+        res.end();
+        return;
+      }
       res.writeHead(204, {
         "access-control-allow-origin": "*",
         "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
@@ -244,9 +287,6 @@ const server = createServer(async (req, res) => {
       res.end();
       return;
     }
-    const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
-    const { pathname } = url;
-    const method = req.method || "GET";
     if (isMcpPath(pathname)) {
       const token = parseBearer(req);
       const mcpApiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
@@ -273,19 +313,19 @@ const server = createServer(async (req, res) => {
     const user = internal ? (getState().users || [])[0] || null : apiToken ? apiToken.user : userFromToken(getState(), token);
 
     if (internal && !internalTokenAllows(method, pathname)) {
-      json(res, 403, { error: "the internal plugin token does not allow this request" });
+      reply(res, pathname, 403, { error: "the internal plugin token does not allow this request" });
       return;
     }
     if (!internal && isApiToken(token) && !apiToken) {
-      json(res, 401, { error: "invalid, expired, or revoked API token" });
+      reply(res, pathname, 401, { error: "invalid, expired, or revoked API token" });
       return;
     }
-    if (!internal && !skipOnboarding() && !isPublicPath(method, pathname) && !user) {
+    if (!isCallbackSecretPath(pathname) && !internal && !skipOnboarding() && !isPublicPath(method, pathname) && !user) {
       json(res, 401, { error: "authentication required" });
       return;
     }
     if (apiToken && !tokenAllows(apiToken.token, method, pathname)) {
-      json(res, 403, { error: "token scope does not allow this request" });
+      reply(res, pathname, 403, { error: "token scope does not allow this request" });
       return;
     }
 
@@ -1348,20 +1388,33 @@ const server = createServer(async (req, res) => {
       json(res, 201, job);
       return;
     }
-    if (pathname === "/api/v1/jobs/callback-secret" && method === "GET") {
-      let info;
-      mutate((s) => {
-        info = callbackSecretInfo(s);
-      });
-      json(res, 200, info);
-      return;
-    }
-    if (pathname === "/api/v1/jobs/callback-secret/rotate" && method === "POST") {
-      let info;
-      mutate((s) => {
-        info = rotateCallbackSecret(s);
-      });
-      json(res, 200, info);
+    if (isCallbackSecretPath(pathname)) {
+      if (!callbackSecretAllowed(user, token)) {
+        secretJson(res, 403, { error: "owner or admin session required" });
+        return;
+      }
+      try {
+        if (pathname === "/api/v1/jobs/callback-secret" && method === "GET") {
+          let info;
+          mutate((s) => {
+            info = callbackSecretInfo(s);
+          });
+          secretJson(res, 200, info);
+          return;
+        }
+        if (pathname === "/api/v1/jobs/callback-secret/rotate" && method === "POST") {
+          let info;
+          mutate((s) => {
+            info = rotateCallbackSecret(s);
+          });
+          secretJson(res, 200, info);
+          return;
+        }
+      } catch (err) {
+        secretJson(res, err.status || 500, { error: err.message || "error", detail: err.detail || err.code || undefined });
+        return;
+      }
+      secretJson(res, 404, { error: "not found", path: pathname });
       return;
     }
     const jobWait = pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/wait$/);

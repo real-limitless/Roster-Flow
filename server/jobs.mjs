@@ -18,6 +18,13 @@ import { canCancelJob, canCompleteJob, canReadJob } from "./job-access.mjs";
 export const JOB_STATUSES = ["queued", "running", "needs_human", "done", "failed", "cancelled"];
 export const TERMINAL_STATUSES = ["done", "failed", "cancelled"];
 export const ROUTING_MODES = ["supervisor", "round_robin", "specialist"];
+export const CALLBACK_SECRET_MIN_BYTES = 32;
+export const DEFAULT_CALLBACK_GRACE_MS = 10 * 60 * 1000;
+export const MAX_CALLBACK_GRACE_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_CALLBACK_DNS_TIMEOUT_MS = 5000;
+export const MAX_CALLBACK_DNS_TIMEOUT_MS = 30_000;
+/** Gaps between delivery attempts. Three tries: immediately, then these delays. */
+export const CALLBACK_RETRY_DELAYS_MS = [200, 800];
 const TERMINAL = new Set(TERMINAL_STATUSES);
 const OPEN = new Set(["queued", "running", "needs_human"]);
 
@@ -77,7 +84,7 @@ export function publicJob(job) {
     channel: job.channel,
     callbackUrl: publicCallbackUrl(job.callbackUrl),
     wake: job.wake ? { ...job.wake } : null,
-    callback: job.callback ? { ...job.callback } : null,
+    callback: publicCallback(job.callback),
     reportedBy: job.reportedBy || null,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
@@ -91,6 +98,14 @@ function requireJob(state, id) {
   const job = (state.jobs || []).find((j) => j.id === id);
   if (!job) throw fail(404, "job not found");
   return job;
+}
+
+function publicCallback(callback) {
+  if (!callback) return null;
+  const copy = { ...callback };
+  if (copy.error) copy.error = callbackErrorCode(copy.error);
+  else if (!copy.ok && copy.status != null) copy.error = callbackErrorCode("", copy.status);
+  return copy;
 }
 
 export function getJob(state, id) {
@@ -200,6 +215,7 @@ const IPV4_BLOCKED = cidrs([
   "192.168.0.0/16",
   "198.18.0.0/15",
   "198.51.100.0/24",
+  "192.88.99.0/24",
   "203.0.113.0/24",
   "224.0.0.0/4",
   "240.0.0.0/4",
@@ -208,7 +224,10 @@ const IPV6_BLOCKED = cidrs([
   "::/96",
   "64:ff9b::/96",
   "64:ff9b:1::/48",
+  "100::/64",
   "2001::/32",
+  "2001:2::/48",
+  "2001:10::/28",
   "2001:db8::/32",
   "2002::/16",
   "fc00::/7",
@@ -216,8 +235,8 @@ const IPV6_BLOCKED = cidrs([
   "fec0::/10",
   "ff00::/8",
 ]);
-// Link-local and cloud metadata. ROSTER_CALLBACK_ALLOWLIST cannot opt these in.
-const IPV4_NEVER = cidrs(["169.254.0.0/16", "100.100.100.200/32", "168.63.129.16/32"]);
+// 0.0.0.0/8, link-local, and cloud metadata. ROSTER_CALLBACK_ALLOWLIST cannot opt these in.
+const IPV4_NEVER = cidrs(["0.0.0.0/8", "169.254.0.0/16", "100.100.100.200/32", "168.63.129.16/32"]);
 const IPV6_NEVER = cidrs(["fe80::/10", "fd00:ec2::254/128"]);
 
 const V4_MAPPED = cidrs(["::ffff:0:0/96"]);
@@ -227,11 +246,19 @@ const NAT64_LOCAL = cidrs(["64:ff9b:1::/48"]);
 const SIX_TO_FOUR = cidrs(["2002::/16"]);
 const TEREDO = cidrs(["2001::/32"]);
 
+function isIpv6Loopback(b) {
+  for (let i = 0; i < 15; i++) if (b[i] !== 0) return false;
+  return b[15] === 1;
+}
+
 /** Every IPv4 address an IPv6 address can carry (RFC 4291, 6052, 3056, 4380). */
 function embeddedIPv4(b) {
   const at = (...i) => i.map((n) => b[n]);
   const out = [];
-  if (inCidrs(b, V4_MAPPED) || inCidrs(b, V4_COMPAT) || inCidrs(b, NAT64)) out.push(at(12, 13, 14, 15));
+  // `::1` is IPv6 loopback. It is also the deprecated IPv4-compatible form of
+  // 0.0.0.1; keep the loopback identity so an allowlisted `::1` still works.
+  const compat = inCidrs(b, V4_COMPAT) && !isIpv6Loopback(b);
+  if (inCidrs(b, V4_MAPPED) || compat || inCidrs(b, NAT64)) out.push(at(12, 13, 14, 15));
   // RFC 6052 layouts for /48, /56, /64, and /96 prefixes inside the local-use block.
   if (inCidrs(b, NAT64_LOCAL)) out.push(at(6, 7, 9, 10), at(7, 9, 10, 11), at(9, 10, 11, 12), at(12, 13, 14, 15));
   if (inCidrs(b, SIX_TO_FOUR)) out.push(at(2, 3, 4, 5));
@@ -267,17 +294,31 @@ function decimalIPv4(host) {
   return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
 }
 
+/** Same host form `new URL` produces, so `2001:0db8::1` matches `2001:db8::1`. */
+function canonicalHost(host) {
+  const bare = String(host || "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  if (!bare || !bare.includes(":")) return bare;
+  try {
+    return new URL(`http://[${bare}]`).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    return bare;
+  }
+}
+
 /**
  * `ROSTER_CALLBACK_ALLOWLIST`: comma-separated `host` or `host:port` (IPv6 as
  * `[addr]` or `[addr]:port`). Matching is exact and case-insensitive; a bare host
- * matches any port. Hosts must be ASCII (punycode `xn--` for IDNs) because URL
- * parsing punycodes the callback host; non-ASCII entries never match and are dropped.
+ * matches any port. Prefer `host:port`. IPv6 entries are normalized to the URL
+ * form. Hosts must be ASCII (punycode `xn--` for IDNs) because URL parsing
+ * punycodes the callback host; non-ASCII entries never match and are dropped.
+ * `*.host` wildcards never match.
  */
 export function callbackAllowlist(env) {
   const out = [];
   for (const item of String(env?.ROSTER_CALLBACK_ALLOWLIST || "").split(",")) {
     const entry = item.trim().toLowerCase();
     if (!entry || !/^[\x21-\x7e]+$/.test(entry)) continue;
+    if (entry.includes("*")) continue;
     let host = entry;
     let port = null;
     const bracketed = entry.match(/^\[([^\]]+)\](?::(\d+))?$/);
@@ -295,19 +336,64 @@ export function callbackAllowlist(env) {
       port = Number(port);
       if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
     }
-    out.push({ host: host.replace(/\.$/, ""), port });
+    host = canonicalHost(host);
+    if (!host) continue;
+    out.push({ host, port });
   }
   return out;
 }
 
-async function callbackAddresses(host, lookupImpl) {
+/** Startup warnings. Entries containing `*` are dropped and never match. */
+export function callbackAllowlistWarnings(env = process.env) {
+  const warnings = [];
+  for (const item of String(env?.ROSTER_CALLBACK_ALLOWLIST || "").split(",")) {
+    const entry = item.trim();
+    if (entry.includes("*")) {
+      warnings.push(
+        `ROSTER_CALLBACK_ALLOWLIST entry "${entry}" is ignored and never matches: wildcards are not supported. Prefer an exact host:port.`,
+      );
+    }
+  }
+  return warnings;
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(fail(400, message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function clampDnsTimeout(ms) {
+  return Math.min(MAX_CALLBACK_DNS_TIMEOUT_MS, ms);
+}
+
+export function callbackDnsTimeoutMs(env = process.env, override) {
+  if (override != null && override !== "") {
+    const picked = Number(override);
+    if (Number.isFinite(picked) && picked > 0) return clampDnsTimeout(picked);
+  }
+  const raw = env?.ROSTER_CALLBACK_DNS_TIMEOUT_MS;
+  if (raw == null || String(raw).trim() === "") return DEFAULT_CALLBACK_DNS_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CALLBACK_DNS_TIMEOUT_MS;
+  return clampDnsTimeout(n);
+}
+
+async function callbackAddresses(host, lookupImpl, timeoutMs) {
   if (isIP(host)) return [{ address: host, family: isIP(host) }];
   const legacy = decimalIPv4(host);
   if (legacy) return [{ address: legacy, family: 4 }];
   let rows;
   try {
-    rows = await (lookupImpl || lookup)(host, { all: true, verbatim: true });
-  } catch {
+    rows = await withTimeout(
+      Promise.resolve().then(() => (lookupImpl || lookup)(host, { all: true, verbatim: true })),
+      timeoutMs,
+      "callbackUrl host lookup timed out",
+    );
+  } catch (err) {
+    if (err?.status === 400 && /timed out/.test(String(err.message))) throw err;
     throw fail(400, "callbackUrl host did not resolve");
   }
   const list = Array.isArray(rows) ? rows : [rows];
@@ -319,14 +405,16 @@ async function callbackAddresses(host, lookupImpl) {
   return addresses;
 }
 
+function literalCallbackAddress(host) {
+  if (isIP(host)) return host;
+  return decimalIPv4(host);
+}
+
 /**
- * http(s) only, no `user:pass@`. Resolves the host once and checks every
- * address. Loopback, private, documentation, multicast, and other non-public
- * ranges are rejected unless `ROSTER_CALLBACK_ALLOWLIST` names the host.
- * Link-local and metadata addresses are rejected even when it does.
- * Delivery connects only to the returned `addresses`.
+ * Syntax, scheme, and IP literals. No DNS. Job create uses this so a hanging
+ * lookup cannot stall `POST /api/v1/jobs`. A literal address is judged here.
  */
-export async function resolveCallback(raw, { env = process.env, lookup: lookupImpl = lookup } = {}) {
+export function callbackUrlSyntax(raw, env = process.env) {
   if (raw == null || raw === "") return null;
   const s = String(raw).trim();
   if (s.length > 2048) throw fail(400, "callbackUrl is too long");
@@ -338,11 +426,33 @@ export async function resolveCallback(raw, { env = process.env, lookup: lookupIm
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") throw fail(400, "callbackUrl must be an http(s) URL");
   if (url.username || url.password) throw fail(400, "callbackUrl must not contain credentials");
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  const host = canonicalHost(url.hostname);
   if (!host) throw fail(400, "callbackUrl host is required");
+  const literal = literalCallbackAddress(host);
+  if (literal) {
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    const matchHost = canonicalHost(literal);
+    const allowlisted = callbackAllowlist(env).some((e) => e.host === matchHost && (e.port == null || e.port === port));
+    if (callbackAddressBlocked(literal, { allowlisted })) throw fail(400, "callbackUrl resolves to a blocked address");
+  }
+  return url.toString();
+}
+
+/**
+ * http(s) only, no `user:pass@`. Resolves the host once and checks every
+ * address. Loopback, private, documentation, multicast, and other non-public
+ * ranges are rejected unless `ROSTER_CALLBACK_ALLOWLIST` names the host.
+ * Link-local and metadata addresses are rejected even when it does.
+ * Delivery connects only to the returned `addresses`.
+ */
+export async function resolveCallback(raw, { env = process.env, lookup: lookupImpl = lookup, dnsTimeoutMs } = {}) {
+  const href = callbackUrlSyntax(raw, env);
+  if (!href) return null;
+  const url = new URL(href);
+  const host = canonicalHost(url.hostname);
   const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
   const allowlisted = callbackAllowlist(env).some((e) => e.host === host && (e.port == null || e.port === port));
-  const addresses = await callbackAddresses(host, lookupImpl);
+  const addresses = await callbackAddresses(host, lookupImpl, callbackDnsTimeoutMs(env, dnsTimeoutMs));
   if (addresses.some(({ address }) => callbackAddressBlocked(address, { allowlisted }))) {
     throw fail(400, "callbackUrl resolves to a blocked address");
   }
@@ -575,8 +685,8 @@ function placeJob(state, body, caller, callbackUrl) {
   return publicJob(job);
 }
 
-export async function createJob(state, body = {}, caller = {}, opts) {
-  const callbackUrl = await normalizeCallback(body.callbackUrl, opts);
+export async function createJob(state, body = {}, caller = {}, opts = {}) {
+  const callbackUrl = callbackUrlSyntax(body.callbackUrl, opts.env);
   return placeJob(state, body, caller, callbackUrl);
 }
 
@@ -674,13 +784,29 @@ export function parseSince(raw) {
   return new Date(t).toISOString();
 }
 
+const CALLBACK_ERROR_CODES = new Set(["dns_failed", "blocked", "timeout", "connect_failed", "callback_queue_full", "signing_secret"]);
+
+/** Fixed code for `job.callback.error`. Never a raw socket message. */
+export function callbackErrorCode(err, status = null) {
+  const text = String(typeof err === "string" ? err : err?.message || err?.code || "");
+  if (CALLBACK_ERROR_CODES.has(text) || /^http_\d{3}$/.test(text)) return text;
+  if (text === "callback_queue_full" || err?.code === "callback_queue_full") return "callback_queue_full";
+  if (status != null && Number.isInteger(Number(status)) && Number(status) >= 100 && Number(status) <= 599) return `http_${Number(status)}`;
+  if (/signing secret/i.test(text)) return "signing_secret";
+  if (/blocked|credentials|must be an http|too long|host is required/i.test(text)) return "blocked";
+  if (/lookup timed out|did not resolve|ENOTFOUND|EAI_AGAIN|EAI_NONAME|getaddrinfo/i.test(text) || err?.code === "ENOTFOUND" || err?.code === "EAI_AGAIN") return "dns_failed";
+  if (/timed out|ETIMEDOUT/i.test(text) || err?.code === "ETIMEDOUT") return "timeout";
+  return "connect_failed";
+}
+
 export function recordCallback(state, id, attempt) {
   const job = requireJob(state, id);
+  const error = attempt.ok ? null : callbackErrorCode(attempt.error, attempt.error ? null : attempt.status);
   job.callback = {
     at: attempt.at || nowIso(),
     ok: Boolean(attempt.ok),
     status: attempt.status ?? null,
-    error: attempt.error || null,
+    error,
   };
   job.updatedAt = nowIso();
   pushEvent(job, "callback", { ok: job.callback.ok, status: job.callback.status });
@@ -697,37 +823,80 @@ export const CALLBACK_HEADERS = Object.freeze({
   jobId: "x-roster-job-id",
 });
 
-function envCallbackSecret(env) {
-  return String(env?.ROSTER_CALLBACK_SECRET || "").trim();
+export function assertCallbackSecret(env = process.env) {
+  const value = String(env?.ROSTER_CALLBACK_SECRET || "").trim();
+  if (!value) return "";
+  if (Buffer.byteLength(value) < CALLBACK_SECRET_MIN_BYTES) {
+    const err = new Error(`ROSTER_CALLBACK_SECRET must be at least ${CALLBACK_SECRET_MIN_BYTES} bytes`);
+    err.status = 500;
+    throw err;
+  }
+  return value;
 }
 
-/** One signing secret per CORE instance (the org). `ROSTER_CALLBACK_SECRET` overrides the stored one. */
-export function ensureCallbackSecret(state, env = process.env) {
+function envCallbackSecret(env) {
+  return assertCallbackSecret(env);
+}
+
+export function callbackGraceMs(env = process.env) {
+  const raw = env?.ROSTER_CALLBACK_GRACE_MS;
+  if (raw == null || String(raw).trim() === "") return DEFAULT_CALLBACK_GRACE_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return n > 0 ? MAX_CALLBACK_GRACE_MS : DEFAULT_CALLBACK_GRACE_MS;
+  return Math.min(MAX_CALLBACK_GRACE_MS, Math.max(0, n));
+}
+
+function previousStillValid(prev, now) {
+  return Boolean(prev?.value && prev.until && new Date(prev.until).getTime() > now);
+}
+
+function activePrevious(state, now) {
+  const prev = state.callbackSecret?.previous;
+  if (!prev) return null;
+  if (!previousStillValid(prev, now)) {
+    delete state.callbackSecret.previous;
+    return null;
+  }
+  return { secret: prev.value, until: prev.until };
+}
+
+/** One signing secret per instance. `ROSTER_CALLBACK_SECRET` overrides the stored one and disables rotate. */
+export function ensureCallbackSecret(state, env = process.env, now = Date.now()) {
   const fromEnv = envCallbackSecret(env);
   if (fromEnv) return fromEnv;
   if (!state.callbackSecret?.value) {
-    state.callbackSecret = { value: `rfcb_${randomBytes(32).toString("hex")}`, createdAt: nowIso() };
+    state.callbackSecret = { value: `rfcb_${randomBytes(32).toString("hex")}`, createdAt: new Date(now).toISOString() };
+  } else {
+    activePrevious(state, now);
   }
   return state.callbackSecret.value;
 }
 
-export function callbackSecretInfo(state, env = process.env) {
-  const secret = ensureCallbackSecret(state, env);
+export function callbackSecretInfo(state, env = process.env, now = Date.now()) {
+  const secret = ensureCallbackSecret(state, env, now);
   const fromEnv = Boolean(envCallbackSecret(env));
   return {
     secret,
     source: fromEnv ? "env" : "state",
     createdAt: fromEnv ? null : state.callbackSecret.createdAt,
+    previous: fromEnv ? null : activePrevious(state, now),
     algorithm: "HMAC-SHA256",
     headers: { ...CALLBACK_HEADERS },
     signingString: "<timestamp>.<jobId>.<body>",
   };
 }
 
-export function rotateCallbackSecret(state, env = process.env) {
+export function rotateCallbackSecret(state, env = process.env, now = Date.now()) {
   if (envCallbackSecret(env)) throw fail(409, "callback secret is set by ROSTER_CALLBACK_SECRET");
-  delete state.callbackSecret;
-  return callbackSecretInfo(state, env);
+  const current = state.callbackSecret?.value || null;
+  const grace = callbackGraceMs(env);
+  const previous = current && grace > 0 ? { value: current, until: new Date(now + grace).toISOString() } : undefined;
+  state.callbackSecret = {
+    value: `rfcb_${randomBytes(32).toString("hex")}`,
+    createdAt: new Date(now).toISOString(),
+    ...(previous ? { previous } : {}),
+  };
+  return callbackSecretInfo(state, env, now);
 }
 
 /** `v1=` + hex HMAC-SHA256 of `<timestamp>.<jobId>.<body>`, body being the exact bytes sent. */
@@ -735,15 +904,26 @@ export function signCallback(secret, timestamp, jobId, body) {
   return `v1=${createHmac("sha256", secret).update(`${timestamp}.${jobId}.${body}`).digest("hex")}`;
 }
 
-/** Receiver-side check. `headers` uses lower-case keys, as Node's `req.headers` does. */
-export function verifyCallback(secret, headers, body, { toleranceSec = 300, now = Date.now() } = {}) {
+function signatureMatches(secret, timestamp, jobId, body, got) {
+  if (!secret) return false;
+  const want = Buffer.from(signCallback(secret, timestamp, jobId, String(body)));
+  return got.length === want.length && timingSafeEqual(got, want);
+}
+
+/**
+ * Receiver-side check. `headers` uses lower-case keys, as Node's `req.headers` does.
+ * `previous` is `{ secret, until }` from the callback-secret response. It is accepted
+ * only while `until` is still in the future.
+ */
+export function verifyCallback(secret, headers, body, { toleranceSec = 300, now = Date.now(), previous } = {}) {
   const timestamp = String(headers?.[CALLBACK_HEADERS.timestamp] || "");
   const jobId = String(headers?.[CALLBACK_HEADERS.jobId] || "");
   const got = Buffer.from(String(headers?.[CALLBACK_HEADERS.signature] || ""));
   if (!/^\d+$/.test(timestamp) || !jobId) return false;
   if (Math.abs(now / 1000 - Number(timestamp)) > toleranceSec) return false;
-  const want = Buffer.from(signCallback(secret, timestamp, jobId, String(body)));
-  if (got.length !== want.length || !timingSafeEqual(got, want)) return false;
+  const secrets = [secret];
+  if (previous?.secret && previous.until && new Date(previous.until).getTime() > now) secrets.push(previous.secret);
+  if (!secrets.some((candidate) => signatureMatches(candidate, timestamp, jobId, body, got))) return false;
   try {
     return JSON.parse(String(body))?.job?.id === jobId;
   } catch {
@@ -808,9 +988,14 @@ export function postPinned(target, { headers, body, timeoutMs }) {
  * between check and connect cannot redirect it. Redirects are not followed.
  * Failures are recorded; they do not fail the status change.
  */
-export async function deliverCallback(job, { secret, timeoutMs = 5000, now = Date.now, ...opts } = {}) {
+export async function deliverCallback(job, { secret, timeoutMs = 5000, now = Date.now, timestamp: timestampOpt, ...opts } = {}) {
   if (!job?.callbackUrl) return { skipped: true };
-  const failed = (err, status = null) => ({ ok: false, status, error: String(err?.message || err).slice(0, 300), at: nowIso() });
+  const failed = (err, status = null) => {
+    const error = callbackErrorCode(err, status);
+    const text = String(typeof err === "string" ? err : err?.message || "");
+    const strike = error === "timeout" || /lookup timed out/i.test(text);
+    return { ok: false, status, error, ...(strike ? { strike: true } : {}), at: nowIso() };
+  };
   if (!secret) return failed("callback signing secret is not configured");
   let target;
   try {
@@ -819,7 +1004,7 @@ export async function deliverCallback(job, { secret, timeoutMs = 5000, now = Dat
     return failed(err);
   }
   const body = JSON.stringify({ event: "job.status", job: publicJob(job) });
-  const timestamp = String(Math.floor(now() / 1000));
+  const timestamp = timestampOpt || String(Math.floor(now() / 1000));
   try {
     const res = await postPinned(target, {
       body,
@@ -832,29 +1017,197 @@ export async function deliverCallback(job, { secret, timeoutMs = 5000, now = Dat
         [CALLBACK_HEADERS.signature]: signCallback(secret, timestamp, job.id, body),
       },
     });
-    if (res.status >= 300 && res.status < 400) return failed("callback redirect blocked", res.status);
-    return { ok: res.status >= 200 && res.status < 300, status: res.status, at: nowIso() };
+    if (res.status < 200 || res.status >= 300) return failed("", res.status);
+    return { ok: true, status: res.status, at: nowIso() };
   } catch (err) {
     return failed(err);
   }
 }
 
-/** Sign and send when the job is at a callback status, then record the attempt. */
-async function fireCallback(deps, job, opts = {}) {
-  if (!shouldCallback(job)) return job;
-  let secret;
-  let stored = job;
-  deps.mutate((s) => {
-    secret = ensureCallbackSecret(s, opts.env);
-    stored = (s.jobs || []).find((j) => j.id === job.id) || job;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeCallbackAttempt(attempt) {
+  if (!attempt || attempt.ok || attempt.skipped) return attempt;
+  return { ...attempt, error: callbackErrorCode(attempt.error, attempt.error ? null : attempt.status) };
+}
+
+function callbackRetryable(attempt) {
+  if (!attempt || attempt.ok || attempt.skipped) return false;
+  const code = String(attempt.error || "");
+  if (code === "blocked" || code === "callback_queue_full" || code === "signing_secret") return false;
+  if (/^http_(\d{3})$/.test(code)) return Number(code.slice(5)) >= 500;
+  return code === "timeout" || code === "connect_failed" || code === "dns_failed";
+}
+
+const pendingCallbacks = new Set();
+const CALLBACK_DELIVERY_CONCURRENCY = 3;
+const CALLBACK_HOST_CONCURRENCY = 1;
+const CALLBACK_QUEUE_MAX = 1000;
+const CALLBACK_HOST_QUEUE_MAX = 50;
+const CALLBACK_CALLER_QUEUE_MAX = 100;
+const HOST_TIMEOUT_LIMIT = 3;
+const HOST_TIMEOUT_WINDOW_MS = 60_000;
+let callbackInFlight = 0;
+const hostInFlight = new Map();
+const callbackWaiters = [];
+const hostTimeoutStrikes = new Map();
+
+function callbackHostKey(job) {
+  try {
+    const url = new URL(job.callbackUrl);
+    const host = canonicalHost(url.hostname);
+    if (!host) return "";
+    const port = url.port || (url.protocol === "https:" ? "443" : "80");
+    return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+  } catch {
+    return "";
+  }
+}
+
+function callbackCallerKey(job) {
+  if (job?.caller?.tokenId) return `token:${job.caller.tokenId}`;
+  if (job?.caller?.userId) return `user:${job.caller.userId}`;
+  return "";
+}
+
+function pendingCount(match) {
+  let n = 0;
+  for (const waiter of callbackWaiters) if (match(waiter)) n += 1;
+  return n;
+}
+
+function hostCanStart(host) {
+  if (callbackInFlight >= CALLBACK_DELIVERY_CONCURRENCY) return false;
+  return (hostInFlight.get(host) || 0) < CALLBACK_HOST_CONCURRENCY;
+}
+
+function grantCallbackSlot(host) {
+  callbackInFlight += 1;
+  hostInFlight.set(host, (hostInFlight.get(host) || 0) + 1);
+}
+
+function reserveCallbackSlot(host, caller) {
+  if (hostCanStart(host)) {
+    grantCallbackSlot(host);
+    return { full: false, wait: null };
+  }
+  const hostWaiting = pendingCount((waiter) => waiter.host === host);
+  const callerWaiting = caller ? pendingCount((waiter) => waiter.caller === caller) : 0;
+  if (callbackWaiters.length >= CALLBACK_QUEUE_MAX || hostWaiting >= CALLBACK_HOST_QUEUE_MAX || callerWaiting >= CALLBACK_CALLER_QUEUE_MAX) {
+    return { full: true };
+  }
+  let wake;
+  const wait = new Promise((resolve) => {
+    wake = resolve;
   });
-  const attempt = await (deps.deliverCallback || deliverCallback)(stored, { ...opts, secret });
-  if (attempt?.skipped) return job;
-  let out = job;
+  callbackWaiters.push({ host, caller, wake });
+  return { full: false, wait };
+}
+
+function releaseCallbackSlot(host) {
+  callbackInFlight = Math.max(0, callbackInFlight - 1);
+  const left = (hostInFlight.get(host) || 1) - 1;
+  if (left <= 0) hostInFlight.delete(host);
+  else hostInFlight.set(host, left);
+  for (let i = 0; i < callbackWaiters.length; i++) {
+    if (!hostCanStart(callbackWaiters[i].host)) continue;
+    const [waiter] = callbackWaiters.splice(i, 1);
+    grantCallbackSlot(waiter.host);
+    waiter.wake();
+    return;
+  }
+}
+
+function hostCoolingDown(host, now = Date.now()) {
+  const row = hostTimeoutStrikes.get(host);
+  if (!row) return false;
+  if (now - row.at > HOST_TIMEOUT_WINDOW_MS) {
+    hostTimeoutStrikes.delete(host);
+    return false;
+  }
+  return row.count >= HOST_TIMEOUT_LIMIT;
+}
+
+function noteHostTimeout(host, now = Date.now()) {
+  const row = hostTimeoutStrikes.get(host);
+  if (!row || now - row.at > HOST_TIMEOUT_WINDOW_MS) {
+    hostTimeoutStrikes.set(host, { count: 1, at: now });
+    return;
+  }
+  row.count += 1;
+  row.at = now;
+}
+
+/** Tests wait for background delivery. Submit and complete do not. */
+export function flushCallbacks() {
+  return Promise.allSettled([...pendingCallbacks]);
+}
+
+/**
+ * POST the callback without blocking the caller. Retries reuse the same
+ * timestamp and signature so a receiver can drop duplicates by (jobId, ts, signature).
+ */
+function scheduleCallback(deps, job, opts = {}) {
+  if (!shouldCallback(job)) return;
+  const host = callbackHostKey(job);
+  const callerKey = callbackCallerKey(job);
+  const record = (attempt) => {
+    deps.mutate((s) => {
+      recordCallback(s, job.id, attempt);
+    });
+  };
+  if (hostCoolingDown(host)) {
+    record({ ok: false, error: "timeout", at: nowIso() });
+    return;
+  }
+  const slot = reserveCallbackSlot(host, callerKey);
+  if (slot.full) {
+    record({ ok: false, error: "callback_queue_full", at: nowIso() });
+    return;
+  }
+  let snapshot = publicJob(job);
   deps.mutate((s) => {
-    out = recordCallback(s, job.id, attempt);
+    const live = (s.jobs || []).find((j) => j.id === job.id) || job;
+    snapshot = publicJob(live);
   });
-  return out;
+  const delays = opts.retryDelaysMs || CALLBACK_RETRY_DELAYS_MS;
+  const task = (async () => {
+    if (slot.wait) await slot.wait;
+    try {
+      if (hostCoolingDown(host)) {
+        record({ ok: false, error: "timeout", at: nowIso() });
+        return;
+      }
+      const timestamp = String(Math.floor((opts.now ? opts.now() : Date.now()) / 1000));
+      let secret;
+      deps.mutate((s) => {
+        secret = ensureCallbackSecret(s, opts.env);
+      });
+      let attempt = { ok: false, error: "connect_failed", at: nowIso() };
+      const tries = delays.length + 1;
+      for (let i = 0; i < tries; i++) {
+        if (i > 0 && delays[i - 1]) await sleep(delays[i - 1]);
+        try {
+          attempt = await (deps.deliverCallback || deliverCallback)(snapshot, { ...opts, secret, timestamp });
+        } catch (err) {
+          attempt = { ok: false, error: callbackErrorCode(err), at: nowIso() };
+        }
+        attempt = normalizeCallbackAttempt(attempt);
+        if (!callbackRetryable(attempt)) break;
+      }
+      if (attempt?.skipped) return;
+      if (attempt?.error === "timeout" || attempt?.strike) noteHostTimeout(host);
+      record(attempt);
+    } finally {
+      releaseCallbackSlot(host);
+    }
+  })().catch((err) => {
+    console.error("callback delivery", err);
+  });
+  pendingCallbacks.add(task);
+  void task.finally(() => pendingCallbacks.delete(task));
 }
 
 function seatLabel(state, seatId, fallback) {
@@ -863,7 +1216,7 @@ function seatLabel(state, seatId, fallback) {
 }
 
 export async function publishNewJob(body, caller, deps, opts) {
-  const callbackUrl = await normalizeCallback(body.callbackUrl, opts);
+  const callbackUrl = callbackUrlSyntax(body.callbackUrl, opts?.env);
   let created;
   deps.mutate((s) => {
     created = placeJob(s, body, caller, callbackUrl);
@@ -906,7 +1259,7 @@ export async function publishNewJob(body, caller, deps, opts) {
       seatId: job.assignee,
       jobId: job.id,
     });
-    job = await fireCallback(deps, job, opts);
+    scheduleCallback(deps, job, opts);
   }
   return { job, bus, wake };
 }
@@ -978,7 +1331,8 @@ export async function settleJob(id, action, body, caller, deps, opts) {
     const kind = job.status === "needs_human" ? "ask_human" : job.status === "cancelled" ? "job_cancelled" : "job_complete";
     announce(deps, job, from, kind);
   }
-  return fireCallback(deps, job, opts);
+  scheduleCallback(deps, job, opts);
+  return job;
 }
 
 export async function waitForJob(id, query, deps, sleep = (ms) => new Promise((r) => setTimeout(r, ms))) {

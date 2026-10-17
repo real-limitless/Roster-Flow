@@ -28,6 +28,8 @@ export function isInternalPluginToken(token) {
 }
 
 const ID = "[^/]+";
+// `callback-secret` is a reserved jobs path. A job id of that name is not a plugin route.
+const JOB_ID = "(?!callback-secret$)[^/]+";
 const ALLOWED = [
   ["GET", `/api/v1/seats`],
   ["GET", `/api/v1/seats/${ID}`],
@@ -49,8 +51,8 @@ const ALLOWED = [
   ["POST", `/api/v1/tasks`],
   ["POST", `/api/v1/tasks/${ID}/claim`],
   ["POST", `/api/v1/tasks/${ID}/complete`],
-  ["GET", `/api/v1/jobs/${ID}`],
-  ["POST", `/api/v1/jobs/${ID}/complete`],
+  ["GET", `/api/v1/jobs/${JOB_ID}`],
+  ["POST", `/api/v1/jobs/${JOB_ID}/complete`],
   ["POST", `/api/v1/architect/chat`],
 ].map(([method, path]) => ({ method, re: new RegExp(`^${path}$`) }));
 
