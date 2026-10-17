@@ -20,6 +20,7 @@ export const TERMINAL_STATUSES = ["done", "failed", "cancelled"];
 export const ROUTING_MODES = ["supervisor", "round_robin", "specialist"];
 export const CALLBACK_SECRET_MIN_BYTES = 32;
 export const DEFAULT_CALLBACK_GRACE_MS = 10 * 60 * 1000;
+export const MAX_CALLBACK_GRACE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_CALLBACK_DNS_TIMEOUT_MS = 5000;
 /** Gaps between delivery attempts. Three tries: immediately, then these delays. */
 export const CALLBACK_RETRY_DELAYS_MS = [200, 800];
@@ -308,6 +309,7 @@ export function callbackAllowlist(env) {
   for (const item of String(env?.ROSTER_CALLBACK_ALLOWLIST || "").split(",")) {
     const entry = item.trim().toLowerCase();
     if (!entry || !/^[\x21-\x7e]+$/.test(entry)) continue;
+    if (entry.includes("*")) continue;
     let host = entry;
     let port = null;
     const bracketed = entry.match(/^\[([^\]]+)\](?::(\d+))?$/);
@@ -332,14 +334,14 @@ export function callbackAllowlist(env) {
   return out;
 }
 
-/** Startup warnings. `*.host` entries are stored as literals and never match a real host. */
+/** Startup warnings. Entries containing `*` are dropped and never match. */
 export function callbackAllowlistWarnings(env = process.env) {
   const warnings = [];
   for (const item of String(env?.ROSTER_CALLBACK_ALLOWLIST || "").split(",")) {
     const entry = item.trim();
     if (entry.includes("*")) {
       warnings.push(
-        `ROSTER_CALLBACK_ALLOWLIST entry "${entry}" never matches: *.host wildcards are not supported. Prefer an exact host:port.`,
+        `ROSTER_CALLBACK_ALLOWLIST entry "${entry}" is ignored and never matches: wildcards are not supported. Prefer an exact host:port.`,
       );
     }
   }
@@ -391,13 +393,10 @@ async function callbackAddresses(host, lookupImpl, timeoutMs) {
 }
 
 /**
- * http(s) only, no `user:pass@`. Resolves the host once and checks every
- * address. Loopback, private, documentation, multicast, and other non-public
- * ranges are rejected unless `ROSTER_CALLBACK_ALLOWLIST` names the host.
- * Link-local and metadata addresses are rejected even when it does.
- * Delivery connects only to the returned `addresses`.
+ * Syntax and scheme only. No DNS. Job create uses this so a hanging lookup
+ * cannot stall `POST /api/v1/jobs`.
  */
-export async function resolveCallback(raw, { env = process.env, lookup: lookupImpl = lookup, dnsTimeoutMs } = {}) {
+export function callbackUrlSyntax(raw) {
   if (raw == null || raw === "") return null;
   const s = String(raw).trim();
   if (s.length > 2048) throw fail(400, "callbackUrl is too long");
@@ -411,6 +410,21 @@ export async function resolveCallback(raw, { env = process.env, lookup: lookupIm
   if (url.username || url.password) throw fail(400, "callbackUrl must not contain credentials");
   const host = canonicalHost(url.hostname);
   if (!host) throw fail(400, "callbackUrl host is required");
+  return url.toString();
+}
+
+/**
+ * http(s) only, no `user:pass@`. Resolves the host once and checks every
+ * address. Loopback, private, documentation, multicast, and other non-public
+ * ranges are rejected unless `ROSTER_CALLBACK_ALLOWLIST` names the host.
+ * Link-local and metadata addresses are rejected even when it does.
+ * Delivery connects only to the returned `addresses`.
+ */
+export async function resolveCallback(raw, { env = process.env, lookup: lookupImpl = lookup, dnsTimeoutMs } = {}) {
+  const href = callbackUrlSyntax(raw);
+  if (!href) return null;
+  const url = new URL(href);
+  const host = canonicalHost(url.hostname);
   const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
   const allowlisted = callbackAllowlist(env).some((e) => e.host === host && (e.port == null || e.port === port));
   const addresses = await callbackAddresses(host, lookupImpl, callbackDnsTimeoutMs(env, dnsTimeoutMs));
@@ -646,8 +660,8 @@ function placeJob(state, body, caller, callbackUrl) {
   return publicJob(job);
 }
 
-export async function createJob(state, body = {}, caller = {}, opts) {
-  const callbackUrl = await normalizeCallback(body.callbackUrl, opts);
+export async function createJob(state, body = {}, caller = {}) {
+  const callbackUrl = callbackUrlSyntax(body.callbackUrl);
   return placeJob(state, body, caller, callbackUrl);
 }
 
@@ -787,8 +801,8 @@ export function callbackGraceMs(env = process.env) {
   const raw = env?.ROSTER_CALLBACK_GRACE_MS;
   if (raw == null || String(raw).trim() === "") return DEFAULT_CALLBACK_GRACE_MS;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_CALLBACK_GRACE_MS;
-  return n;
+  if (!Number.isFinite(n)) return n > 0 ? MAX_CALLBACK_GRACE_MS : DEFAULT_CALLBACK_GRACE_MS;
+  return Math.min(MAX_CALLBACK_GRACE_MS, Math.max(0, n));
 }
 
 function previousStillValid(prev, now) {
@@ -975,6 +989,28 @@ function callbackRetryable(attempt) {
 }
 
 const pendingCallbacks = new Set();
+const CALLBACK_DELIVERY_CONCURRENCY = 2;
+let callbackInFlight = 0;
+const callbackSlotWaiters = [];
+
+function takeCallbackSlot() {
+  if (callbackInFlight < CALLBACK_DELIVERY_CONCURRENCY) {
+    callbackInFlight += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    callbackSlotWaiters.push(resolve);
+  });
+}
+
+function releaseCallbackSlot() {
+  const next = callbackSlotWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  callbackInFlight -= 1;
+}
 
 /** Tests wait for background delivery. Submit and complete do not. */
 export function flushCallbacks() {
@@ -990,28 +1026,33 @@ function scheduleCallback(deps, job, opts = {}) {
   const timestamp = String(Math.floor((opts.now ? opts.now() : Date.now()) / 1000));
   const delays = opts.retryDelaysMs || CALLBACK_RETRY_DELAYS_MS;
   const task = (async () => {
-    let secret;
-    let stored = job;
-    deps.mutate((s) => {
-      secret = ensureCallbackSecret(s, opts.env);
-      const live = (s.jobs || []).find((j) => j.id === job.id) || job;
-      stored = publicJob(live);
-    });
-    let attempt = { ok: false, error: "callback was not attempted", at: nowIso() };
-    const tries = delays.length + 1;
-    for (let i = 0; i < tries; i++) {
-      if (i > 0 && delays[i - 1]) await sleep(delays[i - 1]);
-      try {
-        attempt = await (deps.deliverCallback || deliverCallback)(stored, { ...opts, secret, timestamp });
-      } catch (err) {
-        attempt = { ok: false, error: String(err?.message || err).slice(0, 300), at: nowIso() };
+    await takeCallbackSlot();
+    try {
+      let secret;
+      let stored = job;
+      deps.mutate((s) => {
+        secret = ensureCallbackSecret(s, opts.env);
+        const live = (s.jobs || []).find((j) => j.id === job.id) || job;
+        stored = publicJob(live);
+      });
+      let attempt = { ok: false, error: "callback was not attempted", at: nowIso() };
+      const tries = delays.length + 1;
+      for (let i = 0; i < tries; i++) {
+        if (i > 0 && delays[i - 1]) await sleep(delays[i - 1]);
+        try {
+          attempt = await (deps.deliverCallback || deliverCallback)(stored, { ...opts, secret, timestamp });
+        } catch (err) {
+          attempt = { ok: false, error: String(err?.message || err).slice(0, 300), at: nowIso() };
+        }
+        if (!callbackRetryable(attempt)) break;
       }
-      if (!callbackRetryable(attempt)) break;
+      if (attempt?.skipped) return;
+      deps.mutate((s) => {
+        recordCallback(s, job.id, attempt);
+      });
+    } finally {
+      releaseCallbackSlot();
     }
-    if (attempt?.skipped) return;
-    deps.mutate((s) => {
-      recordCallback(s, job.id, attempt);
-    });
   })().catch((err) => {
     console.error("callback delivery", err);
   });
@@ -1025,7 +1066,7 @@ function seatLabel(state, seatId, fallback) {
 }
 
 export async function publishNewJob(body, caller, deps, opts) {
-  const callbackUrl = await normalizeCallback(body.callbackUrl, opts);
+  const callbackUrl = callbackUrlSyntax(body.callbackUrl);
   let created;
   deps.mutate((s) => {
     created = placeJob(s, body, caller, callbackUrl);

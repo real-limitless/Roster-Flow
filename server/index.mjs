@@ -99,8 +99,9 @@ function reply(res, pathname, code, body) {
   else json(res, code, body);
 }
 
-/** Owner or admin session in every mode. The demo token and a server with no passwords are refused. */
+/** Owner or admin session in every mode. The demo token, the internal plugin token, and a server with no passwords are refused. */
 function callbackSecretAllowed(user, token) {
+  if (isInternalPluginToken(token)) return false;
   if (!user || token === DEMO_TOKEN) return false;
   const role = user.role || "owner";
   if (role !== "owner" && role !== "admin") return false;

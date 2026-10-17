@@ -16,10 +16,12 @@ import {
   CALLBACK_HEADERS,
   CALLBACK_SECRET_MIN_BYTES,
   DEFAULT_CALLBACK_GRACE_MS,
+  MAX_CALLBACK_GRACE_MS,
   applyWake,
   assertCallbackSecret,
   callbackAddressBlocked,
   callbackAllowlist,
+  callbackGraceMs,
   callbackSecretInfo,
   callbackAllowlistWarnings,
   cancelJob,
@@ -693,6 +695,16 @@ test("ROSTER_CALLBACK_ALLOWLIST supports host:port with exact, case-insensitive,
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /\*\.hooks\.example/);
   assert.match(warnings[0], /never matches/);
+  assert.deepEqual(callbackAllowlist({ ROSTER_CALLBACK_ALLOWLIST: "*.corp.test:8443, http://*.corp.test:8443/, hooks.internal" }), [
+    { host: "hooks.internal", port: null },
+  ]);
+  await assert.rejects(
+    normalizeCallback("http://*.corp.test:8443/cb", {
+      env: { ROSTER_CALLBACK_ALLOWLIST: "*.corp.test:8443" },
+      lookup: async () => [{ address: "10.1.1.1", family: 4 }],
+    }),
+    (e) => e.status === 400 && /blocked/.test(e.message),
+  );
   const lookup = async () => [{ address: "10.0.0.5", family: 4 }];
   const env = { ROSTER_CALLBACK_ALLOWLIST: "Hooks.Internal:8443,relay.internal,xn--bcher-kva.internal,bücher.example" };
   assert.equal(await normalizeCallback("https://HOOKS.internal:8443/cb", { env, lookup }), "https://hooks.internal:8443/cb");
@@ -803,9 +815,17 @@ test("empty org HTTP job defaults to #general and blocks metadata callbacks", as
       headers,
       body: JSON.stringify({ target: "you", brief: "x", callbackUrl: "http://169.254.169.254/latest/meta-data" }),
     });
-    assert.equal(blocked.status, 400);
-    const body = await blocked.json();
-    assert.match(body.error, /blocked/);
+    assert.equal(blocked.status, 201);
+    const made = await blocked.json();
+    assert.equal(made.callback, null);
+    let recorded = made;
+    for (let i = 0; i < 40 && !recorded.callback; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      const got = await fetch(`${core.base}/api/v1/jobs/${made.id}`, { headers });
+      recorded = await got.json();
+    }
+    assert.equal(recorded.callback?.ok, false);
+    assert.match(recorded.callback?.error || "", /blocked/);
   } finally {
     await core.stop();
   }
@@ -945,6 +965,122 @@ test("state.json and auth.json are mode 0600, including existing files on load",
     assert.equal(statSync(join(dir, "auth.json")).mode & 0o777, 0o600);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("callback grace is clamped to 24h and a second rotate drops the earlier secret", () => {
+  assert.equal(callbackGraceMs({ ROSTER_CALLBACK_GRACE_MS: "1e309" }), MAX_CALLBACK_GRACE_MS);
+  assert.equal(callbackGraceMs({ ROSTER_CALLBACK_GRACE_MS: String(Number.MAX_VALUE) }), MAX_CALLBACK_GRACE_MS);
+  assert.equal(callbackGraceMs({ ROSTER_CALLBACK_GRACE_MS: "nope" }), DEFAULT_CALLBACK_GRACE_MS);
+  assert.equal(callbackGraceMs({ ROSTER_CALLBACK_GRACE_MS: "-5" }), 0);
+  const state = emptyState();
+  const now = Date.parse("2026-04-11T12:00:00.000Z");
+  ensureCallbackSecret(state, {}, now);
+  const leaked = state.callbackSecret.value;
+  const info = rotateCallbackSecret(state, { ROSTER_CALLBACK_GRACE_MS: String(Number.MAX_VALUE) }, now);
+  assert.equal(info.previous.until, new Date(now + MAX_CALLBACK_GRACE_MS).toISOString());
+  const body = JSON.stringify({ job: { id: "job-1" } });
+  const ts = String(Math.floor(now / 1000));
+  const headersFor = (secret) => ({
+    "x-roster-timestamp": ts,
+    "x-roster-job-id": "job-1",
+    "x-roster-signature": signCallback(secret, ts, "job-1", body),
+  });
+  const first = callbackSecretInfo(state, {}, now);
+  assert.equal(verifyCallback(first.secret, headersFor(leaked), body, { now, previous: first.previous }), true);
+  rotateCallbackSecret(state, { ROSTER_CALLBACK_GRACE_MS: "600000" }, now + 1000);
+  const second = callbackSecretInfo(state, {}, now + 1000);
+  assert.equal(verifyCallback(second.secret, headersFor(leaked), body, { now: now + 1000, previous: second.previous }), false);
+  assert.equal(verifyCallback(second.secret, headersFor(second.secret), body, { now: now + 1000, previous: second.previous }), true);
+});
+
+test("create returns before DNS, and a blocked callback is recorded and not delivered", async () => {
+  const state = emptyState();
+  const started = Date.now();
+  const job = await Promise.race([
+    createJob(
+      state,
+      { target: "build", brief: "x", callbackUrl: "https://hooks.example/cb" },
+      caller,
+      { lookup: () => new Promise(() => {}), dnsTimeoutMs: 30000 },
+    ),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("create waited on DNS")), 400)),
+  ]);
+  assert.ok(Date.now() - started < 400);
+  assert.equal(job.callbackUrl, "https://hooks.example/cb");
+  assert.equal(job.callback, null);
+  await assert.rejects(
+    createJob(state, { target: "build", brief: "x", callbackUrl: "ftp://hooks.example/cb" }, caller),
+    (e) => e.status === 400,
+  );
+  const { deps } = harness(state, async () => ({ sessionId: "ses_fast" }));
+  const published = await Promise.race([
+    publishNewJob(
+      { target: "build", brief: "fast", callbackUrl: "https://slow.example/cb" },
+      caller,
+      deps,
+      { lookup: () => new Promise(() => {}), dnsTimeoutMs: 30000 },
+    ),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("publish waited on DNS")), 400)),
+  ]);
+  assert.equal(published.job.callback, null);
+
+  const hook = await hookServer();
+  try {
+    const live = emptyState();
+    const created = await createJob(
+      live,
+      { target: "build", brief: "x", callbackUrl: `http://127.0.0.1:${hook.port}/hook` },
+      caller,
+    );
+    const delivery = harness(live, async () => ({ offline: true }));
+    delete delivery.deps.deliverCallback;
+    const done = await settleJob(created.id, "complete", { result: "ok" }, caller, delivery.deps);
+    assert.equal(done.callback, null);
+    await flushCallbacks();
+    const recorded = getJob(live, created.id);
+    assert.equal(recorded.callback.ok, false);
+    assert.match(recorded.callback.error, /blocked/);
+    assert.equal(hook.hits.length, 0);
+  } finally {
+    await hook.close();
+  }
+});
+
+test("at most two callback deliveries run at once", async () => {
+  const state = emptyState();
+  let started = 0;
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const { deps } = harness(state, async () => ({ offline: true }));
+  deps.deliverCallback = async () => {
+    started += 1;
+    await gate;
+    return { ok: true, status: 204, at: new Date().toISOString() };
+  };
+  const lookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  try {
+    for (let i = 0; i < 3; i++) {
+      const created = await createJob(
+        state,
+        { target: "build", brief: `b${i}`, callbackUrl: "https://hooks.example/cb" },
+        caller,
+        { lookup },
+      );
+      void settleJob(created.id, "complete", { result: "ok" }, caller, deps);
+    }
+    for (let i = 0; i < 50 && started < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(started, 2);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(started, 2);
+    release();
+    await flushCallbacks();
+    assert.equal(started, 3);
+  } finally {
+    release();
+    await flushCallbacks();
   }
 });
 

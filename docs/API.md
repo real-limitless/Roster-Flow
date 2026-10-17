@@ -282,7 +282,7 @@ Persistent work a caller hands to a seat or a team. Same bearer auth as the rest
 | GET | `/api/v1/jobs/:id/files/:name` | `{ name, size, sha256, encoding: "base64", content }` |
 | POST | `/api/v1/jobs/:id/messages` | Follow-up `{ text }` into an open job. Wakes the assignee |
 | GET | `/api/v1/jobs/callback-secret` | Owner or admin session, or an `admin` API token for that user. **403** with no such session, including `ROSTER_SKIP_ONBOARDING=1`, the demo token, and when no auth is configured. `Cache-Control: no-store`. These responses do not send a CORS allow-origin |
-| POST | `/api/v1/jobs/callback-secret/rotate` | Same gate. Replace the secret. **409** when `ROSTER_CALLBACK_SECRET` is set. The previous secret stays valid for `ROSTER_CALLBACK_GRACE_MS` (default 10 minutes) |
+| POST | `/api/v1/jobs/callback-secret/rotate` | Same gate. Replace the secret. **409** when `ROSTER_CALLBACK_SECRET` is set. The previous secret stays valid for `ROSTER_CALLBACK_GRACE_MS` (default 10 minutes, maximum 24 hours). A second rotate drops the secret from before the first rotate immediately |
 
 `POST /api/v1/jobs`:
 
@@ -313,9 +313,9 @@ Status: `queued`, `running`, `needs_human`, `done`, `failed`, `cancelled`. Termi
 
 `callbackUrl` must be `http` or `https` and must not carry credentials (`https://user:pass@…` is **400**). Job responses never include credentials in `callbackUrl`.
 
-CORE resolves the host once, checks every address it returns, and connects only to one of those addresses. The `Host` header and TLS SNI stay the original hostname, so certificates are still checked against it. A DNS answer that changes between the check and the connect cannot move the request. The lookup gives up after `ROSTER_CALLBACK_DNS_TIMEOUT_MS` milliseconds (default 5000); a lookup that exceeds it is **400** `callbackUrl host lookup timed out`. This runs at submit (a bad URL is **400**) and again at every delivery. Redirects are not followed.
+Syntax, scheme, length, and credentials are checked when the job is created, and a bad URL is **400**. `POST /api/v1/jobs` does not resolve DNS. The host is resolved on the delivery path: CORE checks every address, and connects only to one of those addresses. The `Host` header and TLS SNI stay the original hostname, so certificates are still checked against it. A DNS answer that changes between the check and the connect cannot move the request. The lookup gives up after `ROSTER_CALLBACK_DNS_TIMEOUT_MS` milliseconds (default 5000). A lookup that times out, fails, or returns a blocked address is not delivered. The attempt is stored on `job.callback` with `ok: false` and the error. Redirects are not followed.
 
-Blocked addresses (**400**):
+Blocked addresses (recorded on `job.callback`, never delivered):
 
 - IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24` (deprecated 6to4 anycast), `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`.
 - IPv6: `::/96` (unspecified, loopback, IPv4-compatible `::a.b.c.d`), `64:ff9b::/96`, `64:ff9b:1::/48`, `100::/64` (discard-only), `2001::/32` (Teredo), `2001:2::/48` (benchmarking), `2001:10::/28` (ORCHIDv1), `2001:db8::/32`, `2002::/16` (6to4), `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`.
@@ -326,18 +326,26 @@ Blocked addresses (**400**):
 `ROSTER_CALLBACK_ALLOWLIST` lets named hosts resolve to otherwise blocked addresses, for example a harness on a private network. It never allows link-local or metadata addresses. `64:ff9b::/96` (DNS64) stays blocked by default. A deployment that reaches its receiver only through DNS64 can name that receiver in `ROSTER_CALLBACK_ALLOWLIST`. The metadata block still applies, including a metadata address embedded in a DNS64 or NAT64 form.
 
 - Comma-separated `host` or `host:port`. Prefer `host:port` so the callback stays on the port you chose. IPv6 literals are `[addr]` or `[addr]:port`, and they are normalized before compare (`2001:0db8::1` and `2001:db8::1` are the same entry).
-- Matching is exact and case-insensitive. There are no wildcards and no subdomain matching. An entry such as `*.host` never matches; CORE warns about it at startup. A bare `host` matches any port; `host:port` matches only that port (`80` and `443` are the defaults for `http` and `https`).
+- Matching is exact and case-insensitive. There are no wildcards and no subdomain matching. An entry containing `*` (for example `*.host` or `http://*.corp.test:8443/`) is dropped, and CORE warns about it at startup. A bare `host` matches any port; `host:port` matches only that port (`80` and `443` are the defaults for `http` and `https`).
 - Entries must be ASCII. Write internationalized names in punycode (`xn--bcher-kva.example`, not `bücher.example`). URL parsing punycodes the callback host, so a non-ASCII entry would never match; CORE ignores it.
 
 #### Callback delivery and signatures
 
-On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set. That includes a job that lands in `needs_human` at submit because its assignee is a human seat. The POST does not block job creation or `POST /api/v1/jobs/:id/complete`. CORE sends it afterward, reuses the same timestamp and signature on each try, and retries a transport failure twice (after 200ms, then 800ms). `job.callback` is filled in when the attempt finishes, so the complete response can still show `callback: null`.
+On `needs_human`, `done`, `failed`, or `cancelled`, CORE POSTs the snapshot to `callbackUrl` when set. That includes a job that lands in `needs_human` at submit because its assignee is a human seat. The POST does not block job creation or `POST /api/v1/jobs/:id/complete`. CORE sends it afterward, reuses the same timestamp and signature on each try, and retries a transport failure twice (after 200ms, then 800ms). At most two deliveries run at once; the rest wait, so a slow lookup cannot fill the process thread pool.
+
+**Behavior change:** `POST /api/v1/jobs` and `POST /api/v1/jobs/:id/complete` return `callback: null`. `job.callback` is filled in when the attempt finishes.
+
+Pending deliveries are kept in memory only. A restart drops any callback that has not finished. `needs_human` and `done` can arrive out of order. Order deliveries by `job.updatedAt`, and when those timestamps tie treat `done`, `failed`, or `cancelled` as newer than `needs_human`. If a callback you expected does not arrive, poll `GET /api/v1/jobs/:id`.
 
 ```json
 { "event": "job.status", "job": { "id": "job-…", "status": "done", "result": "…" } }
 ```
 
-Every callback is signed with HMAC-SHA256 using the instance callback secret. There is one secret per instance, and each instance needs its own value. It is generated on first use and stored in state. `ROSTER_CALLBACK_SECRET`, when set, must be at least 32 bytes, overrides the stored secret, and disables rotate. Read it with `GET /api/v1/jobs/callback-secret` (owner or admin) and rotate it with `POST /api/v1/jobs/callback-secret/rotate`. For `ROSTER_CALLBACK_GRACE_MS` after a rotate (default 10 minutes) the response includes `previous: { secret, until }` and receivers should accept either secret until `until`. `GET /api/v1/state` never includes it.
+Every callback is signed with HMAC-SHA256 using the instance callback secret. There is one secret per instance, and each instance needs its own value. It is generated on first use and stored in state. `ROSTER_CALLBACK_SECRET`, when set, must be at least 32 bytes, overrides the stored secret, and disables rotate. Read it with `GET /api/v1/jobs/callback-secret` (owner or admin) and rotate it with `POST /api/v1/jobs/callback-secret/rotate`. The internal plugin token cannot read or rotate it. `GET /api/v1/state` never includes it.
+
+CORE always signs with the current secret. It does not sign with the previous one. `ROSTER_CALLBACK_GRACE_MS` (default 10 minutes, maximum 24 hours; values above 24 hours and non-finite values are clamped) only helps a receiver that still tries the previous secret during the window. A receiver that has only the previous secret cannot verify a callback signed after the rotate. The rotate response includes `previous: { secret, until }`. Until `until`, accept either the current secret or the previous one. That covers a delivery signed just before the rotate, and a delivery signed after it.
+
+Rotating twice invalidates a leaked secret immediately. The second rotate replaces `previous` with the secret from the first rotate, so the secret from before that first rotate is no longer accepted, without waiting out its grace window.
 
 | Header | Value |
 |---|---|
@@ -351,20 +359,29 @@ To verify:
 
 1. Read the raw body bytes. Do not re-serialize parsed JSON.
 2. Reject if `X-Roster-Timestamp` is more than 300 seconds from your clock. This limits replay.
-3. Compute `HMAC-SHA256(secret, timestamp + "." + jobId + "." + body)` as hex, prefix `v1=`, and compare it to `X-Roster-Signature` with a constant-time compare. During the rotation grace window, try the previous secret the same way.
+3. Compute `HMAC-SHA256(secret, timestamp + "." + jobId + "." + body)` as hex, prefix `v1=`, and compare it to `X-Roster-Signature` with a constant-time compare. During the rotation grace window, try the current secret and the previous secret. CORE's signature matches the secret that was current when it signed.
 4. Check that `X-Roster-Job-Id` equals `job.id` in the body.
 5. Drop a duplicate delivery inside that 300 second window when `(jobId, ts, signature)` matches one you already accepted. Retries reuse that triple.
 
 ```js
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-function verifyRosterCallback(secret, headers, rawBody) {
+function signatureMatches(secret, ts, jobId, rawBody, sig) {
+  const want = Buffer.from("v1=" + createHmac("sha256", secret).update(`${ts}.${jobId}.${rawBody}`).digest("hex"));
+  return sig.length === want.length && timingSafeEqual(sig, want);
+}
+
+// CORE always signs with the current secret. Pass `previous` only while
+// Date.now() is before `previous.until`. A signature made after the rotate
+// matches `current`. A signature made just before it matches `previous`.
+function verifyRosterCallback(current, previous, headers, rawBody) {
   const ts = headers["x-roster-timestamp"];
   const jobId = headers["x-roster-job-id"];
   const sig = Buffer.from(headers["x-roster-signature"] || "");
   if (!/^\d+$/.test(ts || "") || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  const want = Buffer.from("v1=" + createHmac("sha256", secret).update(`${ts}.${jobId}.${rawBody}`).digest("hex"));
-  return sig.length === want.length && timingSafeEqual(sig, want) && JSON.parse(rawBody).job?.id === jobId;
+  const secrets = previous ? [current, previous] : [current];
+  const ok = secrets.some((secret) => signatureMatches(secret, ts, jobId, rawBody, sig));
+  return ok && JSON.parse(rawBody).job?.id === jobId;
 }
 ```
 

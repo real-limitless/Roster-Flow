@@ -59,9 +59,9 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_API_TOKEN` | unset | Register this `rf_…` token once an owner exists. |
 | `ROSTER_API_TOKEN_SCOPES` | all scopes | Comma-separated `read`, `write`, `admin`. |
 | `ROSTER_API_TOKEN_NAME` | `bootstrap` | Label stored on the token. |
-| `ROSTER_CALLBACK_ALLOWLIST` | unset | Job `callbackUrl` hosts allowed to resolve to private or loopback addresses. Prefer `host:port`. Comma-separated, exact and case-insensitive, ASCII (punycode) only. IPv6 literals are normalized. `*.host` entries never match (CORE warns at startup). Never opens link-local, metadata, or `0.0.0.0/8`. See [API.md](API.md#jobs). |
+| `ROSTER_CALLBACK_ALLOWLIST` | unset | Job `callbackUrl` hosts allowed to resolve to private or loopback addresses. Prefer `host:port`. Comma-separated, exact and case-insensitive, ASCII (punycode) only. IPv6 literals are normalized. An entry containing `*` is ignored (CORE warns at startup). Never opens link-local, metadata, or `0.0.0.0/8`. See [API.md](API.md#jobs). |
 | `ROSTER_CALLBACK_SECRET` | generated | HMAC key for job callback signatures. At least 32 bytes. Each instance needs its own value. Unset: CORE generates one and an owner or admin can read it at `GET /api/v1/jobs/callback-secret`. Set: that value is used and rotate is disabled. |
-| `ROSTER_CALLBACK_GRACE_MS` | `600000` | How long the previous callback secret is still accepted after rotate (10 minutes). |
+| `ROSTER_CALLBACK_GRACE_MS` | `600000` | How long the previous callback secret is still accepted after rotate (10 minutes). Values above 24 hours are clamped to 24 hours. CORE always signs with the new secret. A second rotate drops the secret from before the first rotate immediately. |
 | `ROSTER_CALLBACK_DNS_TIMEOUT_MS` | `5000` | DNS lookup timeout for a job `callbackUrl`. |
 | `ROSTER_HARNESS_AUTOSTART` | `auto` | `auto` (start serves once an owner exists and a provider is configured), `1` (start once an owner exists, provider or not), or `0` (never). See [Harness autostart](#harness-autostart). |
 | `ROSTER_PROVIDER_ID` | unset | Provider id to seed, for example `featherless`. |
