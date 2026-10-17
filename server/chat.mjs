@@ -188,6 +188,18 @@ export function seatModelPlan(seat, loaded = null) {
   return { ok: false, model: "", hint: providerHint(seat, loaded), fallback: false };
 }
 
+function alreadyMirrored(channelId, seatId, part) {
+  const text = String(part?.text || "");
+  return (getState().messages || []).some((m) => {
+    if (m.system) return false;
+    if (part?.id && m.sessionId === part.id) return true;
+    if (m.seatId !== seatId || m.text !== text) return false;
+    // /bus/send and /messages post on the room. The session mirror must not
+    // copy that same reply into another channel without a run id.
+    return Boolean(m.runId) || m.channel === channelId;
+  });
+}
+
 function looksLikeWakePrompt(text) {
   const t = String(text || "");
   return /You are .+ on the Roster-flow org chart/.test(t) || t.includes("Propose ONE OrgPlan");
@@ -263,7 +275,7 @@ async function wakeTarget(channelId, text, from, target) {
   const seatId = resolvedSeatId(target.to, state);
   const direct = seatOf(seatId, state);
   if (String(channelId).startsWith("dm-")) rememberSessionRoom(seatId, channelId);
-  const meta = { from, kind: target.reason, channel: channelId, announce: false, followed: true, ...(target.meta || {}) };
+  const meta = { from, kind: target.reason, channel: channelId, announce: false, ...(target.meta || {}) };
   if (direct && direct.kind === "bot" && !direct.mcpGuest && !isOpenCodeAdapter(direct)) {
     emit({ scope: "chat", step: "seat.wake", channel: channelId, seat: seatId, detail: { reason: target.reason, adapter: direct.adapter } });
     return deps.wakeSeat(target.to, text, { ...meta, announce: true });
@@ -311,29 +323,32 @@ async function wakeTarget(channelId, text, from, target) {
   } else if (woke?.offline) {
     statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
   } else if (woke?.error) {
-    statusMessage(channelId, `Wake failed for ${ready.seat?.name || seatId}: ${woke.error}`);
+    statusMessage(channelId, `${ready.seat?.name || seatId} did not start run ${woke.runId || ""}: ${woke.error}`.trim());
   } else if (woke?.human) {
     statusMessage(channelId, `${ready.seat?.name || seatId} is a human seat — notified, no model.`);
   }
   return woke;
 }
 
-/** Wake each target. An implicit target falls through its candidates while a seat is paused or has no usable model. */
+/** Wake every target at once. An implicit target falls through its candidates while a seat is paused or has no usable model. */
 async function startWakes(channelId, text, from, targets) {
-  const results = [];
-  for (const target of targets) {
-    const order = target.candidates?.length ? target.candidates : [target.to];
-    let woke = null;
-    for (let i = 0; i < order.length; i++) {
-      woke = await wakeTarget(channelId, text, from, { ...target, to: order[i] });
-      const retry = woke && (woke.nokey || woke.paused) && i < order.length - 1;
-      if (!retry) break;
-      const next = seatOf(order[i + 1]);
-      statusMessage(channelId, `Trying ${next?.name || order[i + 1]} instead.`);
-    }
-    results.push(woke);
-  }
-  return results;
+  const settled = await Promise.allSettled(
+    targets.map(async (target) => {
+      const order = target.candidates?.length ? target.candidates : [target.to];
+      let woke = null;
+      for (let i = 0; i < order.length; i++) {
+        woke = await wakeTarget(channelId, text, from, { ...target, to: order[i] });
+        const retry = woke && (woke.nokey || woke.paused) && i < order.length - 1;
+        if (!retry) break;
+        const next = seatOf(order[i + 1]);
+        statusMessage(channelId, `Trying ${next?.name || order[i + 1]} instead.`);
+      }
+      return woke;
+    }),
+  );
+  return settled.map((item) =>
+    item.status === "fulfilled" ? item.value : { started: false, error: String(item.reason?.message || item.reason || "wake failed") },
+  );
 }
 
 /** Woken OpenCode seats and the session each wake ran in. */
@@ -553,10 +568,9 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
           seen.add(p.id);
           if (since && p.created && p.created < since) continue;
           const runId = latestRunId(seatId);
-          const recovered = recoveredReply(channelId, seatId, runId, p.text);
-          if (alreadyMirrored(p.id) || recovered) {
-            // Session sync or a late-reply recovery can post the reply before this loop reads it; it still answers this wake.
-            if (recovered || mirroredReply(p.id, channelId, seatId)) {
+          if (alreadyMirrored(channelId, seatId, p)) {
+            // The bus or session sync can post the reply before this loop reads it; it still answers this wake.
+            if (mirroredReply(channelId, seatId, p, runId)) {
               posted += 1;
               replies += 1;
             }
@@ -596,7 +610,7 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
           !failed.has(id) &&
           (getState().runs || []).some((r) => r.seatId === id && (r.status === "starting" || r.status === "running")),
       );
-      // A followed room wake is already done when this loop starts; give its transcript a few polls to show the reply.
+      // A room wake is usually done when this loop starts; give its transcript a few polls to show the reply.
       settledPolls += 1;
       if (settledPolls >= (stillOpen ? 8 : 3)) break;
       await new Promise((r) => setTimeout(r, deps.followDelayMs));
@@ -632,24 +646,21 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
   return replies;
 }
 
-/** An OpenCode message id is posted at most once, in whichever room it landed first. */
-function alreadyMirrored(sessionMessageId) {
-  return (getState().messages || []).some((m) => m.sessionId === sessionMessageId);
-}
-
-/** The room message for an OpenCode message id when it is this seat's reply in this room, else null. */
-function mirroredReply(sessionMessageId, channelId, seatId) {
-  return (getState().messages || []).find((m) => m.sessionId === sessionMessageId && m.channel === channelId && m.seatId === seatId) || null;
+/** This seat's reply in this room for an OpenCode message, matched by its id or by this run's text, else null. */
+function mirroredReply(channelId, seatId, part, runId) {
+  return (
+    (getState().messages || []).find(
+      (m) =>
+        !m.system &&
+        m.channel === channelId &&
+        m.seatId === seatId &&
+        ((part.id && m.sessionId === part.id) || (runId && m.runId === runId && m.text === part.text)),
+    ) || null
+  );
 }
 
 function latestRunId(seatId) {
   return [...(getState().runs || [])].reverse().find((r) => r.seatId === seatId)?.id || null;
-}
-
-/** A reply the bus already posted for this run, for example after a provider timeout. */
-function recoveredReply(channelId, seatId, runId, text) {
-  if (!runId) return null;
-  return (getState().messages || []).find((m) => m.channel === channelId && m.seatId === seatId && m.runId === runId && m.text === text) || null;
 }
 
 export function mirrorTranscript(channelId, seatId, parts) {
@@ -658,7 +669,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
   for (const p of parts || []) {
     if (!p?.id || !p.text) continue;
     if (looksLikeWakePrompt(p.text)) continue;
-    if (alreadyMirrored(p.id)) continue;
+    if (alreadyMirrored(channelId, seatId, p)) continue;
     if (p.role === "user" && getState().messages.some((m) => m.text === p.text && m.channel === channelId)) continue;
     const role = p.role === "user" ? "human" : "bot";
     const who = role === "human" ? "You" : seat?.name || seatId;
