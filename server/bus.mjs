@@ -12,7 +12,6 @@ import {
   lastAssistantFailure,
   watchProviderTurn,
   ensure,
-  providerStartMs,
 } from "./harness.mjs";
 import { isBuiltinProvider, isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
@@ -81,15 +80,39 @@ function noteRun(runId, seatId, status, reason) {
   });
 }
 
+const restartWaiting = new Set();
+
 function serveBusy(kind, exceptRunId) {
   const seats = getState().seats || [];
   return (getState().runs || []).some((run) => {
-    if (!run || run.id === exceptRunId) return false;
+    if (!run || run.id === exceptRunId || restartWaiting.has(run.id)) return false;
+    // A turn that has not finished owns the serve. The HTTP started flag is
+    // not consulted: starting and running are both busy.
     if (run.status !== "starting" && run.status !== "running") return false;
     const seat = seats.find((item) => item.id === run.seatId);
     if (!seat) return true;
     return harnessKindForSeat(seat) === kind;
   });
+}
+
+const restartChains = new Map();
+
+async function restartWhenIdle(kind, runId, stillNeeded) {
+  const prev = restartChains.get(kind) || Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  restartChains.set(kind, prev.then(() => gate, () => gate));
+  await prev.catch(() => undefined);
+  try {
+    if (!stillNeeded()) return;
+    await waitForIdleServe(kind, runId);
+    if (!stillNeeded()) return;
+    await (deps.ensure || ensure)({ kind, forceRestart: true });
+  } finally {
+    release();
+  }
 }
 
 /** Hold a serve restart until every other run on this harness has finished. */
@@ -246,14 +269,12 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
     // until the serve is restarted. Restarting kills every in-flight stream, so
     // this seat waits until the serve is idle instead of restarting immediately.
     syncSeatAgent(seeded);
-    await waitForIdleServe(kind, meta.runId);
-    if (serveBusy(kind, meta.runId)) {
-      const err = new Error("the harness is busy with another run, so this seat was not loaded");
-      err.status = 409;
-      err.code = "HARNESS_BUSY";
-      throw err;
+    restartWaiting.add(meta.runId);
+    try {
+      await restartWhenIdle(kind, meta.runId, () => agentNeedsServeRestart(seeded, kind));
+    } finally {
+      restartWaiting.delete(meta.runId);
     }
-    await (deps.ensure || ensure)({ kind, forceRestart: true });
     mutate((s) => {
       const key = sessionKeyForKind(kind);
       if (s[key]) delete s[key][to];
@@ -271,8 +292,8 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
       providerID: model.providerID,
       modelID: model.modelID,
     });
-    const watch = (deps.watchProviderTurn || watchProviderTurn)(sid, kind);
     const askedAt = Date.now();
+    const watch = (deps.watchProviderTurn || watchProviderTurn)(sid, kind, undefined, { askedAt });
     try {
       let outcome;
       if (watch.unwatched) {
@@ -280,37 +301,25 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
         outcome = await watch;
       } else {
         let promptError = null;
-        let armed = false;
-        const armOnce = () => {
-          if (armed) return;
-          armed = true;
-          watch.arm?.();
-        };
-        const backup = setTimeout(armOnce, providerStartMs());
-        const prompt = deps.promptSession(sid, body, kind).then(
-          () => {
-            clearTimeout(backup);
-            armOnce();
-            return null;
-          },
-          (err) => {
-            promptError = err;
-            clearTimeout(backup);
-            armOnce();
-            return null;
-          },
-        );
+        const prompt = deps.promptSession(sid, body, kind).catch((err) => {
+          promptError = err;
+          return null;
+        });
         outcome = await Promise.race([
           watch,
           prompt.then(() => (promptError ? Promise.reject(promptError) : watch)),
         ]);
-        clearTimeout(backup);
       }
       if (!outcome?.reached || outcome.error) {
         const err = new Error(outcome?.error || "the provider did not respond in time");
         err.code = outcome?.error ? outcome.code || "PROVIDER_ERROR" : "PROVIDER_TIMEOUT";
         err.status = 502;
-        if (!outcome?.done && !outcome?.cancelled) err.lateReply = watch.rest;
+        if (!outcome?.done && !outcome?.cancelled) {
+          err.lateReply = watch.rest;
+          err.askedAt = askedAt;
+          err.sid = sid;
+          err.kind = kind;
+        }
         throw err;
       }
       noteRun(meta.runId, to, "running", null);
@@ -352,6 +361,9 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
         code: described.code || err.code,
         cause: err,
         lateReply: err.lateReply,
+        askedAt: err.askedAt,
+        sid: err.sid,
+        kind: err.kind,
       });
     }
   }
@@ -449,6 +461,10 @@ export function wakeSeat(to, text, meta = {}) {
 }
 
 async function wakeSeatBody(to, text, meta = {}) {
+  if (meta.channel && !String(to).startsWith("channel:") && !String(to).startsWith("team:")) {
+    const { rememberSessionRoom } = await import("./chat.mjs");
+    rememberSessionRoom(String(to), meta.channel);
+  }
   if (String(to).startsWith("channel:")) return null;
   if (String(to).startsWith("team:")) {
     const target = teamWakeTarget(to, getState().teams || []);
@@ -569,8 +585,23 @@ async function wakeSeatBody(to, text, meta = {}) {
     await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${error}`);
     if (err.lateReply) {
       Promise.resolve(err.lateReply)
-        .then((final) => {
-          if (final?.reached && final.text) return recoverLateReply(to, seat, runMeta, final.text, final.messageId);
+        .then(async (final) => {
+          let text = final?.text || "";
+          let messageId = final?.messageId || null;
+          if (err.sid) {
+            try {
+              const rows = assistantText(await deps.sessionMessages(err.sid, err.kind)).filter(
+                (row) => row.text && (!row.created || !err.askedAt || row.created >= err.askedAt),
+              );
+              if (rows.length) {
+                text = rows.map((row) => row.text).join("\n");
+                messageId = rows[rows.length - 1].id || messageId;
+              }
+            } catch {
+              /* keep the streamed text */
+            }
+          }
+          if (text) return recoverLateReply(to, seat, runMeta, text, messageId);
           return null;
         })
         .catch(() => undefined);

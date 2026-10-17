@@ -163,9 +163,12 @@ export function seatModelPlan(seat, loaded = null) {
 function alreadyMirrored(channelId, seatId, part) {
   const text = String(part?.text || "");
   return (getState().messages || []).some((m) => {
-    if (m.channel !== channelId || m.system) return false;
+    if (m.system) return false;
     if (part?.id && m.sessionId === part.id) return true;
-    return m.seatId === seatId && Boolean(m.runId) && m.text === text;
+    if (m.seatId !== seatId || m.text !== text) return false;
+    // /bus/send and /messages post on the room. The session mirror must not
+    // copy that same reply into another channel without a run id.
+    return Boolean(m.runId) || m.channel === channelId;
   });
 }
 

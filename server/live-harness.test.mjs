@@ -10,6 +10,7 @@ const TOKEN = "rf_liveseats_token_0000001";
 
 function stubServer() {
   const hits = [];
+  const hitTimes = [];
   const sockets = new Set();
   const server = createServer((req, res) => {
     const chunks = [];
@@ -17,6 +18,7 @@ function stubServer() {
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       hits.push(raw);
+      hitTimes.push(Date.now());
       const chunk = (content, finish) =>
         `data: ${JSON.stringify({
           id: "c1",
@@ -25,6 +27,16 @@ function stubServer() {
         })}\n\n`;
       if (raw.includes("SILENT")) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        return;
+      }
+      if (raw.includes("SLOWHOLD")) {
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        setTimeout(() => {
+          res.write(chunk("slow-reply"));
+          res.write(chunk("", "stop"));
+          res.write("data: [DONE]\n\n");
+          res.end();
+        }, 4000);
         return;
       }
       if (raw.includes("SLOWAGREE")) {
@@ -48,8 +60,8 @@ function stubServer() {
             res.write(chunk("", "stop"));
             res.write("data: [DONE]\n\n");
             res.end();
-          }, 4000);
-        }, 4000);
+          }, 1500);
+        }, 5000);
         return;
       }
       const body = [chunk("stub-reply-ok"), chunk("", "stop"), "data: [DONE]\n\n"].join("");
@@ -66,6 +78,7 @@ function stubServer() {
       resolve({
         server,
         hits,
+        hitTimes,
         port: server.address().port,
         close() {
           for (const socket of sockets) socket.destroy();
@@ -301,7 +314,7 @@ test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }
     ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
     ROSTER_PROVIDER_MODELS: "stub-model",
     FEATHERLESS_API_KEY: "stub-key",
-    ROSTER_PROVIDER_TURN_MS: "30000",
+    ROSTER_PROVIDER_TURN_MS: "4000",
     ROSTER_RESTART_WAIT_MS: "30000",
     XAI_API_KEY: "",
     ANTHROPIC_API_KEY: "",
@@ -533,6 +546,260 @@ test("a provider that accepts the request and sends nothing stays blocked", { ti
         (state.messages || []).some((m) => m.channel === "ship" && m.system && String(m.text).includes(body.runId)),
         body.runId,
       );
+    }
+  } finally {
+    await core.stop();
+    await stub.close();
+  }
+});
+
+test("each endpoint posts a seat reply exactly once", { timeout: 120000 }, async (t) => {
+  if (!existsSync(bin)) {
+    t.skip("opencode 1.19.x is not installed");
+    return;
+  }
+  const stub = await stubServer();
+  const core = await bootCore({
+    OPENCODE_BIN: bin,
+    OPENCODE_PORT: String(33000 + Math.floor(Math.random() * 1500)),
+    OPENCODE_SYSTEM_PORT: String(34500 + Math.floor(Math.random() * 1500)),
+    ROSTER_HARNESS_AUTOSTART: "1",
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_NAME: "Featherless",
+    ROSTER_PROVIDER_BASE_URL: `http://127.0.0.1:${stub.port}/v1`,
+    ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
+    ROSTER_PROVIDER_MODELS: "stub-model",
+    FEATHERLESS_API_KEY: "stub-key",
+    ROSTER_PROVIDER_TURN_MS: "8000",
+    XAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    GOOGLE_GENERATIVE_AI_API_KEY: "",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    let health;
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      health = await (await fetch(`${core.base}/api/v1/health`)).json();
+      if (health.harnessReady) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(health.harnessReady, true);
+    const hired = await fetch(`${core.base}/api/v1/seats`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id: "rep", name: "Rep", model: "featherless/stub-model", job: "Count replies." }),
+    });
+    const seat = await hired.json();
+    assert.equal(hired.status, 201, JSON.stringify(seat));
+    const calls = [
+      (i) =>
+        fetch(`${core.base}/api/v1/bus/send`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: "you", to: seat.id, text: `bus reply ${i}`, wake: true, channel: "ship" }),
+        }),
+      (i) =>
+        fetch(`${core.base}/api/v1/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: `caller-${i}`, to: seat.id, text: `messages reply ${i}` }),
+        }),
+      (i) =>
+        fetch(`${core.base}/api/v1/channels/ship/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ text: `@Rep channel reply ${i}`, who: "You" }),
+        }),
+    ];
+    const runIds = [];
+    for (const call of calls) {
+      for (let i = 1; i <= 2; i++) {
+        const res = await call(i);
+        const body = await res.json();
+        assert.equal(res.status, 201, JSON.stringify(body));
+        assert.equal(body.started, true, JSON.stringify(body.wakeResults || body));
+        runIds.push(body.runId);
+      }
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+    const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    const replies = (state.messages || []).filter((m) => m.seatId === seat.id && !m.system);
+    assert.equal(replies.length, runIds.length, replies.map((m) => `${m.runId || "NO-RUNID"}:${m.text}`).join(" | "));
+    for (const id of runIds) {
+      assert.equal(replies.filter((m) => m.runId === id).length, 1, id);
+    }
+    assert.equal(replies.filter((m) => !m.runId).length, 0);
+  } finally {
+    await core.stop();
+    await stub.close();
+  }
+});
+
+test("a slow provider agrees on started false and still finishes", { timeout: 120000 }, async (t) => {
+  if (!existsSync(bin)) {
+    t.skip("opencode 1.19.x is not installed");
+    return;
+  }
+  const stub = await stubServer();
+  const core = await bootCore({
+    OPENCODE_BIN: bin,
+    OPENCODE_PORT: String(36000 + Math.floor(Math.random() * 1500)),
+    OPENCODE_SYSTEM_PORT: String(37500 + Math.floor(Math.random() * 1500)),
+    ROSTER_HARNESS_AUTOSTART: "1",
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_NAME: "Featherless",
+    ROSTER_PROVIDER_BASE_URL: `http://127.0.0.1:${stub.port}/v1`,
+    ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
+    ROSTER_PROVIDER_MODELS: "stub-model",
+    FEATHERLESS_API_KEY: "stub-key",
+    ROSTER_PROVIDER_TURN_MS: "1500",
+    XAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    GOOGLE_GENERATIVE_AI_API_KEY: "",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    let health;
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      health = await (await fetch(`${core.base}/api/v1/health`)).json();
+      if (health.harnessReady) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(health.harnessReady, true);
+    const hired = await fetch(`${core.base}/api/v1/seats`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id: "slow", name: "Slow", model: "featherless/stub-model", job: "Answers late." }),
+    });
+    const seat = await hired.json();
+    assert.equal(hired.status, 201, JSON.stringify(seat));
+    const calls = [
+      () =>
+        fetch(`${core.base}/api/v1/bus/send`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: "you", to: seat.id, text: "SLOWHOLD from the bus", wake: true, channel: "ship" }),
+        }),
+      () =>
+        fetch(`${core.base}/api/v1/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: "you", to: seat.id, text: "SLOWHOLD from messages" }),
+        }),
+      () =>
+        fetch(`${core.base}/api/v1/channels/ship/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ text: "SLOWHOLD please @Slow answer", who: "You" }),
+        }),
+    ];
+    const bodies = [];
+    for (const call of calls) {
+      const res = await call();
+      const body = await res.json();
+      assert.equal(res.status, 201, JSON.stringify(body));
+      assert.equal(body.started, false, JSON.stringify({ runId: body.runId, started: body.started }));
+      const deadline = Date.now() + 12000;
+      let state;
+      while (Date.now() < deadline) {
+        state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+        const run = (state.runs || []).find((item) => item.id === body.runId);
+        const replies = (state.messages || []).filter((m) => m.runId === body.runId && m.seatId === seat.id);
+        if (run?.status === "done" && replies.length === 1) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const run = (state.runs || []).find((item) => item.id === body.runId);
+      const replies = (state.messages || []).filter((m) => m.runId === body.runId && m.seatId === seat.id);
+      assert.equal(run?.status, "done", JSON.stringify(run));
+      assert.equal(replies.length, 1, JSON.stringify(replies));
+      assert.match(replies[0].text, /slow-reply/);
+      bodies.push(body);
+    }
+    assert.deepEqual(bodies.map((body) => body.started), [false, false, false]);
+  } finally {
+    await core.stop();
+    await stub.close();
+  }
+});
+
+test("two mentions in one message reach the provider together", { timeout: 120000 }, async (t) => {
+  if (!existsSync(bin)) {
+    t.skip("opencode 1.19.x is not installed");
+    return;
+  }
+  const stub = await stubServer();
+  const core = await bootCore({
+    OPENCODE_BIN: bin,
+    OPENCODE_PORT: String(39000 + Math.floor(Math.random() * 1500)),
+    OPENCODE_SYSTEM_PORT: String(40500 + Math.floor(Math.random() * 1500)),
+    ROSTER_HARNESS_AUTOSTART: "1",
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_NAME: "Featherless",
+    ROSTER_PROVIDER_BASE_URL: `http://127.0.0.1:${stub.port}/v1`,
+    ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
+    ROSTER_PROVIDER_MODELS: "stub-model",
+    FEATHERLESS_API_KEY: "stub-key",
+    ROSTER_PROVIDER_TURN_MS: "8000",
+    XAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    GOOGLE_GENERATIVE_AI_API_KEY: "",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    let health;
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      health = await (await fetch(`${core.base}/api/v1/health`)).json();
+      if (health.harnessReady) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(health.harnessReady, true);
+    for (const name of ["FastSeat", "SlowSeat"]) {
+      const res = await fetch(`${core.base}/api/v1/seats`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ id: name.toLowerCase(), name, model: "featherless/stub-model", job: name }),
+      });
+      assert.equal(res.status, 201, await res.text());
+    }
+    const before = stub.hits.length;
+    const res = await fetch(`${core.base}/api/v1/channels/ship/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "please @FastSeat and @SlowSeat go now", who: "You" }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 201, JSON.stringify(body.wakeResults));
+    const fast = (body.wakeResults || []).find((row) => row.seat === "fastseat");
+    const slow = (body.wakeResults || []).find((row) => row.seat === "slowseat");
+    const early = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    const why = (id) => (early.runs || []).find((item) => item.id === id);
+    assert.equal(fast?.started, true, JSON.stringify({ wake: body.wakeResults, fast: why(fast?.runId), slow: why(slow?.runId) }));
+    assert.equal(slow?.started, true, JSON.stringify({ wake: body.wakeResults, fast: why(fast?.runId), slow: why(slow?.runId) }));
+    const mine = stub.hits.slice(before);
+    const times = stub.hitTimes.slice(before);
+    const fastAt = mine.findIndex((hit) => hit.includes("You are FastSeat"));
+    const slowAt = mine.findIndex((hit) => hit.includes("You are SlowSeat"));
+    assert.ok(fastAt >= 0 && slowAt >= 0, String(mine.length));
+    assert.ok(Math.abs(times[fastAt] - times[slowAt]) < 2500, `${times[fastAt]} ${times[slowAt]}`);
+    const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    for (const row of [fast, slow]) {
+      assert.equal((state.runs || []).find((item) => item.id === row.runId)?.status, "done");
+      assert.equal((state.messages || []).filter((m) => m.runId === row.runId && !m.system).length, 1);
     }
   } finally {
     await core.stop();

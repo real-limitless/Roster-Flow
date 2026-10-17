@@ -93,6 +93,13 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
     state,
   );
   assert.equal(open, null);
+  const step = providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "step-start", messageID: "a1" } } },
+    "s1",
+    state,
+  );
+  assert.equal(step.reached, true);
+  assert.equal(step.done, false);
   const chunk = providerTurnVerdict(
     { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "stub-reply-ok", messageID: "a1" } } },
     "s1",
@@ -559,7 +566,7 @@ test("waitForIdleServe holds while another run is streaming", async () => {
       ...(s.runs || []).map((run) =>
         run.status === "starting" || run.status === "running" ? { ...run, status: "done" } : run,
       ),
-      { id: "run-stream-x", seatId: "build", status: "running", at: new Date().toISOString() },
+      { id: "run-stream-x", seatId: "build", status: "running", started: false, at: new Date().toISOString() },
     ];
     return null;
   });
@@ -582,9 +589,10 @@ test("a wake posts only the assistant message from this run", async () => {
   deps.harnessStatus = () => ({ harness: "up" });
   deps.createSession = async () => ({ id: "ses_hist" });
   deps.promptSession = async () => ({ ok: true });
+  const freshId = `hist-${Date.now()}`;
   deps.sessionMessages = async () => [
     { id: "old", info: { role: "assistant", time: { created: 1 } }, parts: [{ type: "text", text: "old-reply" }] },
-    { id: "hist-new", info: { role: "assistant", time: { created: Date.now() + 60_000 } }, parts: [{ type: "text", text: "new-reply" }] },
+    { id: freshId, info: { role: "assistant", time: { created: Date.now() + 60_000 } }, parts: [{ type: "text", text: "new-reply" }] },
   ];
   deps.watchProviderTurn = () => {
     const pending = Promise.resolve({ reached: true, text: "old-reply\nnew-reply", done: true });
@@ -609,7 +617,7 @@ test("a wake posts only the assistant message from this run", async () => {
       }),
     );
     assert.equal(posted[0].text, "new-reply");
-    assert.equal(posted[0].sessionId, "hist-new");
+    assert.equal(posted[0].sessionId, freshId);
   } finally {
     Object.assign(deps, prev);
   }

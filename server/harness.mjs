@@ -617,6 +617,11 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
     const info = props.info || {};
     if (info.role === "user" && info.id) state.userIds.add(info.id);
     if (info.role !== "assistant") return null;
+    if (info.id && state.askedAt && Number(info.time?.created || 0) && Number(info.time.created) < state.askedAt) {
+      state.oldIds = state.oldIds || new Set();
+      state.oldIds.add(info.id);
+      return null;
+    }
     if (info.id) state.assistantIds = state.assistantIds || new Set();
     if (info.id) {
       state.assistantIds.add(info.id);
@@ -630,11 +635,14 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
       return withMessageId(state, { reached: false, error: described.message, code: described.code, done: true });
     }
     if (info.time?.completed && state.text) return withMessageId(state, { reached: true, text: state.text, done: true });
+    // The first assistant text can arrive as a part before this update. That chunk
+    // already means the provider was reached, even though the turn is not done.
+    if (state.text) return withMessageId(state, { reached: true, text: state.text, done: false });
     return null;
   }
   if (ev?.type === "message.part.updated") {
     const part = props.part || {};
-    if (part.messageID && state.userIds?.has(part.messageID)) return null;
+    if (part.messageID && (state.userIds?.has(part.messageID) || state.oldIds?.has(part.messageID))) return null;
     if (part.messageID && part.text && part.type !== "step-start" && part.type !== "step-finish") {
       state.parts = state.parts || new Map();
       const prev = state.parts.get(part.messageID) || "";
@@ -646,8 +654,9 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
     const knownAssistant = part.messageID && state.assistantIds?.has(part.messageID);
     if (knownAssistant) state.messageId = part.messageID;
     if (knownAssistant && state.parts?.get(part.messageID)) state.text = state.parts.get(part.messageID);
-    if (knownAssistant && state.text) {
-      return withMessageId(state, { reached: true, text: state.text, done: false });
+    // step-start and the first text/delta are the provider reaching this turn.
+    if (knownAssistant && (state.text || part.type === "step-start" || part.type === "text")) {
+      return withMessageId(state, { reached: true, text: state.text || "", done: false });
     }
   }
   if (state.text && state.assistantIds?.size) return withMessageId(state, { reached: true, text: state.text, done: false });
@@ -724,7 +733,7 @@ function eventStream(kind) {
  * MaxListenersExceededWarning into opencode-serve.log.
  * When this process is not running a serve, the prompt mock is the signal.
  */
-export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = providerStartMs()) {
+export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = providerStartMs(), { askedAt = 0 } = {}) {
   const inst = instances[harnessKind(kind)];
   if (!inst?.baseUrl || !sessionId) {
     const verdict = { reached: true, unwatched: true, done: true, text: "" };
@@ -736,7 +745,7 @@ export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = provide
     return idle;
   }
   const entry = eventStream(kind);
-  const state = { userIds: new Set(), assistantIds: new Set(), text: "" };
+  const state = { userIds: new Set(), assistantIds: new Set(), oldIds: new Set(), text: "", askedAt };
   let timer;
   let listener;
   let firstSettled = false;
@@ -766,6 +775,7 @@ export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = provide
     if (firstSettled || timer) return;
     timer = setTimeout(() => settleFirst({ reached: false, timeout: true, done: false, text: "" }), timeoutMs);
   };
+  arm();
   listener = (ev) => {
     const verdict = providerTurnVerdict(ev, sessionId, state);
     if (!verdict) return;
