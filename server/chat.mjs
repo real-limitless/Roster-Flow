@@ -161,7 +161,7 @@ export function collectWakeTargets(channelId, text, state = getState()) {
 }
 
 /** A System line, unless the room's latest message is already that line. */
-function statusMessage(channelId, text) {
+export function statusMessage(channelId, text) {
   const last = (getState().messages || []).filter((m) => m.channel === channelId).slice(-1)[0];
   if (last?.system && last.text === text) return last;
   return postMessage(channelId, "System", "bot", text, { system: true });
@@ -341,13 +341,17 @@ async function wakeTarget(channelId, text, from, target) {
     detail: { reason: target.reason, model, harness: ready.kind },
   });
   const woke = await deps.wakeSeat(target.to, text, meta);
-  if (!woke || woke.started === false) stopThinking(channelId, seatId);
+  // A slow first chunk returns started:false while the turn is still open. The row stays until the reply, a real error, or the 5 minute stuck-run timeout.
+  const stillPending = woke?.pending === true;
+  if (!woke || (woke.started === false && !stillPending)) stopThinking(channelId, seatId);
+  const name = ready.seat?.name || seatId;
   if (woke?.paused) {
-    statusMessage(channelId, `${ready.seat?.name || seatId} is paused — wake skipped.`);
+    const why = woke.reason === "budget" ? `${name} is over its token budget — wake skipped.` : `${name} is paused — wake skipped.`;
+    statusMessage(channelId, why);
   } else if (woke?.offline) {
     statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
-  } else if (woke?.error) {
-    statusMessage(channelId, `${ready.seat?.name || seatId} did not start run ${woke.runId || ""}: ${woke.error}`.trim());
+  } else if (woke?.error && !stillPending) {
+    statusMessage(channelId, `${name} did not start run ${woke.runId || ""}: ${woke.error}`.trim());
   } else if (woke?.human) {
     statusMessage(channelId, `${ready.seat?.name || seatId} is a human seat — notified, no model.`);
   }

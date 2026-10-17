@@ -21,7 +21,7 @@ import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
-import { pendingWake, postBus, publishedWake, wakeSeat, cycleSafe } from "./bus.mjs";
+import { pendingWake, postBus, publishedWake, roomForApiCall, wakeSeat, cycleSafe } from "./bus.mjs";
 import {
   callbackSecretInfo,
   deliverCallback,
@@ -1264,10 +1264,13 @@ const server = createServer(async (req, res) => {
         json(res, 429, { error: "cycle detector: too many ping-pongs" });
         return;
       }
-      let channel = body.channel ? String(body.channel) : roomOfSession(body.sessionId) || "ship";
-      if (String(to).startsWith("channel:")) channel = to.slice("channel:".length);
+      const posted = String(to).startsWith("channel:")
+        ? { channel: to.slice("channel:".length), note: null }
+        : roomForApiCall({ channel: body.channel, sessionRoom: roomOfSession(body.sessionId) });
+      const channel = posted.channel;
       const fromSeat = getState().seats.find((s) => s.id === from);
       await postRoomMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from }, githubHint(body));
+      if (posted.note) postMessage(channel, "System", "bot", posted.note, { system: true });
       const entry = postBus({
         from,
         to,
@@ -1279,7 +1282,7 @@ const server = createServer(async (req, res) => {
       });
       const woke = await pendingWake(entry);
       const fields = woke ? publishedWake(woke) : null;
-      json(res, 201, fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry);
+      json(res, 201, { ...(fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry), ...(posted.note ? { note: posted.note } : {}) });
       return;
     }
     if (pathname === "/api/v1/bus" && method === "GET") {
@@ -1299,17 +1302,18 @@ const server = createServer(async (req, res) => {
         return;
       }
       const fromSeat = getState().seats.find((s) => s.id === body.from);
-      if (!body.channel && body.sessionId) body.channel = roomOfSession(body.sessionId) || undefined;
-      const msg = await postRoomMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
+      const posted = roomForApiCall({ channel: body.channel, sessionRoom: roomOfSession(body.sessionId) });
+      const msg = await postRoomMessage(posted.channel, fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
         ...(body.jobId ? { jobId: String(body.jobId) } : {}),
       }, githubHint(body));
+      if (posted.note) postMessage(posted.channel, "System", "bot", posted.note, { system: true });
       void mirrorToSlack(msg, { kind: body.kind }).catch(() => undefined);
-      const entry = postBus({ ...body, text, channel: body.channel || (body.wake ? "ship" : undefined) });
+      const entry = postBus({ ...body, text, channel: posted.channel });
       const woke = await pendingWake(entry);
       const fields = woke ? publishedWake(woke) : null;
-      json(res, 201, fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry);
+      json(res, 201, { ...(fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry), ...(posted.note ? { note: posted.note } : {}) });
       return;
     }
     if (pathname === "/api/v1/github" && method === "GET") {
