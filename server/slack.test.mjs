@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { emptyState } from "./seed.mjs";
 import { mutate, getState } from "./store.mjs";
+import { spawnedServeCount, stopSpawnedServes, whichOpenCode } from "./harness.mjs";
 import {
   deps,
   handleSlackAction,
@@ -12,6 +13,23 @@ import {
   slackStatus,
   verifySlackRequest,
 } from "./slack.mjs";
+import { deps as chatDeps } from "./chat.mjs";
+
+// A Slack mention wakes a seat, which can start opencode. Never bind the shared
+// :14180, and kill whatever this file spawned.
+process.env.OPENCODE_PORT = String(25000 + Math.floor(Math.random() * 10000));
+process.env.OPENCODE_SYSTEM_PORT = String(35000 + Math.floor(Math.random() * 10000));
+
+after(async () => {
+  if (!whichOpenCode() && spawnedServeCount() === 0) return;
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline && spawnedServeCount() === 0) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  await stopSpawnedServes();
+  await new Promise((r) => setTimeout(r, 200));
+  if (spawnedServeCount()) await stopSpawnedServes();
+});
 
 function resetLive() {
   mutate((s) => {
@@ -37,7 +55,16 @@ test("room map is env-only and has no token", () => {
 test("inbound Slack human message lands in #ship and can mention @eng", async () => {
   resetLive();
   const prev = deps.env;
+  const prevEnsure = chatDeps.ensure;
   deps.env = { SLACK_CHANNEL_SHIP: "C-SHIP", ROSTER_SLACK_SKIP_VERIFY: "1" };
+  // The mention wakes a seat. Do not start the real serve from this file;
+  // after() still kills one if a later change does.
+  chatDeps.ensure = async () => {
+    const err = new Error("OpenCode CLI is not installed");
+    err.status = 409;
+    err.code = "OPENCODE_MISSING";
+    throw err;
+  };
   try {
     const before = getState().messages.length;
     const out = await handleSlackEvent({
@@ -51,6 +78,7 @@ test("inbound Slack human message lands in #ship and can mention @eng", async ()
     assert.ok(out.wakes >= 1 || (out.mentions && out.mentions.length));
   } finally {
     deps.env = prev;
+    chatDeps.ensure = prevEnsure;
   }
 });
 

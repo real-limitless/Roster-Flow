@@ -8,6 +8,7 @@ import {
   harnessKindForSeat,
   sessionKeyForKind,
   loadedModels,
+  seatModelGap,
   describeOpenCodeError,
   lastAssistantFailure,
   turnUsage,
@@ -864,6 +865,13 @@ async function wakeSeatBody(to, text, meta = {}) {
     noteRun(runMeta.runId, to, "blocked", "harness offline");
     await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: the ${kind} OpenCode harness is offline.`);
     return { offline: true, seat: to, harness: kind, runId: runMeta.runId, started: false };
+  }
+  const loadedList = await deps.loadedModels(kind).catch(() => null);
+  const gap = seatModelGap(seat, Array.isArray(loadedList) ? loadedProviderIds(loadedList) : null);
+  if (gap) {
+    noteRun(runMeta.runId, to, "blocked", gap);
+    await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${gap}`);
+    return { error: gap, code: "PROVIDER_NOT_LOADED", seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
   const room = roomSessionChannel(runMeta, to);
   const context = room ? roomContext(getState(), to, room, { exclude: text }) : null;

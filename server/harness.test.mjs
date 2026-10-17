@@ -134,14 +134,55 @@ test("serveEnv gives the plugin CORE's internal token unless ROSTER_API_TOKEN is
   assert.equal(harness.serveEnv("company", { PATH: "/bin", ROSTER_API_TOKEN: "rf_user" }).ROSTER_API_TOKEN, "rf_user");
 });
 
-test("an empty OPENCODE_CONFIG (compose default) keeps ROSTER_OPENCODE_DIR; a set one overrides the company serve only", () => {
+test("an empty OPENCODE_CONFIG (compose default) keeps ROSTER_OPENCODE_DIR; a set one does not retarget the system serve", () => {
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "" }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "  " }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
-  const override = harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
-  assert.equal(override.OPENCODE_CONFIG, "/etc/oc/extra.json");
-  assert.equal(override.OPENCODE_CONFIG_DIR, ocDir);
+  const company = harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
+  assert.equal(company.OPENCODE_CONFIG_DIR, ocDir);
   const system = harness.serveEnv("system", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
   assert.equal(system.OPENCODE_CONFIG, join(dataDir, "system", ".opencode", "opencode.json"));
+});
+
+test("an empty or extra OPENCODE_CONFIG still points both serves at the file this process writes", () => {
+  assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "" }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
+  assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "  " }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
+  const company = harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
+  assert.equal(company.OPENCODE_CONFIG, join(ocDir, "opencode.json"));
+  assert.equal(company.OPENCODE_CONFIG_DIR, ocDir);
+  assert.equal(company.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+  const system = harness.serveEnv("system", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
+  assert.equal(system.OPENCODE_CONFIG, join(dataDir, "system", ".opencode", "opencode.json"));
+  assert.equal(system.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+});
+
+test("one unhirable seat does not mark the company harness down", () => {
+  const wiki = { id: "wiki-scribe", name: "Wiki Scribe", kind: "bot", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash" };
+  const build = { id: "build", name: "Eng.Build", kind: "bot", model: "opencode/big-pickle" };
+  const state = {
+    seats: [
+      wiki,
+      build,
+      { id: "architect", name: "Architect", kind: "bot", system: true, model: "featherless/stub-model" },
+      { id: "human", name: "You", kind: "human", model: "featherless/stub-model" },
+    ],
+  };
+  assert.equal(harness.seatProviderGap(state, ["opencode", "featherless"]), null);
+  const mixed = harness.seatReadiness(state, ["opencode"]);
+  assert.equal(mixed.find((row) => row.seat === "wiki-scribe").ready, false);
+  assert.match(mixed.find((row) => row.seat === "wiki-scribe").error, /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
+  assert.match(mixed.find((row) => row.seat === "wiki-scribe").error, /loaded \[opencode\]/);
+  assert.equal(mixed.find((row) => row.seat === "build").ready, true);
+  assert.equal(harness.companyHarnessReady(true, mixed), true);
+  assert.equal(harness.seatProviderGap(state, ["opencode"]), null);
+  const onlyBad = harness.seatReadiness({ seats: [wiki] }, ["opencode"]);
+  assert.equal(harness.companyHarnessReady(true, onlyBad), false);
+  assert.match(harness.seatProviderGap({ seats: [wiki] }, []), /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
+  assert.match(harness.seatProviderGap({ seats: [wiki] }, ["opencode"]), /loaded \[opencode\]/);
+  const report = harness.harnessSeatReport(state, { harness: "up", loadedProviders: ["opencode"] });
+  assert.equal(report.harnessReady, true);
+  assert.equal(report.harnessError, null);
+  assert.equal(harness.harnessSeatReport(state, { harness: "offline", loadedProviders: [] }).harnessReady, false);
+  assert.equal(harness.harnessSeatReport({ seats: [wiki] }, { harness: "up", loadedProviders: ["opencode"] }).harnessReady, false);
 });
 
 test("serveChildEnv passes through every {env:VAR} a provider block references", () => {
@@ -171,6 +212,8 @@ test("ensure spawns both serves with the roster config and key, and reports load
   const seen = JSON.parse(readFileSync(join(envOut, "roster-flow.json"), "utf8"));
   assert.equal(seen.env.OPENCODE_CONFIG, join(ocDir, "opencode.json"));
   assert.equal(seen.env.OPENCODE_CONFIG_DIR, ocDir);
+  assert.equal(seen.env.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+  assert.equal(seen.cwd, join(dir, "ws"));
   assert.equal(seen.env.FEATHERLESS_API_KEY, "fl-test-key");
   const written = JSON.parse(readFileSync(seen.env.OPENCODE_CONFIG, "utf8"));
   assert.ok(written.provider.featherless);
@@ -187,6 +230,49 @@ test("ensure spawns both serves with the roster config and key, and reports load
   const loaded = await harness.loadedModels("company");
   assert.ok(loaded.some((m) => m.providerID === "featherless" && m.modelID === "Qwen/Qwen2.5-Coder-32B-Instruct"));
   assert.deepEqual(harness.knownLoadedModels("company"), loaded);
+});
+
+test("operator mcp, username, and an extra provider survive on both harnesses", async () => {
+  const operatorPath = join(dir, "operator.json");
+  writeFileSync(
+    operatorPath,
+    JSON.stringify({
+      username: "ada",
+      mcp: { wiki: { type: "remote", url: "https://wiki.example/mcp", enabled: true } },
+      plugin: ["operator-plugin"],
+      theme: "system",
+      provider: {
+        operatorprov: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "Operator",
+          options: { apiKey: "op-key" },
+          models: { "extra-model": { name: "Extra" } },
+        },
+        featherless: { npm: "nope", name: "should-not-win", options: {}, models: {} },
+      },
+    }),
+  );
+  const prev = process.env.OPENCODE_CONFIG;
+  process.env.OPENCODE_CONFIG = operatorPath;
+  try {
+    writeCompany({ featherless: FEATHERLESS_BLOCK });
+    await harness.ensure({ kind: "company" });
+    await harness.ensure({ kind: "system" });
+    for (const file of [harness.configPaths("company").file, harness.configPaths("system").file]) {
+      const cfg = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(cfg.username, "ada", file);
+      assert.equal(cfg.mcp.wiki.url, "https://wiki.example/mcp", file);
+      assert.equal(cfg.mcp.wiki.enabled, true, file);
+      assert.equal(cfg.theme, "system", file);
+      assert.equal(cfg.provider.operatorprov.name, "Operator", file);
+      assert.equal(cfg.provider.featherless.name, "Featherless", file);
+      assert.ok(cfg.plugin.includes("roster-flow-opencode"), file);
+      assert.ok(cfg.plugin.includes("operator-plugin"), file);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_CONFIG;
+    else process.env.OPENCODE_CONFIG = prev;
+  }
 });
 
 test("a serve that dies reads offline instead of a stale up", async () => {

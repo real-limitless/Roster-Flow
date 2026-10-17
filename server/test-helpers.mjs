@@ -5,6 +5,30 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const cores = new Set();
+
+function signalGroup(child, signal) {
+  if (!child?.pid || child.exitCode != null) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+function killCores(signal) {
+  for (const child of cores) signalGroup(child, signal);
+}
+
+process.on("SIGTERM", () => {
+  killCores("SIGKILL");
+  process.exit(143);
+});
+process.on("exit", () => killCores("SIGKILL"));
 
 /** Boot a throwaway CORE on a random port with an isolated data dir. Test-only. */
 export async function bootCore(env) {
@@ -25,7 +49,10 @@ export async function bootCore(env) {
       ...env,
     },
     stdio: "ignore",
+    detached: true,
   });
+  cores.add(child);
+  child.once("exit", () => cores.delete(child));
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) {
     try {
@@ -40,12 +67,13 @@ export async function bootCore(env) {
     base,
     dir,
     async stop() {
-      child.kill("SIGTERM");
+      signalGroup(child, "SIGTERM");
       await Promise.race([
         new Promise((r) => child.once("exit", r)),
         new Promise((r) => setTimeout(r, 3000)),
       ]);
-      if (child.exitCode == null) child.kill("SIGKILL");
+      if (child.exitCode == null) signalGroup(child, "SIGKILL");
+      cores.delete(child);
       for (let i = 0; i < 5; i++) {
         try {
           rmSync(dir, { recursive: true, force: true });
@@ -56,5 +84,26 @@ export async function bootCore(env) {
       }
     },
   };
+}
+
+/** Kill every CORE this process booted, including opencode children in its group. */
+export async function stopAllCores() {
+  const pending = [...cores];
+  await Promise.all(
+    pending.map(
+      (child) =>
+        new Promise((resolve) => {
+          signalGroup(child, "SIGTERM");
+          const timer = setTimeout(() => {
+            signalGroup(child, "SIGKILL");
+            resolve();
+          }, 3000);
+          child.once("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        }),
+    ),
+  );
 }
 
