@@ -115,6 +115,8 @@ export function meterWake(state, event = {}) {
     runId: event.runId || null,
     teamId: seat.team || null,
     projectId: seat.projectId || null,
+    channelId: event.channelId || null,
+    threadId: event.threadId || null,
     model: event.model || seat.model || null,
     inputTokens,
     outputTokens,
@@ -131,6 +133,73 @@ export function meterWake(state, event = {}) {
   return { seat, row, over: seatOverBudget(seat) };
 }
 
+/**
+ * Replace a wake's estimated usage row with what OpenCode reported for the turn
+ * (`turnUsage`). Safe to call again as the turn grows: the seat's spend moves by
+ * the difference each time.
+ */
+export function applyTurnUsage(state, { seatId, runId, usage } = {}) {
+  if (!runId || !usage) return null;
+  const row = (state.usage || []).find((r) => r.runId === runId && r.seatId === seatId);
+  const seat = (state.seats || []).find((s) => s.id === seatId);
+  if (!row || !seat) return null;
+  const inputTokens = Math.max(0, Math.floor(usage.input || 0));
+  const outputTokens = Math.max(0, Math.floor(usage.output || 0));
+  const reasoningTokens = Math.max(0, Math.floor(usage.reasoning || 0));
+  const tokens = inputTokens + outputTokens + reasoningTokens;
+  const before = Number(row.tokens || 0);
+  Object.assign(row, {
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cacheReadTokens: Math.max(0, Math.floor(usage.cacheRead || 0)),
+    cacheWriteTokens: Math.max(0, Math.floor(usage.cacheWrite || 0)),
+    tokens,
+    usdEstimate: usage.cost > 0 ? Number(usage.cost.toFixed(6)) : estimateUsd(row.model, inputTokens, outputTokens + reasoningTokens),
+    metered: "opencode",
+  });
+  seat.spent = Math.max(0, Number(seat.spent || 0) + tokens - before);
+  applyBudgetSideEffects(seat);
+  return { seat, row, over: seatOverBudget(seat) };
+}
+
+/**
+ * Meter a subagent session (`task`) against the seat it ran as. One row per
+ * child session, keyed by `runId`; later calls rewrite it like `applyTurnUsage`.
+ */
+export function meterChildSession(state, { seatId, runId, usage, channelId = null, threadId = null, parentSeatId = null } = {}) {
+  if (!runId) return null;
+  let row = (state.usage || []).find((r) => r.runId === runId && r.seatId === seatId);
+  if (!row) {
+    const made = meterWake(state, { seatId, runId, inputTokens: 0, outputTokens: 0, source: "task", channelId, threadId });
+    if (!made) return null;
+    row = made.row;
+    row.parentSeatId = parentSeatId;
+  }
+  if (!usage) {
+    const seat = (state.seats || []).find((s) => s.id === seatId);
+    return { seat, row, over: seatOverBudget(seat) };
+  }
+  return applyTurnUsage(state, { seatId, runId, usage });
+}
+
+/** Tokens the room's wakes used on the UTC day of `now`. */
+export function roomSpentToday(state, channelId, now = Date.now()) {
+  const day = new Date(now).toISOString().slice(0, 10);
+  let total = 0;
+  for (const row of state.usage || []) {
+    if (row.channelId !== channelId) continue;
+    if (String(row.time || "").slice(0, 10) !== day) continue;
+    total += Number(row.tokens || 0);
+  }
+  return total;
+}
+
+export function nextUtcMidnight(now = Date.now()) {
+  const d = new Date(now);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)).toISOString();
+}
+
 export function publicUsageRow(row = {}) {
   const blocked = new Set(["apiKey", "token", "secret", "authorization", "password", "key"]);
   const out = {};
@@ -145,12 +214,14 @@ export function listUsage(state, query = {}) {
   const projectId = query.projectId || null;
   const teamId = query.teamId || null;
   const seatId = query.seatId || null;
+  const channelId = query.channelId || null;
   return (state.usage || [])
     .map(publicUsageRow)
     .filter((row) => {
       if (projectId && row.projectId !== projectId) return false;
       if (teamId && row.teamId !== teamId) return false;
       if (seatId && row.seatId !== seatId) return false;
+      if (channelId && row.channelId !== channelId) return false;
       return true;
     });
 }
@@ -160,14 +231,20 @@ const CSV_COLS = [
   "seatId",
   "teamId",
   "projectId",
+  "channelId",
+  "threadId",
   "model",
   "inputTokens",
   "outputTokens",
+  "reasoningTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
   "tokens",
   "usdEstimate",
   "hours",
   "source",
   "runId",
+  "metered",
 ];
 
 export function usageCsv(rows) {

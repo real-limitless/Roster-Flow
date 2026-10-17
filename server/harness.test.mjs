@@ -113,6 +113,36 @@ test("serveEnv sets OPENCODE_CONFIG and OPENCODE_CONFIG_DIR for both serves", ()
   assert.equal(system.FEATHERLESS_API_KEY, "k");
 });
 
+test("turnUsage sums tokens and cost of the turn's assistant messages, tool steps included", () => {
+  const msgs = [
+    { info: { role: "user", time: { created: 100 } }, parts: [] },
+    { info: { role: "assistant", time: { created: 50 }, tokens: { input: 999, output: 999, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] },
+    { info: { role: "assistant", time: { created: 110 }, cost: 0.01, tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 300, write: 1 } } }, parts: [] },
+    { info: { role: "assistant", time: { created: 120 }, cost: 0.02, tokens: { input: 150, output: 30, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "done" }] },
+  ];
+  const u = harness.turnUsage(msgs, 100);
+  assert.deepEqual({ ...u, cost: Number(u.cost.toFixed(4)) }, { input: 250, output: 50, reasoning: 5, cacheRead: 300, cacheWrite: 1, cost: 0.03, messages: 2 });
+  assert.equal(harness.turnUsage([{ info: { role: "assistant", time: { created: 1 } } }]), null);
+});
+
+test("serveEnv gives the plugin CORE's internal token unless ROSTER_API_TOKEN is set", async () => {
+  const { internalPluginToken, isInternalPluginToken } = await import("./internal-token.mjs");
+  const env = harness.serveEnv("company", { PATH: "/bin" });
+  assert.equal(env.ROSTER_API_TOKEN, internalPluginToken());
+  assert.ok(isInternalPluginToken(env.ROSTER_API_TOKEN));
+  assert.equal(harness.serveEnv("system", { PATH: "/bin", ROSTER_API_TOKEN: " " }).ROSTER_API_TOKEN, internalPluginToken());
+  assert.equal(harness.serveEnv("company", { PATH: "/bin", ROSTER_API_TOKEN: "rf_user" }).ROSTER_API_TOKEN, "rf_user");
+});
+
+test("an empty OPENCODE_CONFIG (compose default) keeps ROSTER_OPENCODE_DIR; a set one does not retarget the system serve", () => {
+  assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "" }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
+  assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "  " }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
+  const company = harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
+  assert.equal(company.OPENCODE_CONFIG_DIR, ocDir);
+  const system = harness.serveEnv("system", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
+  assert.equal(system.OPENCODE_CONFIG, join(dataDir, "system", ".opencode", "opencode.json"));
+});
+
 test("an empty or extra OPENCODE_CONFIG still points both serves at the file this process writes", () => {
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "" }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "  " }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
@@ -348,4 +378,11 @@ test("flattenConfigProviders reads OpenCode's /config/providers shape", () => {
     ],
   );
   assert.equal(harness.flattenConfigProviders({}), null);
+});
+
+test("sessionAgent reads the agent a session ran as", () => {
+  assert.equal(harness.sessionAgent([{ info: { role: "user", agent: "build" } }]), "build");
+  assert.equal(harness.sessionAgent([{ info: { role: "user" } }, { info: { role: "assistant", mode: "review" } }]), "review");
+  assert.equal(harness.sessionAgent([{ info: { role: "user", mode: "x" } }]), null);
+  assert.equal(harness.sessionAgent([]), null);
 });

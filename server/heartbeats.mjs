@@ -1,6 +1,31 @@
 import { listInbox } from "./inbox.mjs";
 import { hasWakeThisMinute } from "./routines.mjs";
 import { seatOverBudget } from "./budget.mjs";
+import { channelsForSeat } from "./channels.mjs";
+import { parseMentions } from "./mentions.mjs";
+
+/**
+ * Room messages that @mention the seat and came after its last post and last
+ * wake in that room. Mentions that woke the seat move its room cursor, so only
+ * ones that never reached it (rate limit, pause, thread limits) count.
+ */
+export function unansweredMentions(state, seatId) {
+  const out = [];
+  const messages = state.messages || [];
+  for (const room of channelsForSeat(state, seatId)) {
+    const inRoom = messages.filter((m) => m.channel === room.id);
+    const cursor = state.roomSessions?.[seatId]?.[room.id]?.cursor || null;
+    let from = 0;
+    inRoom.forEach((m, i) => {
+      if ((m.seatId === seatId && !m.system) || (cursor && m.id === cursor)) from = i + 1;
+    });
+    for (const m of inRoom.slice(from)) {
+      if (m.system || m.seatId === seatId) continue;
+      if (parseMentions(m.text, state).some((x) => x.kind === "seat" && x.id === seatId)) out.push({ channelId: room.id, messageId: m.id });
+    }
+  }
+  return out;
+}
 
 export function heartbeatMinutes(seat) {
   const n = Number(seat?.heartbeatMinutes);
@@ -18,7 +43,8 @@ export function claimedTasksForSeat(state, seatId) {
 export function heartbeatHasWork(state, seat) {
   const box = listInbox(state, seat.id);
   if ((box?.unread || 0) > 0) return true;
-  return claimedTasksForSeat(state, seat.id).length > 0;
+  if (claimedTasksForSeat(state, seat.id).length > 0) return true;
+  return unansweredMentions(state, seat.id).length > 0;
 }
 
 export function heartbeatSkipReason(state, seat) {
@@ -41,12 +67,17 @@ function intervalElapsed(seat, now) {
 export function heartbeatPrompt(seat, state) {
   const unread = listInbox(state, seat.id)?.unread || 0;
   const claimed = claimedTasksForSeat(state, seat.id).length;
+  const mentions = unansweredMentions(state, seat.id);
+  const rooms = [...new Set(mentions.map((m) => `#${m.channelId}`))];
   return [
     "Heartbeat check. Read your unread inbox and any claimed tasks.",
     `Unread: ${unread}. Claimed tasks: ${claimed}.`,
+    mentions.length ? `Unanswered mentions: ${mentions.length} (in ${rooms.join(", ")}). Read those rooms and answer with roster_report channel=<room>.` : "",
     "Do not deploy or merge. Do not run denied tools.",
     "If nothing needs you, reply caught up.",
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function tickHeartbeats(state, now = Date.now()) {

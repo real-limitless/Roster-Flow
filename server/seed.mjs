@@ -1,14 +1,16 @@
 /** Starter company — keep aligned with src/data.ts */
 import { examplePayload } from "roster-flow-blocks";
 import { skipOnboarding } from "./flags.mjs";
+import { ensureTeamRooms } from "./channels.mjs";
 import { FEATHERLESS_CHAT_MODEL } from "./model-defaults.mjs";
+import { normalizeLimits, normalizeRespond } from "./room-config.mjs";
 
 export const seats = [
   { id: "you", name: "You", role: "Board", kind: "human", seatType: "human", job: "Approve deploys. Fire any seat.", tools: ["approve"], deny: [], status: "idle" },
   { id: "maya", name: "Maya", role: "VP Eng", kind: "human", seatType: "human", reportsTo: "you", job: "Owns product and engineering seats.", tools: ["approve"], deny: [], status: "idle" },
   { id: "jules", name: "Jules", role: "Eng lead", kind: "human", seatType: "human", reportsTo: "maya", team: "eng", projectId: "billing", job: "Runs @eng. Attaches harness when a bot stalls.", tools: ["edit", "approve"], deny: ["deploy"], status: "idle" },
   { id: "priya", name: "Priya", role: "QA lead", kind: "human", seatType: "human", reportsTo: "you", job: "Owns the QA gate. Signs staging.", tools: ["approve"], deny: ["deploy"], status: "idle" },
-  { id: "channel", name: "Channel", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: FEATHERLESS_CHAT_MODEL, persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Own @channel. Route via the bus. Do not edit or deploy. Do not wake every bot — only specialists whose job matches.", job: "Compile sentences into runs. Own @channel. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
+  { id: "channel", name: "Channel", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: FEATHERLESS_CHAT_MODEL, persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Own @channel. Route via the bus. Do not edit or deploy. Do not wake every bot — only specialists whose job matches. When you answer for a room nobody else answers, reply to humans briefly in plain text.", job: "Compile sentences into runs. Own @channel. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
   { id: "architect", name: "Architect", role: "Org design", kind: "bot", seatType: "specialist", reportsTo: "you", model: FEATHERLESS_CHAT_MODEL, persona: "Org architect. Dry, specific. Propose plans. Never ship code.", instructions: "Propose an OrgPlan JSON only: replace_org, create_project, create_team, hire, reparent, fire. Cap 48 ops. Do not apply. Do not edit or deploy.", job: "Staff projects and suggest layoffs. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
   { id: "mcp-guest", name: "MCP Guest", role: "Guest", kind: "bot", seatType: "harness", reportsTo: "you", mcpGuest: true, origin: "mcp", job: "External agent via CORE /mcp. Not an OpenCode loop.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
   { id: "product", name: "Product", role: "Brief", kind: "bot", seatType: "specialist", reportsTo: "maya", projectId: "billing", model: FEATHERLESS_CHAT_MODEL, persona: "Product brief writer. Acceptance over opinions.", instructions: "Turn channel talk into a brief and acceptance list. No edits, no bash write.", knowledge: "Project billing: webhook idempotency. Acceptance over opinions. Confirm on deploy.", skills: ["brief"], job: "Write acceptance. No edits.", tools: ["read", "grep", "webfetch"], deny: ["edit", "bash"], status: "idle" },
@@ -299,6 +301,7 @@ export function migrateOrgsAndProjects(state) {
     if (!Array.isArray(state.architectPlans)) state.architectPlans = [];
     if (!state.systemSessions || typeof state.systemSessions !== "object") state.systemSessions = {};
     if (!state.sessionRooms || typeof state.sessionRooms !== "object") state.sessionRooms = {};
+    if (!state.roomSessions || typeof state.roomSessions !== "object") state.roomSessions = {};
     return state;
   }
   if (!state.projects.some((p) => p.id === "billing")) {
@@ -325,6 +328,7 @@ export function migrateOrgsAndProjects(state) {
   if (!Array.isArray(state.architectPlans)) state.architectPlans = [];
   if (!state.systemSessions || typeof state.systemSessions !== "object") state.systemSessions = {};
   if (!state.sessionRooms || typeof state.sessionRooms !== "object") state.sessionRooms = {};
+  if (!state.roomSessions || typeof state.roomSessions !== "object") state.roomSessions = {};
   return state;
 }
 
@@ -435,8 +439,12 @@ export function migrateState(state) {
       topic: ch.topic || "",
       teamIds: teamIds.length ? teamIds : seeded.teamIds,
       seatIds: [...new Set((seatIds.length ? seatIds : seeded.seatIds).concat(["channel"]))],
+      leadSeatId: ch.leadSeatId ? String(ch.leadSeatId) : null,
+      ...(ch.respond !== undefined ? { respond: normalizeRespond(ch.respond) } : {}),
+      limits: normalizeLimits(ch.limits),
     };
   });
+  ensureTeamRooms(next);
   migrateCompanyLoop(next);
   if (!holdOrgSeed(next) && !(next.seats || []).some((s) => s.id === "mcp-guest")) {
     const guest = seats.find((s) => s.id === "mcp-guest");
@@ -457,6 +465,7 @@ function baseFields() {
     sessions: {},
     systemSessions: {},
     sessionRooms: {},
+    roomSessions: {},
     providers: [],
     defaultProvider: "",
     defaultModel: "",

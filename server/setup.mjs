@@ -6,6 +6,7 @@ import { publicJob } from "./jobs.mjs";
 import { publicRoutine } from "./routines.mjs";
 import { emptyOrgState, migrateState, pendingState, starterState } from "./seed.mjs";
 import { publicSeats } from "./adapters.mjs";
+import { publicChannel } from "./channels.mjs";
 
 export function publicState(state) {
   if (!state || typeof state !== "object") return state;
@@ -13,6 +14,7 @@ export function publicState(state) {
   return {
     ...rest,
     seats: publicSeats(rest.seats || []),
+    channels: (rest.channels || []).map((c) => publicChannel(c, state)),
     jobs: (rest.jobs || []).map(publicJob),
     routines: (rest.routines || []).map(publicRoutine),
     inboxUnread: unreadBySeat(state),

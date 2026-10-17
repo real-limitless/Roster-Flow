@@ -26,6 +26,11 @@ test("createStaffedTeam adds Supervisor and Generic", () => {
   assert.equal(seats[1].seatType, "generic");
   assert.equal(team.seatCount, 2);
   assert.equal(teamWakeTarget("team:platform", state.teams), "platform-supervisor");
+  const room = state.channels.find((c) => c.id === "team-platform");
+  assert.equal(room.name, "#platform");
+  assert.deepEqual(room.teamIds, ["platform"]);
+  assert.equal(room.leadSeatId, "platform-supervisor");
+  assert.equal(room.respond, "lead");
 });
 
 test("createStaffedTeam stores charter and specialists", () => {

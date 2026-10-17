@@ -24,6 +24,7 @@ import {
   type ModelStrategy,
   type Task,
   type Team,
+  type ThinkingSeat,
   isOpenCodeSeat,
   seatAdapter,
 } from "../data";
@@ -34,6 +35,7 @@ import type { Mode } from "../components/WorkspaceMock";
 import { Composer, type ComposePayload } from "../components/chat/Composer";
 import { ShipCoach } from "../components/chat/ShipCoach";
 import { ConversationHeader } from "../components/chat/ConversationHeader";
+import { RoomReplySettings, SeatRooms, responderLabel } from "../components/chat/RoomSettings";
 import { FilesLinksPane } from "../components/chat/ConversationPanes";
 import { SearchModal } from "../components/chat/SearchModal";
 import { MessageRow } from "../components/chat/MessageRow";
@@ -68,6 +70,7 @@ export function Workspace() {
   const [rooms, setRooms] = useState<Channel[]>(seedChannels);
   const [focus, setFocus] = useState<ConversationFocus>({ kind: "channel", id: "ship" });
   const [messages, setMessages] = useState<Msg[]>(seedMessages);
+  const [thinking, setThinking] = useState<ThinkingSeat[]>([]);
   const [selectedId, setSelectedId] = useState("build");
   const [showSystem, setShowSystem] = useState(false);
   const [createModal, setCreateModal] = useState<CreateKind | null>(null);
@@ -221,7 +224,10 @@ export function Workspace() {
     const draft = draftRoomForFocus(focus, rooms, projectList, teamList, roster);
     if (!draft) return;
     setRooms((list) => (list.some((r) => r.id === draft.id) ? list : [...list, draft]));
-    void api.createChannel(draft).catch(() => undefined);
+    void api
+      .createChannel(draft)
+      .catch(() => undefined)
+      .finally(refreshRooms);
   }, [focus, rooms, projectList, teamList, roster]);
 
   useEffect(() => {
@@ -232,11 +238,22 @@ export function Workspace() {
           if (Array.isArray(m)) setMessages((prev) => replaceChannel(prev, channel, m));
         })
         .catch(() => undefined);
+      void api
+        .thinking(channel)
+        .then((rows) => setThinking(Array.isArray(rows) ? rows : []))
+        .catch(() => setThinking([]));
     };
+    setThinking([]);
     tick();
     const t = window.setInterval(tick, 800);
     return () => window.clearInterval(t);
   }, [channel]);
+
+  const roomMessageCount = messages.filter((m) => m.channel === channel).length;
+  useEffect(() => {
+    // Replies change server-derived room fields (responder, today's budget), so re-read rooms as messages land.
+    refreshRooms();
+  }, [channel, roomMessageCount]);
 
   useEffect(() => {
     const tick = () => {
@@ -505,7 +522,8 @@ export function Workspace() {
         if (Array.isArray(t)) setTeamList(t);
         if (Array.isArray(p)) setProjectList(p);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(refreshRooms);
   }
 
   function sendArchitect(text: string) {
@@ -590,9 +608,27 @@ export function Workspace() {
       .catch(() => undefined);
   }
 
+  function refreshRooms() {
+    void api
+      .channels()
+      .then((list) => {
+        if (Array.isArray(list)) setRooms(list);
+      })
+      .catch(() => undefined);
+  }
+
   function patchRoom(id: string, body: Partial<Channel>) {
     setRooms((list) => list.map((c) => (c.id === id ? { ...c, ...body } : c)));
-    void api.patchChannel(id, body).catch(() => undefined);
+    return api
+      .patchChannel(id, body)
+      .then((ch) => setRooms((list) => list.map((c) => (c.id === ch.id ? ch : c))))
+      .catch(() => refreshRooms());
+  }
+
+  function leaveRoom(roomId: string, seatId: string) {
+    const room = rooms.find((r) => r.id === roomId);
+    if (!room) return Promise.resolve();
+    return patchRoom(roomId, { seatIds: (room.seatIds || []).filter((id) => id !== seatId) });
   }
 
   function onCreateTeam(body: {
@@ -615,6 +651,7 @@ export function Workspace() {
         const [t, p] = await Promise.all([api.teams(), api.projects().catch(() => [])]);
         if (Array.isArray(t)) setTeamList(t);
         if (Array.isArray(p) && p.length) setProjectList(p);
+        refreshRooms();
         closeCreate();
         const id = res.team?.id;
         if (id) openConversation({ kind: "team", id }, { mode: "chart" });
@@ -642,6 +679,12 @@ export function Workspace() {
   const listedRooms = rooms.filter((c) => !isDerivedRoom(c.id));
   const currentRoom = rooms.find((r) => r.id === channel);
   const channelName = currentRoom?.name || title;
+  const roomResponderId = currentRoom && currentRoom.respond !== "quiet" ? currentRoom.responderSeatId || null : null;
+  const headerMembers = (() => {
+    const shown = members.filter((s) => showSystem || !s.system || s.id === roomResponderId);
+    const first = shown.find((s) => s.id === roomResponderId);
+    return first ? [first, ...shown.filter((s) => s !== first)] : shown;
+  })();
 
   return (
     <div className="app-shell" data-testid="workspace-shell">
@@ -803,7 +846,9 @@ export function Workspace() {
             <>
               <ConversationHeader
                 title={title}
-                members={members}
+                members={headerMembers}
+                responder={responderLabel(currentRoom, roster)}
+                responderSeatId={roomResponderId}
                 tab={roomTab}
                 inspectorOpen={inspectorOpen}
                 debugOpen={debugOpen}
@@ -857,6 +902,13 @@ export function Workspace() {
                               .catch(() => undefined);
                           }}
                         />
+                      ))}
+                      {thinking.map((t) => (
+                        <div className="thinking-row" key={t.seatId} data-testid={`thinking-${t.seatId}`}>
+                          <span className="thinking-dots" aria-hidden="true" />
+                          {t.name} is thinking…
+                          {t.model && <span className="meta">{t.model}</span>}
+                        </div>
                       ))}
                     </div>
                     {coachOpen && (
@@ -955,6 +1007,9 @@ export function Workspace() {
             onPause={() => pauseSelected(selected.id)}
             onResume={() => resumeSelected(selected.id)}
             onInboxChange={refreshBoard}
+            onOpenRoomId={(id) => openConversation(focusForChannelId(id), { inspector: true })}
+            onLeaveRoom={(roomId) => leaveRoom(roomId, selected.id)}
+            roomsVersion={rooms}
           />
         )}
       </div>
@@ -1045,6 +1100,13 @@ export function Workspace() {
                 onPauseTeam={() => {
                   void api.pauseTeam(selectedTeam.id).then(() => refreshBoard()).catch(() => undefined);
                 }}
+                rooms={rooms}
+                teams={panelTeams}
+                onOpenRoom={(id) => {
+                  setModalOpen(false);
+                  openConversation(focusForChannelId(id));
+                }}
+                onPatchRoom={(id, body) => void patchRoom(id, body)}
               />
             )}
             {focus.kind === "project" && selectedProject && (
@@ -1084,6 +1146,12 @@ export function Workspace() {
                 onReparent={(reportsTo) => reparent(selected.id, reportsTo)}
                 onPatch={(body) => patchLocalSeat(selected.id, body)}
                 onFire={() => fireSeat(selected.id)}
+                onOpenRoomId={(id) => {
+                  setModalOpen(false);
+                  openConversation(focusForChannelId(id));
+                }}
+                onLeaveRoom={(roomId) => leaveRoom(roomId, selected.id)}
+                roomsVersion={rooms}
               />
             )}
           </div>
@@ -1819,6 +1887,9 @@ function Inspector({
   onPause,
   onResume,
   onInboxChange,
+  onOpenRoomId,
+  onLeaveRoom,
+  roomsVersion,
   testId = "seat-inspector",
   className = "",
 }: {
@@ -1835,6 +1906,9 @@ function Inspector({
   onPause?: () => void;
   onResume?: () => void;
   onInboxChange?: () => void;
+  onOpenRoomId?: (id: string) => void;
+  onLeaveRoom?: (roomId: string) => Promise<unknown>;
+  roomsVersion?: unknown;
   testId?: string;
   className?: string;
 }) {
@@ -2087,6 +2161,9 @@ function Inspector({
           </button>
         )}
       </div>
+      {onOpenRoomId && onLeaveRoom && (
+        <SeatRooms seat={seat} version={roomsVersion} onOpenRoom={onOpenRoomId} onLeave={onLeaveRoom} />
+      )}
       <SeatInbox seatId={seat.id} onChange={onInboxChange} />
     </aside>
   );
@@ -2359,6 +2436,10 @@ function TeamInspector({
   onPatchTeam,
   onHireSpecialist,
   onPauseTeam,
+  rooms = [],
+  teams = [],
+  onOpenRoom,
+  onPatchRoom,
   className = "",
 }: {
   team: Team;
@@ -2370,8 +2451,14 @@ function TeamInspector({
   onPatchTeam: (body: Partial<Team>) => void;
   onHireSpecialist: () => void;
   onPauseTeam?: () => void;
+  rooms?: Channel[];
+  teams?: Team[];
+  onOpenRoom?: (id: string) => void;
+  onPatchRoom?: (id: string, body: Partial<Channel>) => void;
   className?: string;
 }) {
+  const homeRoom = rooms.find((r) => r.id === `team-${team.id}`);
+  const teamRooms = rooms.filter((r) => r.id !== homeRoom?.id && (r.teamIds || []).includes(team.id));
   const members = (team.seatIds || []).map((id) => roster.find((s) => s.id === id)).filter(Boolean) as Seat[];
   const supervisor = members.find((s) => s.id === team.supervisorSeatId);
   const generic = members.find((s) => s.id === team.genericSeatId);
@@ -2483,6 +2570,37 @@ function TeamInspector({
           ))}
         </>
       )}
+      {(homeRoom || teamRooms.length > 0) && (
+        <div data-testid="team-rooms">
+          <h4 style={{ marginTop: 16 }}>Rooms</h4>
+          {homeRoom && (
+            <button
+              className="pill-btn"
+              data-testid="team-home-room"
+              type="button"
+              style={{ width: "100%", marginTop: 6 }}
+              onClick={() => onOpenRoom?.(homeRoom.id)}
+            >
+              Home room · {responderLabel(homeRoom, roster) || "no responder"}
+            </button>
+          )}
+          {teamRooms.map((r) => (
+            <button
+              key={r.id}
+              className="pill-btn"
+              data-testid={`team-room-${r.id}`}
+              type="button"
+              style={{ width: "100%", marginTop: 6 }}
+              onClick={() => onOpenRoom?.(r.id)}
+            >
+              {r.name}
+            </button>
+          ))}
+          {homeRoom && onPatchRoom && (
+            <RoomReplySettings channel={homeRoom} roster={roster} teams={teams} onPatch={(body) => onPatchRoom(homeRoom.id, body)} />
+          )}
+        </div>
+      )}
       {team.staffed !== false && (
         <>
           <button className="pill-btn primary" data-testid="hire-specialist" type="button" style={{ width: "100%", marginTop: 16 }} onClick={onHireSpecialist}>
@@ -2546,6 +2664,7 @@ function ChannelEditor({
           Topic
           <input defaultValue={channel.topic || ""} key={`${channel.id}-topic`} onBlur={(e) => onPatch({ topic: e.target.value })} />
         </label>
+        <RoomReplySettings channel={channel} roster={roster} teams={teams} onPatch={onPatch} />
         <h4>Teams</h4>
         <div className="member-picks">
           {staffed.map((t) => {

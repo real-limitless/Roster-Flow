@@ -2,6 +2,7 @@
  * Everflow-style OpenCode wrapper: company serve for product bots,
  * plus a dedicated System serve for Architect / Channel.
  */
+import { internalPluginToken } from "./internal-token.mjs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
@@ -100,6 +101,7 @@ export function serveEnv(kind = COMPANY, base = process.env) {
     OPENCODE_CLIENT: s.client,
     NODE_PATH: [join(root, "node_modules"), base.NODE_PATH].filter(Boolean).join(":"),
     ROSTER_API: rosterApiUrl(),
+    ROSTER_API_TOKEN: String(base.ROSTER_API_TOKEN || "").trim() || internalPluginToken(),
   };
 }
 
@@ -613,10 +615,11 @@ async function ensureOnce({ forceRestart = false, kind = COMPANY } = {}) {
   }
   if (instances[k] && !forceRestart) {
     const h = await healthCheck(instances[k].port);
-    if (h && instances[k].child && instances[k].child.exitCode == null) {
+    const adopted = !instances[k].child;
+    if (h && (adopted || instances[k].child.exitCode == null)) {
       instances[k].healthy = true;
       instances[k].version = String(h.version || instances[k].version || "");
-      emit({ scope: "harness", step: "ensure.up", detail: { kind: k } });
+      emit({ scope: "harness", step: "ensure.up", detail: { kind: k, ...(adopted ? { adopted: true } : {}) } });
       return status(k);
     }
   }
@@ -770,6 +773,39 @@ export async function promptSession(sessionId, body, kind = COMPANY) {
   );
 }
 
+export async function deleteSession(sessionId, kind = COMPANY) {
+  return ocFetch(`/session/${sessionId}`, { method: "DELETE" }, kind);
+}
+
+/** `roster:<seat>` is a seat's DM session; `roster:<seat>:<room>` is its session for that room. */
+export function parseRosterTitle(title) {
+  const m = String(title || "").match(/^roster:([^:]+)(?::(.+))?$/);
+  if (!m) return null;
+  return { seatId: m[1], channelId: m[2] || null };
+}
+
+/** The serve's base URL while it is healthy, else null. */
+export function serveBaseUrl(kind = COMPANY) {
+  const inst = instances[harnessKind(kind)];
+  return inst?.healthy && inst.baseUrl ? inst.baseUrl : null;
+}
+
+/** Sessions OpenCode started from this one (the `task` tool's subagent runs). */
+export async function sessionChildren(sessionId, kind = COMPANY) {
+  const data = await ocFetch(`/session/${sessionId}/children`, {}, kind);
+  return Array.isArray(data) ? data : [];
+}
+
+/** The agent a session ran as: `info.agent` (OpenCode 1.19) or `info.mode` (older assistant messages). */
+export function sessionAgent(messages) {
+  for (const msg of messages || []) {
+    const info = msg.info || msg;
+    const agent = info.agent || (info.role === "assistant" ? info.mode : null);
+    if (agent) return String(agent);
+  }
+  return null;
+}
+
 /**
  * Decide whether one SSE event shows that this session's provider turn
  * finished or failed. User echoes are ignored. `state.userIds` collects them.
@@ -792,6 +828,11 @@ function withMessageId(state, verdict) {
 export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() }) {
   const props = ev?.properties || {};
   if (!props.sessionID || props.sessionID !== sessionId) return null;
+  if (ev?.type === "session.idle") {
+    // Idle before this turn has an assistant message is the session's previous state.
+    if (!state.text && !state.assistantIds?.size) return null;
+    return withMessageId(state, { reached: Boolean(state.text), text: state.text || "", done: true, empty: !state.text });
+  }
   if (ev?.type === "message.updated") {
     const info = props.info || {};
     if (info.role === "user" && info.id) state.userIds.add(info.id);
@@ -813,7 +854,11 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
       });
       return withMessageId(state, { reached: false, error: described.message, code: described.code, done: true });
     }
-    if (info.time?.completed && state.text) return withMessageId(state, { reached: true, text: state.text, done: true });
+    // A completed turn with no assistant text is finished. Waiting for text here
+    // leaves `watch.rest` pending and the POST never returns.
+    if (info.time?.completed || info.finish === "stop") {
+      return withMessageId(state, { reached: Boolean(state.text), text: state.text || "", done: true, empty: !state.text });
+    }
     // The first assistant text can arrive as a part before this update. That chunk
     // already means the provider was reached, even though the turn is not done.
     if (state.text) return withMessageId(state, { reached: true, text: state.text, done: false });
@@ -850,24 +895,28 @@ function closeEventStream(entry) {
   entry.ac.abort();
   entry.reader?.cancel().catch(() => undefined);
   if (eventStreams.get(entry.baseUrl) === entry) eventStreams.delete(entry.baseUrl);
+  entry.markOpened(false);
+  entry.markClosed();
 }
 
-function eventStream(kind) {
+function eventStream(kind, baseUrl = instances[harnessKind(kind)]?.baseUrl) {
   const k = harnessKind(kind);
-  const inst = instances[k];
-  if (!inst?.baseUrl) return null;
+  if (!baseUrl) return null;
   for (const [url, old] of eventStreams) {
-    if (old.kind === k && url !== inst.baseUrl) closeEventStream(old);
+    if (old.kind === k && url !== baseUrl) closeEventStream(old);
   }
-  const existing = eventStreams.get(inst.baseUrl);
+  const existing = eventStreams.get(baseUrl);
   if (existing && !existing.closed) return existing;
   const ac = new AbortController();
-  const entry = { kind: k, baseUrl: inst.baseUrl, ac, listeners: new Set(), reader: null, closed: false };
-  eventStreams.set(inst.baseUrl, entry);
+  const entry = { kind: k, baseUrl, ac, listeners: new Set(), reader: null, closed: false };
+  entry.opened = new Promise((r) => (entry.markOpened = r));
+  entry.closedP = new Promise((r) => (entry.markClosed = r));
+  eventStreams.set(baseUrl, entry);
   entry.task = (async () => {
     try {
       const res = await fetch(`${entry.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream" } });
       if (!res.ok || !res.body) return;
+      entry.markOpened(true);
       const reader = res.body.getReader();
       entry.reader = reader;
       const dec = new TextDecoder();
@@ -892,7 +941,13 @@ function eventStream(kind) {
           } catch {
             continue;
           }
-          for (const listener of [...entry.listeners]) listener(ev);
+          for (const listener of [...entry.listeners]) {
+            try {
+              listener(ev);
+            } catch {
+              /* one listener failing must not end the stream for the others */
+            }
+          }
         }
       }
     } catch {
@@ -902,6 +957,25 @@ function eventStream(kind) {
     }
   })();
   return entry;
+}
+
+/**
+ * Share the serve's one `GET /event` subscription. `opened` resolves true once
+ * the stream is up (false if it fails); `closed` resolves when it ends, for
+ * example on a serve restart. Unsubscribing leaves the stream open for other
+ * watchers, as watchProviderTurn does.
+ */
+export function subscribeServeEvents(kind, listener, baseUrl) {
+  const entry = eventStream(kind, baseUrl);
+  if (!entry) return null;
+  entry.listeners.add(listener);
+  return {
+    opened: entry.opened,
+    closed: entry.closedP,
+    unsubscribe() {
+      entry.listeners.delete(listener);
+    },
+  };
 }
 
 /**
@@ -1013,6 +1087,31 @@ export function assistantText(messages) {
   return out;
 }
 
+/**
+ * Token use of the assistant messages created at or after `since`, summed from
+ * OpenCode's `info.tokens` and `info.cost`. Null when no message reports tokens.
+ */
+export function turnUsage(messages, since = 0) {
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const out = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, messages: 0 };
+  for (const msg of messages || []) {
+    const info = msg.info || msg;
+    if ((info.role || msg.role) !== "assistant") continue;
+    const created = Number(info.time?.created || 0);
+    if (since && created && created < since) continue;
+    const t = info.tokens;
+    if (!t || typeof t !== "object") continue;
+    out.input += n(t.input);
+    out.output += n(t.output);
+    out.reasoning += n(t.reasoning);
+    out.cacheRead += n(t.cache?.read);
+    out.cacheWrite += n(t.cache?.write);
+    out.cost += n(info.cost);
+    out.messages += 1;
+  }
+  return out.messages ? out : null;
+}
+
 export function sessionTranscript(messages) {
   const out = [];
   for (const msg of messages || []) {
@@ -1027,9 +1126,19 @@ export function sessionTranscript(messages) {
 export function bindSessionMeta(session, harness, state = getState()) {
   const id = session?.id || session?.sessionID || null;
   const title = String(session?.title || session?.slug || "");
-  let seatId = null;
-  const rosterMatch = title.match(/^roster:(.+)$/);
-  if (rosterMatch) seatId = rosterMatch[1];
+  const parsed = parseRosterTitle(title);
+  let seatId = parsed?.seatId || null;
+  let room = parsed?.channelId || null;
+  if (!room && id) {
+    for (const [seat, rooms] of Object.entries(state.roomSessions || {})) {
+      for (const [channelId, entry] of Object.entries(rooms || {})) {
+        if (entry?.sessionId === id) {
+          seatId = seat;
+          room = channelId;
+        }
+      }
+    }
+  }
   const map = harness === SYSTEM ? state.systemSessions : state.sessions;
   if (!seatId && map) {
     for (const [seat, sid] of Object.entries(map)) {
@@ -1041,7 +1150,7 @@ export function bindSessionMeta(session, harness, state = getState()) {
     if (seat) seatId = seat.id;
   }
   const agent = session?.agent || session?.agentID || seatId || null;
-  const channel = seatId ? state.sessionRooms?.[seatId] || `dm-${seatId}` : id ? `session-${id}` : null;
+  const channel = room || (seatId ? state.sessionRooms?.[seatId] || `dm-${seatId}` : id ? `session-${id}` : null);
   return {
     id,
     title: title || (seatId ? `roster:${seatId}` : id || "session"),

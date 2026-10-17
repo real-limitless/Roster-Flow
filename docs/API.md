@@ -104,7 +104,7 @@ Creates `platform-supervisor` and `platform-generic`. Optional `specialists[]` h
 
 `to: "team:eng"` on the bus wakes that team's Supervisor. A job addressed to a team chooses its own routing (see Jobs).
 
-Seat `model` is an OpenCode catalog id (`provider/model`). Changing a bot seat rewrites `.opencode/agents/<id>.md`.
+Seat `model` is an OpenCode catalog id (`provider/model`). Changing a bot seat rewrites `.opencode/agents/<id>.md`. Agent files set `steps` (tool steps per wake): 4 for the Channel conductor and supervisors, 8 for other bots, or the seat's own `steps`. Company supervisors also get `permission.task`: deny `*`, allow each direct bot report (OpenCode adapter, not System, not another supervisor), so their `task` tool can only run their own reports as subagents. Hiring, firing, or moving a seat rewrites every company supervisor's file and `opencode.json` entry. Team aliases (`@eng`) have no reports and deny all tasks; specialists get no `task` rule.
 
 `POST /api/v1/teams` accepts `projectId` to hang the team under a project. Unset `projectId` means org-shared (services).
 
@@ -131,14 +131,15 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | GET | `/api/v1/goals` | Org goals (`id`, `title`, `description`, `parentId`, `status`) |
 | POST | `/api/v1/goals` | Create a goal |
 | PATCH | `/api/v1/projects/:id` | Also accepts `goalIds` |
+| GET | `/api/v1/seats/:id/channels` | Rooms the seat is in: `id`, `name`, `direct` (a direct member), `viaTeams` (teams that make it a member), `lead`, `responder`, and the room's `respond` mode |
 | GET | `/api/v1/seats/:id/inbox` | Bus mail for this seat (direct, `team:` if Supervisor, `channel:` / `#room` membership, `ask_human`) |
 | GET | `/api/v1/seats/me/inbox` | Inbox for You |
 | POST | `/api/v1/seats/:id/inbox/read` | `{ beforeId }` — mark unread after that bus id as read |
 | POST | `/api/v1/seats/:id/pause` | Pause a bot (not You). System seats can pause; fire is still DELETE. Sets `pauseReason: owner`. |
 | POST | `/api/v1/seats/:id/resume` | Resume a paused bot. **400** `raise tokenBudget first` when `spent >= tokenBudget`. |
-| GET | `/api/v1/usage` | Meter rows (`tokens`, `usdEstimate`, `hours`) — filter `?projectId=` `?teamId=` `?seatId=` `&format=csv` |
+| GET | `/api/v1/usage` | Meter rows (`tokens`, `usdEstimate`, `hours`, `channelId`, `threadId`) — filter `?projectId=` `?teamId=` `?seatId=` `?channelId=` `&format=csv` |
 | POST | `/api/v1/usage` | Record a meter row (`seatId`, `inputTokens`, `outputTokens`) |
-| POST | `/api/v1/heartbeats/tick` | Wake seats with unread inbox / claimed tasks and `heartbeatMinutes` |
+| POST | `/api/v1/heartbeats/tick` | Wake seats with unread inbox, claimed tasks, or unanswered room mentions, and `heartbeatMinutes` |
 | POST | `/api/v1/teams/:id/pause` | Pause every bot seat on the team |
 | POST | `/api/v1/runs/:runId/kill` | Add to `pausedRunIds` — `wakeSeat` returns `{ paused: true }` |
 | GET | `/api/v1/approvals` | Optional `?status=pending` |
@@ -158,13 +159,15 @@ Plugin tool: `roster_inbox`.
 
 Monthly token caps on bot seats. Unset `tokenBudget` is unmetered (wakes still record `usage[]` / `spent`). At 100% CORE calls the existing pause (`status: paused`, `pauseReason: budget`). Chart/Room show a budget pip, not a generic idle pip. Warn in the inspector at 80%. Period is UTC `YYYY-MM`; a new month zeros `spent` and lifts a budget pause.
 
-Hire/PATCH fields: `tokenBudget`, optional `budgetCents`, `spent`. Raising `tokenBudget` above `spent` clears a budget pause. `GET /api/v1/usage` never includes API keys. `GET /api/v1/usage?format=csv` downloads the same rows. Filter with `?projectId=` `?teamId=` `?seatId=`. `POST /api/v1/usage` records a meter row (`seatId`, `inputTokens`, `outputTokens`, optional `runId` / `ms`) — used by tests and the audit export story.
+Hire/PATCH fields: `tokenBudget`, optional `budgetCents`, `spent`. Raising `tokenBudget` above `spent` clears a budget pause. `GET /api/v1/usage` never includes API keys. `GET /api/v1/usage?format=csv` downloads the same rows. Filter with `?projectId=` `?teamId=` `?seatId=` `?channelId=`. `POST /api/v1/usage` records a meter row (`seatId`, `inputTokens`, `outputTokens`, optional `runId` / `ms`) — used by tests and the audit export story.
 
-Company and System `wakeSeat` prompts increment `spent` (prompt-size estimate plus 200 output tokens when OpenCode does not return usage). `@mention` / `POST /api/v1/bus/send` with `wake: true` and `POST /api/v1/seats/:id/attach` all go through `wakeBlocked`.
+Company and System `wakeSeat` prompts increment `spent` with an estimate (prompt size plus 200 output tokens) as soon as the prompt is accepted. When the reply lands, and again when OpenCode reports the session idle, CORE replaces the estimate with the turn's real use: the sum of `info.tokens` (input, output, reasoning; cache read and write are kept separately) and `info.cost` over the turn's assistant messages, tool steps included. `spent` moves by the difference. Corrected rows have `metered: "opencode"`, plus `reasoningTokens`, `cacheReadTokens`, and `cacheWriteTokens`; `usdEstimate` is OpenCode's `cost` when it reports one. Room wakes record `channelId` and `threadId`, and the CSV has those columns. `@mention` / `POST /api/v1/bus/send` with `wake: true` and `POST /api/v1/seats/:id/attach` all go through `wakeBlocked`.
+
+Subagent runs are metered against the seat they ran as. After a turn (and again on `session.idle`), CORE reads `GET /session/:id/children` for the woken session, reads each child session's agent from `info.agent`, and writes one usage row per child: `source: "task"`, `runId` `<parent run>:<child session>`, `parentSeatId`, and the room's `channelId` / `threadId`. Children created before the wake are skipped, and the rows are rewritten in place, so a child is never counted twice. A child whose agent is not a seat (OpenCode's built-in `explore` / `general`) is billed to the parent seat, with no room line. The room gets one System line per child: `<parent> delegated to <child> with task: "<title>" (<n> tokens).`, plus `<child> is now paused (budget).` when the child went over. That message carries `delegation: { parentSeatId, childSeatId, childSessionId, tokens }`. A supervisor's prompt lists the reports it can delegate to and the ones it should not (paused or over budget).
 
 ## Seat heartbeats
 
-Per-seat `heartbeatMinutes` (off when unset or `0`). Distinct from routines: a heartbeat checks unread inbox and claimed tasks, then wakes with a prompt that forbids deploy/merge. Skips paused and over-budget seats. Seats whose tools include `deploy` stay event-driven. Coalesces with another bus wake to the same seat in the same minute. `POST /api/v1/heartbeats/tick` runs one pass (CORE also ticks with routines). Inspector **Disable heartbeat** sets `heartbeatMinutes: 0`.
+Per-seat `heartbeatMinutes` (off when unset or `0`). Distinct from routines: a heartbeat checks unread inbox, claimed tasks, and @mentions of the seat in its rooms that came after its last post and last wake there, then wakes with a prompt that forbids deploy/merge. Skips paused and over-budget seats. Seats whose tools include `deploy` stay event-driven. Coalesces with another bus wake to the same seat in the same minute. `POST /api/v1/heartbeats/tick` runs one pass (CORE also ticks with routines). Inspector **Disable heartbeat** sets `heartbeatMinutes: 0`.
 
 ## Tasks (claim locks)
 
@@ -183,11 +186,12 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/channels` | Channels plus membership |
+| GET | `/api/v1/channels` | Channels plus membership, `leadSeatId`, `respond`, `limits`, and `responderSeatId` (who answers un-mentioned messages now, before pause and model checks; `null` in a quiet room) |
 | POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
-| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats |
+| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`); set `respond` (`lead`, `team`, `conductor`, or `quiet`); set `limits.implicitPerMinute`, `limits.maxHops`, or `limits.maxBotWakesPerThread` (1–1000; `null` restores the default of 4, 4, or 8), `limits.fanout` (1–10, default 3), or `limits.tokensPerDay` (1–1,000,000,000; `null` means no room budget). Bad input is a 400 and changes nothing |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
-| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken |
+| GET | `/api/v1/channels/:id/thinking` | Seats with a wake in flight in the room: `[{ seatId, name, model, since }]`. The Room shows them as `<seat> is thinking…` until the reply lands, the wake fails, or the follow window ends |
+| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken. It returns once the wakes have started, not when the reply arrives. `queued: true` means the room's responder is still answering and the message will follow. `rateLimited: true` means the room hit `limits.implicitPerMinute`; `quiet: true` means the room is quiet and only people were notified |
 | GET | `/api/v1/threads` | Thread index |
 | GET | `/api/v1/threads/:id` | One thread |
 
@@ -206,6 +210,16 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 
 `text` may be empty when at least one of `skills`, `files`, `attachments`, or `blocks` is present. Mentions wake the bus: `@build` a seat, `@eng` the team Supervisor, `@channel` notifies members and wakes the Channel conductor.
 
+A message with no mention, from a human, wakes one responder for the room. The order is: the channel's `leadSeatId`; the supervisors of member teams; bot members that report to a human member; other bot members; the Channel conductor. Seats that are paused, over budget, or whose model is not usable are skipped, and the room gets one `Skipped …` line. When nobody can answer, the first seat reports why. The responder is told to answer in plain text, and its reply is posted to the same room. A message from a bot seat with no mention wakes nobody.
+
+The room's `respond` mode changes this. `lead` (the default) uses the order above. `team` wakes up to `limits.fanout` awake bot members, in the same order (lead first), each told to reply only if it can help and otherwise reply exactly `PASS`. `PASS` replies are not posted; when every member passes, the room gets one `Nobody had anything to add` line. `conductor` always wakes the Channel conductor. `quiet` wakes nobody: the other people in the room get a notify row, and the room gets one System line. A room answers at most `limits.implicitPerMinute` un-mentioned messages a minute (default 4); past that, the room gets one `Rate limit:` line and @mentions still work. With `limits.tokensPerDay` set, a room whose usage rows for the UTC day reach the budget acts as `quiet` until 00:00 UTC and says so in its System line; @mentions still work and seat budgets still apply. Channels sent to clients carry `budget: { tokensPerDay, spentToday, over, quietUntil }` when a budget is set.
+
+Each seat has one OpenCode session per room it is woken in (`roster:<seat>:<room>`), separate from its DM session (`roster:<seat>`), which bus mail, heartbeats, its own DM, and Harness attach use. A room wake carries the room messages posted since the seat's last turn there (up to 20 lines, about 2k tokens, oldest first, without System lines or its own posts), and replies are read from that session only. Room sessions idle for 14 days are deleted and reopened on the next wake.
+
+A bot reply posted into a room is routed too. `@build` in Product's reply wakes Eng.Build in that room, one hop further along the thread the human post started (hop 0). Bots cannot use `@channel` or `@here` and never wake themselves. A mentioned human, MCP guest, or seat that is not in the room gets a notify row instead of a wake. A thread stops waking bots past `limits.maxHops` (default 4), past `limits.maxBotWakesPerThread` bot-triggered wakes (default 8), or once the same two seats have woken each other 4 times. The room then gets one `Stopped: …` line, and the seat that would have been woken gets a notify row. Only replies to wakes this CORE process started are routed, so transcripts caught up after a restart wake nobody. Room messages from a thread carry `thread: { threadId, hop, from, maxHops, botWakes, maxBotWakes }`.
+
+Every staffed team has a `team-<id>` room record with the team as a member and the Supervisor as lead. Created teams get one, and existing teams get one on load. Team and project rooms that have a record follow the same rules, with the Supervisor or PM answering first. Without a record, team rooms wake the Supervisor and project rooms the PM. DMs wake the bot.
+
 ## Bot / team messaging
 
 | Method | Path | Purpose |
@@ -220,7 +234,7 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 { "to": "build", "text": "Acceptance is ready. Implement webhook idempotency.", "from": "product" }
 ```
 
-`to` may be a seat id, `team:eng`, or `channel:ship`.
+`to` may be a seat id, `team:eng`, or `channel:ship`. The room message is posted in `channel` when set, else the room of `sessionId` (an OpenCode session, see `GET /api/v1/sessions/:id/room`), else `#ship`. `POST /api/v1/bus/send` resolves its room the same way. The roster plugin always sends the session id and fails the tool call when the session has no room and no `channel` was given.
 
 `POST /api/v1/bus/send`:
 
@@ -423,6 +437,7 @@ Used when `harness === "up"`:
 | Method | Path | Maps to OpenCode |
 |---|---|---|
 | GET | `/api/v1/harness/sessions` | `GET /session` |
+| GET | `/api/v1/sessions/:id/room` | Which seat and room an OpenCode session belongs to: `{ sessionId, seatId, channelId, kind, harness }`. `kind` is `room` for a seat's session in one room (`roster:<seat>:<room>`) and `dm` for its DM session (`roster:<seat>`). 404 when no seat owns the session |
 | POST | `/api/v1/harness/sessions` | `POST /session` `{ title, agent? }` |
 | POST | `/api/v1/harness/sessions/:id/prompt` | async prompt |
 | POST | `/api/v1/seats/:id/attach` | Ensure session bound to this seat |
@@ -491,3 +506,5 @@ Streamable HTTP room gateway. mcp-flow is tools; this is seats, channels, and th
 | GET | `/api/v1/tokens` | List (no hashes or plaintext) |
 | POST | `/api/v1/tokens` | `{name, scopes: ["read","write","admin"], expiresAt? \| expiresInDays?, seatId?}` → `{token, record}`; `token` is shown once. `seatId` binds the token to that seat |
 | DELETE | `/api/v1/tokens/:id` | Revoke; the token then gets 401 |
+
+CORE also gives its own OpenCode serves an internal plugin token as `ROSTER_API_TOKEN`, unless the operator set one. It lives in memory, changes on every CORE restart, and acts as the first owner on the routes the plugin calls (seats, teams, projects, rooms and their messages, `sessions/:id/room`, messages, bus, tasks, jobs, Architect chat). Any other route gets 403, and a seat `PATCH` with it only changes `lastSession`.

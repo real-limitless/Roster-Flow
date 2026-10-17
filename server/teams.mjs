@@ -2,6 +2,7 @@ import { FEATHERLESS_CHAT_MODEL } from "./model-defaults.mjs";
 import { genericTemplate, normalizeModelId, normalizeSeat, slugify, supervisorTemplate } from "./seed.mjs";
 import { STRATEGIES } from "./models.mjs";
 import { attachTeamToProject } from "./projects.mjs";
+import { teamHomeRoom } from "./room-config.mjs";
 
 export function teamBrief(team) {
   return [
@@ -139,6 +140,8 @@ export function createStaffedTeam(state, body = {}) {
   state.teams = [...(state.teams || []), team];
   state.seats = [...state.seats, supervisor, generic, ...extra];
   if (team.projectId) attachTeamToProject(state, team.projectId, team.id);
+  const room = teamHomeRoom(team);
+  if (!(state.channels || []).some((c) => c.id === room.id)) state.channels = [...(state.channels || []), room];
   return { team: enrichTeam(team, state.seats), seats: [supervisor, generic, ...extra] };
 }
 

@@ -22,7 +22,7 @@ import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
-import { pendingWake, postBus, publishedWake, wakeSeat, cycleSafe } from "./bus.mjs";
+import { pendingWake, postBus, publishedWake, roomForApiCall, wakeSeat, cycleSafe } from "./bus.mjs";
 import {
   callbackSecretInfo,
   deliverCallback,
@@ -39,8 +39,10 @@ import { readJobFile, writeJobFile } from "./files.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
-import { createChannel, patchChannel } from "./channels.mjs";
-import { postMessage, routeChannelMessage, startSessionSync } from "./chat.mjs";
+import { channelsForSeat, createChannel, patchChannel, publicChannel } from "./channels.mjs";
+import { sessionRoom } from "./room-sessions.mjs";
+import { INTERNAL_SEAT_FIELDS, internalTokenAllows, isInternalPluginToken } from "./internal-token.mjs";
+import { postMessage, resetChatRuntime, roomThinking, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
 import { attachConnector, listConnectors, publicConnector, removeConnector, searchKnowledge } from "./knowledge.mjs";
@@ -167,6 +169,12 @@ async function postRoomMessage(channel, who, kind, text, extras, hint = {}) {
   return attachGithubCard(msg, { ...hint, text });
 }
 
+/** The room an OpenCode session belongs to, so plugin tools post where the seat was woken. */
+function roomOfSession(sessionId) {
+  if (!sessionId) return null;
+  return sessionRoom(getState(), String(sessionId))?.channelId || null;
+}
+
 function requestCaller(user, apiToken) {
   return {
     userId: user?.id || null,
@@ -260,14 +268,19 @@ const server = createServer(async (req, res) => {
     }
     if (tryServeStatic(req, res, pathname)) return;
     const token = parseBearer(req);
-    const apiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
-    const user = apiToken ? apiToken.user : userFromToken(getState(), token);
+    const internal = isInternalPluginToken(token);
+    const apiToken = !internal && isApiToken(token) ? resolveApiToken(getState(), token) : null;
+    const user = internal ? (getState().users || [])[0] || null : apiToken ? apiToken.user : userFromToken(getState(), token);
 
-    if (isApiToken(token) && !apiToken) {
+    if (internal && !internalTokenAllows(method, pathname)) {
+      json(res, 403, { error: "the internal plugin token does not allow this request" });
+      return;
+    }
+    if (!internal && isApiToken(token) && !apiToken) {
       json(res, 401, { error: "invalid, expired, or revoked API token" });
       return;
     }
-    if (!skipOnboarding() && !isPublicPath(method, pathname) && !user) {
+    if (!internal && !skipOnboarding() && !isPublicPath(method, pathname) && !user) {
       json(res, 401, { error: "authentication required" });
       return;
     }
@@ -527,6 +540,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const st = resetState();
+      resetChatRuntime();
       try {
         syncBotAgents(st.seats, st.teams);
       } catch {
@@ -678,6 +692,7 @@ const server = createServer(async (req, res) => {
         projectId: url.searchParams.get("projectId") || undefined,
         teamId: url.searchParams.get("teamId") || undefined,
         seatId: url.searchParams.get("seatId") || undefined,
+        channelId: url.searchParams.get("channelId") || undefined,
       });
       if (url.searchParams.get("format") === "csv") {
         const body = usageCsv(rows);
@@ -970,6 +985,17 @@ const server = createServer(async (req, res) => {
       json(res, 200, box);
       return;
     }
+    const seatRooms = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/channels$/);
+    if (seatRooms && method === "GET") {
+      const id = decodeURIComponent(seatRooms[1]);
+      const st = getState();
+      if (!st.seats.some((s) => s.id === id)) {
+        json(res, 404, { error: "seat not found" });
+        return;
+      }
+      json(res, 200, channelsForSeat(st, id));
+      return;
+    }
     const seatInbox = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/inbox$/);
     if (seatInbox && method === "GET") {
       const id = decodeURIComponent(seatInbox[1]);
@@ -1019,7 +1045,8 @@ const server = createServer(async (req, res) => {
     const seatPatch = pathname.match(/^\/api\/v1\/seats\/([^/]+)$/);
     if (seatPatch && method === "PATCH") {
       const id = decodeURIComponent(seatPatch[1]);
-      const body = await readBody(req);
+      const raw = await readBody(req);
+      const body = internal ? Object.fromEntries(INTERNAL_SEAT_FIELDS.filter((k) => k in raw).map((k) => [k, raw[k]])) : raw;
       let updated = null;
       mutate((s) => {
         updated = patchSeat(s, id, body);
@@ -1128,7 +1155,8 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/channels" && method === "GET") {
-      json(res, 200, getState().channels);
+      const st = getState();
+      json(res, 200, st.channels.map((c) => publicChannel(c, st)));
       return;
     }
     if (pathname === "/api/v1/channels" && method === "POST") {
@@ -1137,7 +1165,7 @@ const server = createServer(async (req, res) => {
       mutate((s) => {
         created = createChannel(s, body);
       });
-      json(res, 201, created);
+      json(res, 201, publicChannel(created, getState()));
       return;
     }
     const chOne = pathname.match(/^\/api\/v1\/channels\/([^/]+)$/);
@@ -1148,7 +1176,7 @@ const server = createServer(async (req, res) => {
         json(res, 404, { error: "channel not found" });
         return;
       }
-      json(res, 200, ch);
+      json(res, 200, publicChannel(ch, getState()));
       return;
     }
     if (chOne && method === "PATCH") {
@@ -1162,7 +1190,12 @@ const server = createServer(async (req, res) => {
         json(res, 404, { error: "channel not found" });
         return;
       }
-      json(res, 200, updated);
+      json(res, 200, publicChannel(updated, getState()));
+      return;
+    }
+    const chThinking = pathname.match(/^\/api\/v1\/channels\/([^/]+)\/thinking$/);
+    if (chThinking && method === "GET") {
+      json(res, 200, roomThinking(decodeURIComponent(chThinking[1])));
       return;
     }
     const chMsg = pathname.match(/^\/api\/v1\/channels\/([^/]+)\/messages$/);
@@ -1182,9 +1215,9 @@ const server = createServer(async (req, res) => {
       }
       const msg = await postRoomMessage(id, body.who || "You", body.kind || "human", text, extras, githubHint(body));
       const routed = text
-        ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you" })
+        ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you", messageId: msg?.id || null })
         : { mentions: [], wakes: [], notify: [], pending: Promise.resolve([]) };
-      const wakeResults = (await routed.pending || []).map((row) => publishedWake(row));
+      const wakeResults = (await (routed.started || routed.pending) || []).map((row) => publishedWake(row));
       json(res, 201, {
         ...msg,
         mentions: routed.mentions,
@@ -1193,6 +1226,9 @@ const server = createServer(async (req, res) => {
         runId: wakeResults[0]?.runId ?? null,
         started: wakeResults.length ? wakeResults.every((row) => row.started) : false,
         wakeResults,
+        ...(routed.queued ? { queued: true } : {}),
+        ...(routed.rateLimited ? { rateLimited: true } : {}),
+        ...(routed.quiet ? { quiet: true } : {}),
         messages: getState().messages.filter((m) => m.channel === id),
       });
       return;
@@ -1230,10 +1266,13 @@ const server = createServer(async (req, res) => {
         json(res, 429, { error: "cycle detector: too many ping-pongs" });
         return;
       }
-      let channel = "ship";
-      if (String(to).startsWith("channel:")) channel = to.slice("channel:".length);
+      const posted = String(to).startsWith("channel:")
+        ? { channel: to.slice("channel:".length), note: null }
+        : roomForApiCall({ channel: body.channel, sessionRoom: roomOfSession(body.sessionId) });
+      const channel = posted.channel;
       const fromSeat = getState().seats.find((s) => s.id === from);
       await postRoomMessage(channel, fromSeat?.name || from, fromSeat?.kind || "bot", text, { ...extras, seatId: extras.seatId || from }, githubHint(body));
+      if (posted.note) postMessage(channel, "System", "bot", posted.note, { system: true });
       const entry = postBus({
         from,
         to,
@@ -1245,7 +1284,7 @@ const server = createServer(async (req, res) => {
       });
       const woke = await pendingWake(entry);
       const fields = woke ? publishedWake(woke) : null;
-      json(res, 201, fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry);
+      json(res, 201, { ...(fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry), ...(posted.note ? { note: posted.note } : {}) });
       return;
     }
     if (pathname === "/api/v1/bus" && method === "GET") {
@@ -1265,16 +1304,18 @@ const server = createServer(async (req, res) => {
         return;
       }
       const fromSeat = getState().seats.find((s) => s.id === body.from);
-      const msg = await postRoomMessage(body.channel || "ship", fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
+      const posted = roomForApiCall({ channel: body.channel, sessionRoom: roomOfSession(body.sessionId) });
+      const msg = await postRoomMessage(posted.channel, fromSeat?.name || body.from, fromSeat?.kind || "bot", text, {
         ...extras,
         seatId: extras.seatId || body.from,
         ...(body.jobId ? { jobId: String(body.jobId) } : {}),
       }, githubHint(body));
+      if (posted.note) postMessage(posted.channel, "System", "bot", posted.note, { system: true });
       void mirrorToSlack(msg, { kind: body.kind }).catch(() => undefined);
-      const entry = postBus({ ...body, text, channel: body.channel || (body.wake ? "ship" : undefined) });
+      const entry = postBus({ ...body, text, channel: posted.channel });
       const woke = await pendingWake(entry);
       const fields = woke ? publishedWake(woke) : null;
-      json(res, 201, fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry);
+      json(res, 201, { ...(fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry), ...(posted.note ? { note: posted.note } : {}) });
       return;
     }
     if (pathname === "/api/v1/github" && method === "GET") {
@@ -1475,6 +1516,16 @@ const server = createServer(async (req, res) => {
         ...combinedStatus(),
         providerKeys: hasProviderKey(),
       });
+      return;
+    }
+    const sessionRoomPath = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/room$/);
+    if (sessionRoomPath && method === "GET") {
+      const found = sessionRoom(getState(), decodeURIComponent(sessionRoomPath[1]));
+      if (!found) {
+        json(res, 404, { error: "session not bound to a seat" });
+        return;
+      }
+      json(res, 200, found);
       return;
     }
     if (pathname === "/api/v1/harness/sessions" && method === "GET") {

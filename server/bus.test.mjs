@@ -6,8 +6,11 @@ import { fileURLToPath } from "node:url";
 import { syncSeatAgent } from "./agents.mjs";
 import { readOpenCodeConfig } from "./providers.mjs";
 import { providerTurnVerdict } from "./harness.mjs";
-import { blockLatestRun, waitForIdleServe } from "./bus.mjs";
-import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
+import { blockLatestRun, roomForApiCall, SHIP_FALLBACK_NOTE, waitForIdleServe } from "./bus.mjs";
+import { delegationLines, deps, isPass, meterChildren, meterTurn, pendingWake, postBus, promptBody, roomReplyLines, taskTitle, wakeSeat } from "./bus.mjs";
+import { meterWake } from "./budget.mjs";
+import { bootCore } from "./test-helpers.mjs";
+import { liveRoomSession } from "./room-sessions.mjs";
 import { getState, mutate } from "./store.mjs";
 
 test("promptBody tells the seat which job to finish", () => {
@@ -20,6 +23,19 @@ test("promptBody tells the seat which job to finish", () => {
   ).parts[0].text;
   assert.match(text, /job-1/);
   assert.match(text, /roster_report/);
+});
+
+test("promptBody asks an un-mentioned responder for a plain-text reply in that room", () => {
+  const seat = { name: "Channel", role: "Conductor", job: "Conduct", tools: ["bus"], deny: [] };
+  const text = promptBody(seat, "channel", "Anyone here", { from: "you", kind: "implicit", channel: "general" }, null).parts[0].text;
+  assert.match(text, /A human wrote in #general without mentioning anyone/);
+  assert.match(text, /Reply in plain text, briefly, as yourself\. Roster-flow posts your text to #general\./);
+  assert.match(text, /Do not use roster_report for this reply/);
+  assert.doesNotMatch(text, /Use roster_send_message \/ roster_handoff \/ roster_report to talk/);
+  const mentioned = promptBody(seat, "channel", "@channel hi", { from: "you", kind: "mention-seat", channel: "ship" }, null).parts[0].text;
+  assert.match(mentioned, /Reply in plain text\. Roster-flow posts your text to #ship\./);
+  const mail = promptBody(seat, "channel", "hi", { from: "build", kind: "send_message" }, null).parts[0].text;
+  assert.doesNotMatch(mail, /Reply in plain text/);
 });
 
 test("a seat with no model prompts the loaded fallback and writes it onto the agent", async () => {
@@ -146,6 +162,34 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
   assert.equal((getState().runs || []).find((r) => r.id === "run-start")?.status, "blocked");
 });
 
+test("providerTurnVerdict finishes an empty completion and an idle turn with no text", () => {
+  const state = { userIds: new Set(), assistantIds: new Set() };
+  const empty = providerTurnVerdict(
+    {
+      type: "message.updated",
+      properties: { sessionID: "s1", info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop" } },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(empty.done, true);
+  assert.equal(empty.empty, true);
+  assert.equal(empty.reached, false);
+  assert.equal(empty.text, "");
+  const premature = providerTurnVerdict({ type: "session.idle", properties: { sessionID: "s2" } }, "s2", { userIds: new Set() });
+  assert.equal(premature, null);
+  const quiet = { userIds: new Set(), assistantIds: new Set() };
+  providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s2", info: { id: "a9", role: "assistant", time: { created: 5 } } } },
+    "s2",
+    quiet,
+  );
+  const idle = providerTurnVerdict({ type: "session.idle", properties: { sessionID: "s2" } }, "s2", quiet);
+  assert.equal(idle.done, true);
+  assert.equal(idle.empty, true);
+  assert.equal(idle.reached, false);
+});
+
 test("wakeSeat starts a run id and puts it on the prompt", async () => {
   const prompts = [];
   const prev = { ...deps };
@@ -167,6 +211,103 @@ test("wakeSeat starts a run id and puts it on the prompt", async () => {
     const run = (getState().runs || []).find((r) => r.id === result.runId);
     assert.equal(run?.status, "done");
     assert.equal(run?.seatId, "build");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a room wake whose reply the follow loop already mirrored is not posted again", async () => {
+  const prev = { ...deps };
+  const channel = `posted-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_posted" });
+  deps.promptSession = async () => {
+    mutate((s) => {
+      s.messages = [
+        ...s.messages,
+        { id: `m-${channel}`, channel, who: "Eng.Build", kind: "bot", seatId: "build", text: "Room reply.", sessionId: "msg_room", mirrored: true },
+      ];
+    });
+  };
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () =>
+    Object.assign(Promise.resolve({ reached: true, done: true, text: "Room reply.", messageId: "msg_room" }), { cancel() {} });
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    const woke = await wakeSeat("build", "status?", { from: "you", kind: "mention-seat", channel });
+    assert.equal(woke.started, true);
+    const posted = getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.");
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].runId, woke.runId);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a serve restart for a late hire reopens the room's session, not the DM", async () => {
+  const prev = { ...deps };
+  const created = [];
+  const prompted = [];
+  const restarts = [];
+  let restart = false;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async (title) => {
+    const id = `ses_restart_${created.length + 1}`;
+    created.push({ id, title: typeof title === "string" ? title : title?.title });
+    return { id };
+  };
+  deps.promptSession = async (id) => prompted.push(id);
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "ok" }), { cancel() {} });
+  deps.agentNeedsServeRestart = () => restart;
+  deps.ensure = async (opts) => restarts.push(opts);
+  const dm = getState().sessions?.build;
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+    if (s.roomSessions?.build) delete s.roomSessions.build.ship;
+    s.runs = (s.runs || []).map((run) => (run.status === "starting" || run.status === "running" ? { ...run, status: "done" } : run));
+  });
+  try {
+    await wakeSeat("build", "first", { from: "you", kind: "mention-seat", channel: "ship" });
+    const before = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
+    restart = true;
+    await wakeSeat("build", "second", { from: "you", kind: "mention-seat", channel: "ship" });
+    const after = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
+    assert.equal(restarts.length, 1);
+    assert.equal(restarts[0].forceRestart, true);
+    assert.notEqual(after, before);
+    assert.equal(prompted.at(-1), after);
+    assert.equal(getState().sessions?.build, dm);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a reused session posts only this turn's reply, not earlier turns from the transcript", async () => {
+  const prev = { ...deps };
+  const channel = `reused-${Date.now()}`;
+  const old = "An earlier answer that is longer than the new one.";
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_reused" });
+  deps.promptSession = async () => undefined;
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, done: true, text: "New." }), { cancel() {} });
+  deps.sessionMessages = async () => [
+    { info: { id: "msg_old", role: "assistant", time: { created: Date.now() - 60000 } }, parts: [{ type: "text", text: old }] },
+    { info: { id: "msg_new", role: "assistant", time: { created: Date.now() + 1 } }, parts: [{ type: "text", text: "New." }] },
+  ];
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    await wakeSeat("build", "status?", { from: "product", kind: "handoff", channel });
+    const texts = getState().messages.filter((m) => m.channel === channel && !m.system).map((m) => m.text);
+    assert.deepEqual(texts, ["New."]);
   } finally {
     Object.assign(deps, prev);
   }
@@ -548,6 +689,210 @@ test("wakeSeat recreates session after 404", async () => {
   }
 });
 
+test("room wakes run in the seat's session for that room and carry the messages since its last turn", async () => {
+  const prompts = [];
+  const created = [];
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.createSession = async ({ title }) => {
+    created.push(title);
+    return { id: `ses_${title}` };
+  };
+  deps.promptSession = async (id, body) => {
+    prompts.push({ id, text: body.parts?.[0]?.text || "" });
+  };
+  const room = `rs-${Date.now()}`;
+  const post = (who, seatId, text) =>
+    mutate((s) => {
+      s.messages = [...s.messages, { id: `m-${room}-${s.messages.length}`, channel: room, who, seatId, text, time: "09:00" }];
+    });
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    if (s.roomSessions) delete s.roomSessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    post("Maya", "maya", "the webhook retries twice");
+    post("You", "you", "@build can you fix it?");
+    const first = await wakeSeat("build", "@build can you fix it?", { from: "you", kind: "mention-seat", channel: room, announce: false });
+    assert.equal(first.sessionId, `ses_roster:build:${room}`);
+    assert.deepEqual(created, [`roster:build:${room}`]);
+    assert.equal(getState().sessions?.build, undefined);
+    assert.match(prompts[0].text, new RegExp(`Messages in #${room} since your last turn there`));
+    assert.match(prompts[0].text, /\[09:00\] Maya: the webhook retries twice/);
+    assert.doesNotMatch(prompts[0].text, /\[09:00\] You: @build can you fix it\?/);
+
+    post("Eng.Build", "build", "on it");
+    post("Maya", "maya", "also check the logs");
+    post("You", "you", "@build any news?");
+    const second = await wakeSeat("build", "@build any news?", { from: "you", kind: "mention-seat", channel: room, announce: false });
+    assert.equal(second.sessionId, first.sessionId);
+    assert.equal(created.length, 1);
+    assert.match(prompts[1].text, /Maya: also check the logs/);
+    assert.doesNotMatch(prompts[1].text, /the webhook retries twice/);
+    assert.doesNotMatch(prompts[1].text, /Eng\.Build: on it/);
+    assert.equal(getState().roomSessions.build[room].cursor, getState().messages.filter((m) => m.channel === room).at(-1).id);
+
+    const mail = await wakeSeat("build", "ship it", { from: "product", kind: "handoff", channel: room, announce: false });
+    assert.equal(mail.sessionId, "ses_roster:build");
+    assert.doesNotMatch(prompts[2].text, /since your last turn/);
+    const dm = await wakeSeat("build", "hi", { from: "you", kind: "dm", channel: "dm-build", announce: false });
+    assert.equal(dm.sessionId, "ses_roster:build");
+    assert.equal(getState().sessionRooms.build, "dm-build");
+  } finally {
+    mutate((s) => {
+      if (s.roomSessions) delete s.roomSessions.build;
+    });
+    Object.assign(deps, prev);
+  }
+});
+
+test("room wakes tell the seat how to bring someone in, and hop wakes say who mentioned it", () => {
+  const plain = roomReplyLines({ channel: "ship", kind: "mention-seat" });
+  assert.ok(plain.some((l) => l.includes("@mention their seat id in your reply; that wakes them here")));
+  assert.ok(!plain.some((l) => l.includes("mentioned you in")));
+  const hop = roomReplyLines({ channel: "ship", kind: "mention-seat", thread: { hop: 2, from: "product", maxHops: 4 } });
+  assert.equal(hop[0], "@product mentioned you in #ship (hop 2 of 4). Answer them; @mention someone else only if they must act.");
+  assert.deepEqual(roomReplyLines({ kind: "send_message" }), []);
+});
+
+test("team-mode wakes are told to reply PASS when they have nothing to add", () => {
+  const lines = roomReplyLines({ channel: "ship", kind: "implicit", teamMode: true });
+  assert.ok(lines.some((l) => l.includes("otherwise reply with exactly PASS")));
+  assert.ok(isPass("PASS") && isPass(" pass. ") && !isPass("PASS: I disagree"));
+});
+
+test("a PASS reply finishes the run without posting in the room", async () => {
+  const prev = { ...deps };
+  const channel = `pass-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_pass" });
+  deps.promptSession = async () => undefined;
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, done: true, text: "PASS", messageId: "msg_pass" }), { cancel() {} });
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    const woke = await wakeSeat("build", "anyone?", { from: "you", kind: "implicit", channel, teamMode: true, announce: false });
+    assert.equal(woke.started, true);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "done");
+    assert.equal(getState().messages.filter((m) => m.channel === channel && !m.system).length, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("meterTurn corrects the wake's usage row from the session's reported tokens", async () => {
+  const prev = { ...deps };
+  const runId = `run-meter-${Date.now()}`;
+  const was = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "build")));
+  mutate((s) => {
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.tokenBudget = 0;
+    meterWake(s, { seatId: "build", runId, inputTokens: 100, outputTokens: 200, channelId: "ship" });
+  });
+  const spentAfterEstimate = getState().seats.find((s) => s.id === "build").spent;
+  deps.sessionMessages = async (id) => {
+    assert.equal(id, "ses-meter");
+    return [{ info: { role: "assistant", time: { created: Date.now() }, cost: 0.004, tokens: { input: 900, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] }];
+  };
+  try {
+    const out = await meterTurn("build", { sessionId: "ses-meter", runId });
+    assert.equal(out.row.tokens, 1000);
+    assert.equal(out.row.channelId, "ship");
+    assert.equal(getState().seats.find((s) => s.id === "build").spent, spentAfterEstimate + 700);
+    assert.equal(await meterTurn("build", { sessionId: "ses-meter", runId: null }), null);
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      s.seats = s.seats.map((x) => (x.id === "build" ? was : x));
+      s.usage = (s.usage || []).filter((r) => r.runId !== runId);
+    });
+  }
+});
+
+test("supervisor prompts list the direct reports they can task and the ones they cannot", () => {
+  const state = {
+    seats: [
+      { id: "sup", name: "Sup", role: "Supervisor", kind: "bot", seatType: "supervisor", job: "Route", tools: [], deny: [] },
+      { id: "a", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "idle" },
+      { id: "b", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "paused", pauseReason: "budget" },
+      { id: "c", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "idle", tokenBudget: 10, spent: 10 },
+      { id: "d", kind: "bot", seatType: "specialist", reportsTo: "sup", status: "paused", pauseReason: "manual" },
+    ],
+  };
+  const lines = delegationLines(state.seats[0], state).filter(Boolean);
+  assert.match(lines[0], /delegate inside this turn with the task tool\. Set subagent_type to the seat id of a direct report: a\./);
+  assert.equal(lines[1], "Do not delegate to: b (over budget), c (over budget), d (paused).");
+  assert.deepEqual(delegationLines(state.seats[1], state), []);
+  const sup = getState().seats.find((s) => s.id === "eng-supervisor");
+  const text = promptBody(sup, "eng-supervisor", "fix it", { from: "you", kind: "implicit", channel: "team-eng" }, null).parts[0].text;
+  assert.match(text, /task tool/);
+  assert.match(text, /build/);
+  const spec = getState().seats.find((s) => s.id === "build");
+  assert.doesNotMatch(promptBody(spec, "build", "fix it", { from: "you", kind: "implicit", channel: "ship" }, null).parts[0].text, /task tool/);
+});
+
+test("taskTitle drops OpenCode's subagent suffix", () => {
+  assert.equal(taskTitle("Fix flaky webhook test (@build subagent)"), "Fix flaky webhook test");
+  assert.equal(taskTitle("Plain"), "Plain");
+  assert.equal(taskTitle(null), "");
+});
+
+test("meterChildren meters each subagent session against the seat it ran as", async () => {
+  const prev = { ...deps };
+  const runId = `run-child-${Date.now()}`;
+  const was = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "build")));
+  const wasSup = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "eng-supervisor")));
+  const now = Date.now();
+  deps.sessionChildren = async (id) => {
+    assert.equal(id, "ses-parent");
+    return [
+      { id: "ses-kid", parentID: "ses-parent", title: "Fix flaky webhook test (@build subagent)", time: { created: now } },
+      { id: "ses-old", parentID: "ses-parent", title: "Earlier (@build subagent)", time: { created: now - 60_000 } },
+      { id: "ses-ghost", parentID: "ses-parent", title: "Explore (@explore subagent)", time: { created: now } },
+    ];
+  };
+  deps.sessionMessages = async (id) => {
+    if (id === "ses-ghost") return [{ info: { role: "assistant", agent: "explore", time: { created: now }, tokens: { input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] }];
+    return [{ info: { role: "assistant", agent: "build", time: { created: now }, cost: 0.001, tokens: { input: 400, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] }];
+  };
+  mutate((s) => {
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.tokenBudget = 0;
+  });
+  try {
+    const out = await meterChildren("eng-supervisor", { sessionId: "ses-parent", since: now - 1000, runId, channelId: "team-eng" });
+    assert.deepEqual(
+      out.map((c) => [c.childSessionId, c.seatId, c.title, c.tokens]),
+      [
+        ["ses-kid", "build", "Fix flaky webhook test", 500],
+        ["ses-ghost", null, "Explore", 10],
+      ],
+    );
+    const ghost = getState().usage.filter((r) => r.runId === `${runId}:ses-ghost`);
+    assert.deepEqual(ghost.map((r) => [r.seatId, r.tokens]), [["eng-supervisor", 10]]);
+    const rows = getState().usage.filter((r) => r.runId === `${runId}:ses-kid`);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].source, "task");
+    assert.equal(rows[0].seatId, "build");
+    assert.equal(rows[0].parentSeatId, "eng-supervisor");
+    await meterChildren("eng-supervisor", { sessionId: "ses-parent", since: now - 1000, runId, channelId: "team-eng" });
+    assert.equal(getState().usage.filter((r) => r.runId === `${runId}:ses-kid`).length, 1);
+    assert.deepEqual(await meterChildren("eng-supervisor", { sessionId: "ses-parent", runId: null }), []);
+  } finally {
+    Object.assign(deps, prev);
+    mutate((s) => {
+      s.seats = s.seats.map((x) => (x.id === "build" ? was : x.id === "eng-supervisor" ? wasSup : x));
+      s.usage = (s.usage || []).filter((r) => !String(r.runId || "").startsWith(runId));
+    });
+  }
+});
+
 test("a later wake posts the same text again", async () => {
   const prev = { ...deps };
   const reply = { reached: true, text: "same-reply", done: true };
@@ -711,5 +1056,57 @@ test("overlapping wakes share one wakeSeat result", async () => {
     assert.equal(b.runId, a.runId);
   } finally {
     Object.assign(deps, prev);
+  }
+});
+
+test("an API call with no room posts to #ship and says so", async () => {
+  assert.deepEqual(roomForApiCall({ channel: "general" }), { channel: "general", note: null });
+  assert.deepEqual(roomForApiCall({ sessionRoom: "incidents" }), { channel: "incidents", note: null });
+  assert.deepEqual(roomForApiCall({ channel: "ship" }), { channel: "ship", note: null });
+  assert.deepEqual(roomForApiCall({}), { channel: "ship", note: SHIP_FALLBACK_NOTE });
+
+  const TOKEN = "rf_room_fallback_token_0001";
+  const core = await bootCore({
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_HARNESS_AUTOSTART: "0",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    const sent = await fetch(`${core.base}/api/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ from: "product", to: "build", text: "no room on messages", wake: false }),
+    });
+    const body = await sent.json();
+    assert.equal(sent.status, 201, JSON.stringify(body));
+    assert.equal(body.channel, "ship");
+    assert.equal(body.note, SHIP_FALLBACK_NOTE);
+    const bus = await fetch(`${core.base}/api/v1/bus/send`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ from: "product", to: "build", text: "no room on the bus", wake: false }),
+    });
+    const busBody = await bus.json();
+    assert.equal(bus.status, 201, JSON.stringify(busBody));
+    assert.equal(busBody.note, SHIP_FALLBACK_NOTE);
+    const named = await fetch(`${core.base}/api/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ from: "product", to: "build", text: "explicit general", channel: "general", wake: false }),
+    });
+    const namedBody = await named.json();
+    assert.equal(named.status, 201);
+    assert.equal(namedBody.channel, "general");
+    assert.equal(namedBody.note, undefined);
+    const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    const ship = (state.messages || []).filter((m) => m.channel === "ship");
+    assert.equal(ship.filter((m) => m.text === SHIP_FALLBACK_NOTE && m.system).length, 2);
+    assert.ok(ship.some((m) => m.text === "no room on messages"));
+    assert.ok(ship.some((m) => m.text === "no room on the bus"));
+    assert.ok(!(state.messages || []).some((m) => m.channel === "general" && m.text === SHIP_FALLBACK_NOTE));
+  } finally {
+    await core.stop();
   }
 });

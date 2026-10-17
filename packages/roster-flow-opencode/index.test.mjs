@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTools, rosterAuthHeaders, wikiflowApi, wikiflowConfig } from "./index.js";
+import { NO_ROOM_ERROR, buildTools, rosterAuthHeaders, systemBlock, wikiflowApi, wikiflowConfig } from "./index.js";
 
 function fakeTool(def) {
   return def;
@@ -29,6 +29,7 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
     }
     if (path === "/api/v1/teams") return [{ id: "eng" }];
     if (path === "/api/v1/projects") return [{ id: "billing" }];
+    if (path === "/api/v1/sessions/ses-ship/room") return { sessionId: "ses-ship", seatId: "product", channelId: "ship", kind: "room" };
     if (path === "/api/v1/architect/chat") return { reply: "plan", plan: { id: "plan-1", summary: "Cut scout", ops: [] } };
     return { id: "bus-1", path };
   };
@@ -38,13 +39,15 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
 
   const sent = await tools.roster_send_message.execute(
     { to: "build", text: "brief", blocks: JSON.stringify([{ type: "header", text: { type: "plain_text", text: "Hi" } }]) },
-    { agent: "product" },
+    { agent: "product", sessionID: "ses-ship" },
   );
   assert.match(sent.title, /build/);
   const sendCall = calls.find((c) => c.path === "/api/v1/messages");
   const sendBody = JSON.parse(sendCall.init.body);
   assert.equal(sendBody.wake, true);
   assert.equal(sendBody.blocks[0].type, "header");
+  assert.equal(sendBody.channel, "ship");
+  assert.equal(sendBody.sessionId, "ses-ship");
 
   await tools.roster_report.execute(
     {
@@ -53,17 +56,21 @@ test("plugin tools POST to CORE bus (Oh My OpenAgent shape)", async () => {
       branch: "eng/webhook",
       blocks: JSON.stringify([{ type: "section", text: { type: "mrkdwn", text: "ok" } }]),
     },
-    { agent: "product" },
+    { agent: "product", sessionID: "ses-ship" },
   );
   const report = calls.find((c) => c.path === "/api/v1/bus/send" && JSON.parse(c.init.body).kind === "report");
   const reportBody = JSON.parse(report.init.body);
   assert.equal(reportBody.blocks[0].type, "section");
   assert.equal(reportBody.prUrl, "https://github.com/acme/app/pull/1");
   assert.equal(reportBody.branch, "eng/webhook");
+  assert.equal(reportBody.channel, "ship");
+  assert.equal(reportBody.to, "channel:ship");
 
-  await tools.roster_handoff.execute({ to: "build", text: "your turn" }, { agent: "product" });
+  await tools.roster_handoff.execute({ to: "build", text: "your turn" }, { agent: "product", sessionID: "ses-ship" });
   const hand = calls.find((c) => c.path === "/api/v1/bus/send" && JSON.parse(c.init.body).kind === "handoff");
   assert.ok(hand);
+  assert.equal(JSON.parse(hand.init.body).channel, "ship");
+  assert.equal(calls.filter((c) => c.path === "/api/v1/sessions/ses-ship/room").length, 1);
 
   await tools.roster_ask_human.execute({ text: "approve?" }, { agent: "product" });
   const ask = calls.filter((c) => c.path === "/api/v1/bus/send").at(-1);
@@ -168,4 +175,52 @@ test("wikiflow_put_page validates sources entries as {path, startLine?, endLine?
   for (const [sources, re] of bad) {
     await assert.rejects(tools.wikiflow_put_page.execute({ ...base, sources }, {}), re);
   }
+});
+
+test("systemBlock scopes a room session to the room's members and the caller's team", () => {
+  const seats = [
+    { id: "channel", name: "Channel", kind: "bot", job: "Conduct", instructions: "LONG CONDUCTOR TEXT" },
+    { id: "build", name: "Eng.Build", kind: "bot", team: "eng", job: "Ship the PR", instructions: "LONG BUILD TEXT" },
+    { id: "review", name: "Eng.Review", kind: "bot", team: "eng", job: "Review" },
+    { id: "scout", name: "Scout", kind: "bot", team: "services", job: "Search" },
+    { id: "maya", name: "Maya", kind: "human", job: "Design" },
+  ];
+  const teams = [
+    { id: "eng", name: "@eng", seatIds: ["build", "review"] },
+    { id: "services", name: "@services", seatIds: ["scout"] },
+  ];
+  const channels = [
+    { id: "general", name: "#general", teamIds: [], seatIds: ["channel", "maya"] },
+    { id: "incidents", name: "#incidents", teamIds: ["services"], seatIds: ["channel"] },
+  ];
+  const room = systemBlock({ seats, teams, channels, bound: { kind: "room", seatId: "build", channelId: "general" } }).join("\n");
+  assert.match(room, /Current room: #general/);
+  assert.match(room, /maya: Maya \(human\) — Design/);
+  assert.match(room, /review: Eng\.Review · team=eng — Review/);
+  assert.doesNotMatch(room, /scout/);
+  assert.doesNotMatch(room, /#incidents/);
+  assert.doesNotMatch(room, /LONG/);
+  const dm = systemBlock({ seats, teams, channels, bound: { kind: "dm", seatId: "build", channelId: "dm-build" } }).join("\n");
+  assert.match(dm, /#incidents/);
+  assert.match(dm, /scout: Scout/);
+  assert.match(dm, /LONG BUILD TEXT/);
+  assert.ok(room.length < dm.length);
+});
+
+test("room tools fail clearly when the session has no room, and honor an explicit channel", async () => {
+  const calls = [];
+  const fetchApi = async (path, init = {}) => {
+    calls.push({ path, init });
+    if (path.startsWith("/api/v1/sessions/")) throw new Error("session not bound to a seat");
+    return { id: "bus-1" };
+  };
+  const tools = buildTools(fakeTool, fetchApi);
+  await assert.rejects(tools.roster_send_message.execute({ to: "build", text: "hi" }, { agent: "product", sessionID: "ses-x" }), new RegExp(NO_ROOM_ERROR.slice(0, 40)));
+  await assert.rejects(tools.roster_report.execute({ text: "done" }, { agent: "product" }), /not bound to a Roster-flow room/);
+  await assert.rejects(tools.roster_handoff.execute({ to: "build", text: "go" }, { agent: "product" }), /not bound/);
+  assert.ok(!calls.some((c) => c.path === "/api/v1/messages" || c.path === "/api/v1/bus/send"));
+  await tools.roster_report.execute({ text: "done", channel: "incidents" }, { agent: "product" });
+  await tools.roster_send_message.execute({ to: "channel:general", text: "fyi" }, { agent: "product" });
+  const posted = calls.filter((c) => c.path === "/api/v1/messages" || c.path === "/api/v1/bus/send").map((c) => JSON.parse(c.init.body).channel);
+  assert.deepEqual(posted, ["incidents", "general"]);
 });

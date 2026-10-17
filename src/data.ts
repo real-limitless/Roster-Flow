@@ -158,12 +158,49 @@ export type Team = {
   models?: string[];
 };
 
+export type RespondMode = "lead" | "team" | "conductor" | "quiet";
+
+export type RoomBudget = {
+  tokensPerDay: number;
+  spentToday: number;
+  over: boolean;
+  quietUntil: string | null;
+};
+
+export type ThinkingSeat = { seatId: string; name: string; model?: string | null; since: number };
+
+export type RoomLimits = {
+  implicitPerMinute?: number;
+  fanout?: number;
+  tokensPerDay?: number;
+  maxHops?: number;
+  maxBotWakesPerThread?: number;
+};
+
 export type Channel = {
   id: string;
   name: string;
   topic?: string;
   teamIds?: string[];
   seatIds?: string[];
+  /** Bot member that answers un-mentioned messages. */
+  leadSeatId?: string | null;
+  respond?: RespondMode;
+  limits?: RoomLimits;
+  /** Set by CORE: who answers un-mentioned messages now, before pause and model checks. */
+  responderSeatId?: string | null;
+  /** Set by CORE when the room has a daily token budget. */
+  budget?: RoomBudget | null;
+};
+
+export type SeatRoom = {
+  id: string;
+  name: string;
+  direct: boolean;
+  viaTeams: string[];
+  lead: boolean;
+  responder: boolean;
+  respond: RespondMode;
 };
 
 export type CatalogModel = {
@@ -193,7 +230,7 @@ export const seats: Seat[] = [
   { id: "maya", name: "Maya", role: "VP Eng", kind: "human", seatType: "human", reportsTo: "you", job: "Owns product and engineering seats.", tools: ["approve"], deny: [], status: "idle" },
   { id: "jules", name: "Jules", role: "Eng lead", kind: "human", seatType: "human", reportsTo: "maya", team: "eng", projectId: "billing", job: "Runs @eng. Attaches harness when a bot stalls.", tools: ["edit", "approve"], deny: ["deploy"], status: "idle" },
   { id: "priya", name: "Priya", role: "QA lead", kind: "human", seatType: "human", reportsTo: "you", job: "Owns the QA gate. Signs staging.", tools: ["approve"], deny: ["deploy"], status: "idle" },
-  { id: "channel", name: "Channel", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash", persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Own @channel. Route via the bus. Do not edit or deploy.", job: "Compile sentences into runs. Own @channel. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
+  { id: "channel", name: "Channel", role: "Conductor", kind: "bot", seatType: "specialist", reportsTo: "you", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash", persona: "Org conductor. Dry, specific, never ships code.", instructions: "Compile human sentences into run graphs. Own @channel. Route via the bus. Do not edit or deploy. When you answer for a room nobody else answers, reply to humans briefly in plain text.", job: "Compile sentences into runs. Own @channel. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
   { id: "architect", name: "Architect", role: "Org design", kind: "bot", seatType: "specialist", reportsTo: "you", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash", persona: "Org architect. Dry, specific. Propose plans. Never ship code.", instructions: "Propose an OrgPlan JSON only: replace_org, create_project, create_team, hire, reparent, fire. Cap 48 ops. Do not apply. Do not edit or deploy.", job: "Staff projects and suggest layoffs. System seat.", tools: ["bus", "read"], deny: ["edit", "deploy"], status: "idle", system: true },
   { id: "mcp-guest", name: "MCP Guest", role: "Guest", kind: "bot", seatType: "harness", reportsTo: "you", mcpGuest: true, origin: "mcp", job: "External agent via CORE /mcp. Not an OpenCode loop.", tools: ["bus", "read"], deny: ["edit", "deploy", "bash"], status: "idle" },
   { id: "product", name: "Product", role: "Brief", kind: "bot", seatType: "specialist", reportsTo: "maya", projectId: "billing", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash", persona: "Product brief writer. Acceptance over opinions.", instructions: "Turn channel talk into a brief and acceptance list. No edits, no bash write.", knowledge: "Project billing: webhook idempotency. Acceptance over opinions. Confirm on deploy.", skills: ["brief"], job: "Write acceptance. No edits.", tools: ["read", "grep", "webfetch"], deny: ["edit", "bash"], status: "idle" },
@@ -343,6 +380,24 @@ export type Msg = {
   mirrored?: boolean;
   sessionId?: string;
   slack?: { inbound?: boolean; channel?: string; ts?: string; user?: string };
+  thread?: MsgThread;
+  delegation?: MsgDelegation;
+};
+
+export type MsgDelegation = {
+  parentSeatId: string;
+  childSeatId: string;
+  childSessionId: string;
+  tokens: number;
+};
+
+export type MsgThread = {
+  threadId: string;
+  hop: number;
+  from?: string | null;
+  maxHops: number;
+  botWakes: number;
+  maxBotWakes: number;
 };
 
 export const skills: Skill[] = [
