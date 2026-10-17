@@ -875,6 +875,106 @@ test("a room over its daily token budget is quiet for un-mentioned messages unti
   }
 });
 
+test("a 30s provider keeps the thinking row until the reply and posts no failure line", async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  let release;
+  const rest = new Promise((resolve) => {
+    release = resolve;
+  });
+  const channel = `slow30-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = () => ({ providerID: "xai", modelID: "m", configured: true, connected: true, loaded: true });
+  deps.followTicks = 1;
+  deps.followDelayMs = 0;
+  deps.pullAssistant = async () => [];
+  busDeps.harnessStatus = () => ({ harness: "up" });
+  busDeps.createSession = async () => ({ id: "ses_slow30" });
+  busDeps.promptSession = async () => undefined;
+  busDeps.sessionMessages = async () => [];
+  busDeps.loadedModels = async () => null;
+  // The start window (about 10s) elapses before a 30s provider sends its first chunk.
+  // rest is that late chunk: the wake has already returned started:false.
+  busDeps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: false, timeout: true, done: false, text: "" });
+    pending.rest = rest;
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (!s.channels.some((c) => c.id === channel)) s.channels.push({ id: channel, name: `#${channel}`, seatIds: ["you", "build"], teamIds: [] });
+    if (s.sessions) delete s.sessions.build;
+    if (s.roomSessions?.build) delete s.roomSessions.build[channel];
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.status = "idle";
+    seat.pauseReason = undefined;
+  });
+  try {
+    const routed = routeChannelMessage({ channelId: channel, text: "@build take your time" });
+    const [woke] = await routed.started;
+    assert.equal(woke.started, false);
+    assert.equal(woke.pending, true);
+    assert.deepEqual(roomThinking(channel).map((row) => row.seatId), ["build"]);
+    const lines = () => getState().messages.filter((m) => m.channel === channel);
+    assert.equal(lines().some((m) => /did not start|did not respond in time/.test(m.text)), false);
+    release({ reached: true, text: "Arrived after 30s.", done: true, messageId: "msg_slow30" });
+    const start = Date.now();
+    while (Date.now() - start < 1000 && !lines().some((m) => m.text === "Arrived after 30s.")) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const replies = lines().filter((m) => m.seatId === "build" && !m.system);
+    assert.deepEqual(replies.map((m) => m.text), ["Arrived after 30s."]);
+    assert.equal(replies.filter((m) => m.runId === woke.runId).length, 1);
+    assert.equal(lines().some((m) => /did not start|did not respond in time/.test(m.text)), false);
+    assert.deepEqual(roomThinking(channel), []);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "done");
+  } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+  }
+});
+
+test("an over-budget seat is told it is over its token budget", async () => {
+  const prev = { ...deps };
+  const prevBus = { ...busDeps };
+  const was = JSON.parse(JSON.stringify(getState().seats.find((s) => s.id === "build")));
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.knownLoadedModels = () => null;
+  deps.keyStatus = () => ({ providerID: "xai", modelID: "m", configured: true, connected: true, loaded: true });
+  deps.followTicks = 0;
+  busDeps.harnessStatus = () => ({ harness: "up" });
+  busDeps.promptSession = async () => {
+    throw new Error("an over-budget seat is not prompted");
+  };
+  const channel = `budget-${Date.now()}`;
+  mutate((s) => {
+    if (!s.channels.some((c) => c.id === channel)) s.channels.push({ id: channel, name: `#${channel}`, seatIds: ["you", "build"], teamIds: [] });
+    const seat = s.seats.find((x) => x.id === "build");
+    seat.status = "idle";
+    seat.pauseReason = undefined;
+    seat.tokenBudget = 10;
+    seat.spent = 10;
+  });
+  try {
+    await routeChannelMessage({ channelId: channel, text: "@build status?" }).pending;
+    const lines = getState().messages.filter((m) => m.channel === channel && m.system).map((m) => m.text);
+    assert.ok(lines.includes("Eng.Build is over its token budget — wake skipped."), lines.join(" | "));
+    assert.equal(lines.some((text) => /is paused/.test(text)), false);
+    assert.deepEqual(roomThinking(channel), []);
+  } finally {
+    Object.assign(deps, prev);
+    Object.assign(busDeps, prevBus);
+    mutate((s) => {
+      s.seats = s.seats.map((x) => (x.id === "build" ? was : x));
+    });
+  }
+});
+
 test("a woken seat shows as thinking until its reply lands, with no Waking line", async () => {
   const prev = { ...deps };
   const stamp = Date.now();

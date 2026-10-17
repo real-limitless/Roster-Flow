@@ -24,6 +24,7 @@ import { wakeBlocked } from "./seats.mjs";
 import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
 import { applyTurnUsage, estimateTokens, meterWake } from "./budget.mjs";
 import { dropRoomSession, liveRoomSession, roomContext, roomSessionTitle, setRoomSession } from "./room-sessions.mjs";
+import { stopThinking } from "./thinking.mjs";
 import { agentNeedsServeRestart, syncSeatAgent } from "./agents.mjs";
 
 export const deps = {
@@ -498,6 +499,7 @@ async function postSeatReply(to, seat, runMeta, reply, messageId) {
         if (messageId && !msg.sessionId) msg.sessionId = messageId;
       });
     }
+    stopThinking(runMeta.channel, to);
     return;
   }
   postMessage(runMeta.channel, seat.name, "bot", reply, {
@@ -507,14 +509,31 @@ async function postSeatReply(to, seat, runMeta, reply, messageId) {
     ...(messageId ? { sessionId: messageId } : {}),
     ...threadCaption(to, runMeta.channel),
   });
+  stopThinking(runMeta.channel, to);
 }
 
 async function recoverLateReply(to, seat, runMeta, reply, messageId) {
   const run = (getState().runs || []).find((item) => item.id === runMeta.runId);
-  if (!run || (run.status !== "blocked" && run.status !== "starting")) return;
+  if (!run || (run.status !== "blocked" && run.status !== "starting")) {
+    stopThinking(runMeta.channel, to);
+    return;
+  }
   noteRun(runMeta.runId, to, "running", null);
   await postSeatReply(to, seat, runMeta, reply, messageId);
   noteRun(runMeta.runId, to, "done", null);
+  stopThinking(runMeta.channel, to);
+}
+
+/** The start window elapsed and nothing more is coming. Clear the thinking row and post the failure now. */
+async function closePendingWake(to, runMeta, failure) {
+  stopThinking(runMeta.channel, to);
+  if (!failure || !runMeta?.channel) return;
+  if (runMeta.announce === false) {
+    const { statusMessage } = await import("./chat.mjs");
+    statusMessage(runMeta.channel, failure);
+    return;
+  }
+  await announceWake(runMeta, failure);
 }
 
 async function finishPrompted(to, seat, text, runMeta, result, started) {
@@ -692,7 +711,7 @@ async function wakeSeatBody(to, text, meta = {}) {
       detail: { harness: kind, error, code: err.code || null },
     });
     noteRun(runMeta.runId, to, "blocked", error);
-    await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${error}`);
+    const failure = `${seat.name} did not start run ${runMeta.runId}: ${error}`;
     if (err.lateReply) {
       Promise.resolve(err.lateReply)
         .then(async (final) => {
@@ -712,11 +731,13 @@ async function wakeSeatBody(to, text, meta = {}) {
             }
           }
           if (text) return recoverLateReply(to, seat, runMeta, text, messageId);
-          return null;
+          return closePendingWake(to, runMeta, failure);
         })
-        .catch(() => undefined);
+        .catch(() => closePendingWake(to, runMeta, failure));
+    } else {
+      await announceWake(runMeta, failure);
     }
-    return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false };
+    return { error, code: err.code || null, seat: to, harness: kind, runId: runMeta.runId, started: false, pending: Boolean(err.lateReply) };
   }
 }
 
