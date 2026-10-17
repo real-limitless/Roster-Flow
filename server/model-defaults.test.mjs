@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contextTokenLimit, DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, outputTokenLimit } from "./model-defaults.mjs";
+import { contextTokenLimit, DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, FEATHERLESS_CHAT_CONTEXT, FEATHERLESS_CHAT_ID, MIN_OUTPUT_TOKENS, outputTokenLimit } from "./model-defaults.mjs";
 
 test("chat and conductor output budget stays at or above 512", () => {
   assert.ok(MIN_OUTPUT_TOKENS >= 512);
@@ -12,4 +12,6 @@ test("chat and conductor output budget stays at or above 512", () => {
   assert.equal(outputTokenLimit(4096), 4096);
   assert.equal(contextTokenLimit(undefined), DEFAULT_CONTEXT_TOKENS);
   assert.equal(contextTokenLimit(200000), 200000);
+  assert.equal(FEATHERLESS_CHAT_CONTEXT, 262144);
+  assert.equal(contextTokenLimit(undefined, FEATHERLESS_CHAT_ID), 262144);
 });

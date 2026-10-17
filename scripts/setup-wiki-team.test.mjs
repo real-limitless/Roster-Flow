@@ -39,6 +39,7 @@ test("setup-wiki-team registers Featherless by env ref, project, and @wiki team"
   assert.ok(modelIds.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
   assert.ok(modelIds.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
   assert.ok(put.body.models.every((m) => m.limit.context > 0 && m.limit.output >= 512));
+  assert.equal(put.body.models.find((m) => m.id === "deepseek-ai/DeepSeek-V4.1-Flash").limit.context, 262144);
   for (const spec of team.body.specialists) {
     assert.ok(modelIds.includes(spec.model.slice("featherless/".length)), spec.model);
   }
