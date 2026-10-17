@@ -50,7 +50,7 @@
         },
         "deepseek-ai/DeepSeek-V4.1-Flash": {
           "name": "DeepSeek V4.1 Flash",
-          "limit": { "context": 128000, "output": 8192 }
+          "limit": { "context": 262144, "output": 8192 }
         }
       }
     }
@@ -101,7 +101,7 @@
         },
         "deepseek-ai/DeepSeek-V4.1-Flash": {
           "name": "DeepSeek V4.1 Flash",
-          "limit": { "context": 128000, "output": 8192 }
+          "limit": { "context": 262144, "output": 8192 }
         }
       }
     }
