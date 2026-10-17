@@ -142,9 +142,26 @@ export function pendingWake(entry) {
   return pendingWakes.get(entry) || null;
 }
 
+/** Shown in #ship and on the API response when a call had no room and no session room. */
+export const SHIP_FALLBACK_NOTE = "No room was given, so this was posted to #ship.";
+
+/**
+ * Room for POST /messages and /bus/send: explicit channel, then the session's room,
+ * then #ship. The #ship step is the documented last resort, and it is not silent.
+ */
+export function roomForApiCall({ channel, sessionRoom } = {}) {
+  const explicit = String(channel || "").trim();
+  if (explicit) return { channel: explicit, note: null };
+  const known = String(sessionRoom || "").trim();
+  if (known) return { channel: known, note: null };
+  return { channel: "ship", note: SHIP_FALLBACK_NOTE };
+}
+
 export function postBus({ from, to, kind = "send_message", text, runId, wake = false, channel, jobId }) {
   const waking = Boolean(wake) && !String(to || "").startsWith("channel:");
   const resolvedRunId = runId || (waking ? uid("run") : null);
+  // Heartbeats and routines have no room, so a wake with none still uses #ship.
+  // API calls resolve the room first and pass it, with SHIP_FALLBACK_NOTE when they fall back.
   const room = channel || (waking ? "ship" : null);
   const entry = {
     id: uid("bus"),
