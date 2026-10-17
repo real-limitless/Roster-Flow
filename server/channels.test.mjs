@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyState, migrateState } from "./seed.mjs";
-import { createChannel, dropStaleLead, patchChannel, resolveMembers, responderCandidates } from "./channels.mjs";
+import {
+  channelsForSeat,
+  createChannel,
+  dropStaleLead,
+  ensureTeamRooms,
+  patchChannel,
+  publicChannel,
+  resolveMembers,
+  responderCandidates,
+  roomLimits,
+  roomResponder,
+} from "./channels.mjs";
 import { fireSeat } from "./seats.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
 
@@ -83,4 +94,71 @@ test("migrateState keeps a channel lead across a reload", () => {
   patchChannel(state, "ship", { leadSeatId: "qa" });
   const reloaded = migrateState(JSON.parse(JSON.stringify(state)));
   assert.equal(reloaded.channels.find((c) => c.id === "ship").leadSeatId, "qa");
+});
+
+test("patchChannel sets respond and limits, and rejects unknown modes and bad limits", () => {
+  const state = emptyState();
+  const ch = patchChannel(state, "ship", { respond: "quiet", limits: { implicitPerMinute: 2 } });
+  assert.equal(ch.respond, "quiet");
+  assert.deepEqual(ch.limits, { implicitPerMinute: 2 });
+  assert.equal(roomLimits(ch).implicitPerMinute, 2);
+  assert.throws(() => patchChannel(state, "ship", { respond: "team" }), /respond must be one of lead, conductor, quiet/);
+  assert.throws(() => patchChannel(state, "ship", { limits: { implicitPerMinute: 0 } }), /whole number/);
+  assert.equal(state.channels.find((c) => c.id === "ship").respond, "quiet");
+  patchChannel(state, "ship", { limits: { implicitPerMinute: null } });
+  assert.deepEqual(state.channels.find((c) => c.id === "ship").limits, {});
+  assert.equal(roomLimits(state.channels.find((c) => c.id === "ship")).implicitPerMinute, 4);
+});
+
+test("roomResponder follows the mode and publicChannel reports it", () => {
+  const state = emptyState();
+  const ship = state.channels.find((c) => c.id === "ship");
+  assert.equal(roomResponder(ship, state), "product");
+  ship.leadSeatId = "build";
+  assert.equal(publicChannel(ship, state).responderSeatId, "build");
+  ship.respond = "conductor";
+  assert.equal(roomResponder(ship, state), CONDUCTOR_ID);
+  ship.respond = "quiet";
+  assert.equal(publicChannel(ship, state).responderSeatId, null);
+  assert.equal(publicChannel(state.channels.find((c) => c.id === "general"), state).respond, "lead");
+});
+
+test("channelsForSeat lists direct and team rooms with lead and responder flags", () => {
+  const state = migrateState(emptyState());
+  state.channels.find((c) => c.id === "ship").leadSeatId = "build";
+  const rooms = channelsForSeat(state, "build");
+  const byId = Object.fromEntries(rooms.map((r) => [r.id, r]));
+  assert.deepEqual(Object.keys(byId).sort(), ["eng-agents", "incidents", "ship", "team-eng"]);
+  assert.equal(byId.ship.direct, true);
+  assert.equal(byId.ship.lead, true);
+  assert.equal(byId.ship.responder, true);
+  assert.deepEqual(byId["eng-agents"].viaTeams, ["eng"]);
+  assert.equal(byId["eng-agents"].direct, false);
+  assert.equal(byId["team-eng"].responder, false);
+  assert.equal(channelsForSeat(state, CONDUCTOR_ID).length, state.channels.length);
+  assert.deepEqual(channelsForSeat(state, "nobody"), []);
+});
+
+test("staffed teams get a home room led by the supervisor, once", () => {
+  const state = migrateState(emptyState());
+  const eng = state.channels.find((c) => c.id === "team-eng");
+  assert.deepEqual(eng.teamIds, ["eng"]);
+  assert.equal(eng.leadSeatId, "eng-supervisor");
+  assert.equal(eng.respond, "lead");
+  assert.ok(state.channels.some((c) => c.id === "team-services"));
+  assert.ok(!state.channels.some((c) => c.id === "team-ship"));
+  eng.leadSeatId = null;
+  const again = migrateState(state);
+  assert.equal(again.channels.filter((c) => c.id === "team-eng").length, 1);
+  assert.equal(again.channels.find((c) => c.id === "team-eng").leadSeatId, null);
+});
+
+test("a team room the client drafted before modes existed gets the supervisor as lead", () => {
+  const state = emptyState();
+  state.channels.push({ id: "team-eng", name: "@eng", topic: "", teamIds: [], seatIds: ["you"] });
+  ensureTeamRooms(state);
+  const eng = state.channels.find((c) => c.id === "team-eng");
+  assert.deepEqual(eng.teamIds, ["eng"]);
+  assert.equal(eng.leadSeatId, "eng-supervisor");
+  assert.equal(eng.respond, "lead");
 });

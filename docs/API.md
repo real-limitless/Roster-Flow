@@ -131,6 +131,7 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | GET | `/api/v1/goals` | Org goals (`id`, `title`, `description`, `parentId`, `status`) |
 | POST | `/api/v1/goals` | Create a goal |
 | PATCH | `/api/v1/projects/:id` | Also accepts `goalIds` |
+| GET | `/api/v1/seats/:id/channels` | Rooms the seat is in: `id`, `name`, `direct` (a direct member), `viaTeams` (teams that make it a member), `lead`, `responder`, and the room's `respond` mode |
 | GET | `/api/v1/seats/:id/inbox` | Bus mail for this seat (direct, `team:` if Supervisor, `channel:` / `#room` membership, `ask_human`) |
 | GET | `/api/v1/seats/me/inbox` | Inbox for You |
 | POST | `/api/v1/seats/:id/inbox/read` | `{ beforeId }` — mark unread after that bus id as read |
@@ -183,11 +184,11 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/channels` | Channels plus membership |
+| GET | `/api/v1/channels` | Channels plus membership, `leadSeatId`, `respond`, `limits`, and `responderSeatId` (who answers un-mentioned messages now, before pause and model checks; `null` in a quiet room) |
 | POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
-| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`). A bad lead is a 400 and changes nothing |
+| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`); set `respond` (`lead`, `conductor`, or `quiet`); set `limits.implicitPerMinute` (1–1000, `null` restores the default of 4). Bad input is a 400 and changes nothing |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
-| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken. It returns once the wakes have started, not when the reply arrives. `queued: true` means the room's responder is still answering and the message will follow |
+| POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken. It returns once the wakes have started, not when the reply arrives. `queued: true` means the room's responder is still answering and the message will follow. `rateLimited: true` means the room hit `limits.implicitPerMinute`; `quiet: true` means the room is quiet and only people were notified |
 | GET | `/api/v1/threads` | Thread index |
 | GET | `/api/v1/threads/:id` | One thread |
 
@@ -206,7 +207,11 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 
 `text` may be empty when at least one of `skills`, `files`, `attachments`, or `blocks` is present. Mentions wake the bus: `@build` a seat, `@eng` the team Supervisor, `@channel` notifies members and wakes the Channel conductor.
 
-A message with no mention, from a human, wakes one responder for the room. The order is: the channel's `leadSeatId`; the supervisors of member teams; bot members that report to a human member; other bot members; the Channel conductor. Seats that are paused, over budget, or whose model is not usable are skipped, and the room gets one `Skipped …` line. When nobody can answer, the first seat reports why. The responder is told to answer in plain text, and its reply is posted to the same room. A message from a bot seat with no mention wakes nobody. Team rooms (`team-<id>`) still wake the Supervisor, project rooms the PM, and DMs the bot.
+A message with no mention, from a human, wakes one responder for the room. The order is: the channel's `leadSeatId`; the supervisors of member teams; bot members that report to a human member; other bot members; the Channel conductor. Seats that are paused, over budget, or whose model is not usable are skipped, and the room gets one `Skipped …` line. When nobody can answer, the first seat reports why. The responder is told to answer in plain text, and its reply is posted to the same room. A message from a bot seat with no mention wakes nobody.
+
+The room's `respond` mode changes this. `lead` (the default) uses the order above. `conductor` always wakes the Channel conductor. `quiet` wakes nobody: the other people in the room get a notify row, and the room gets one System line. A room answers at most `limits.implicitPerMinute` un-mentioned messages a minute (default 4); past that, the room gets one `Rate limit:` line and @mentions still work.
+
+Every staffed team has a `team-<id>` room record with the team as a member and the Supervisor as lead. Created teams get one, and existing teams get one on load. Team and project rooms that have a record follow the same rules, with the Supervisor or PM answering first. Without a record, team rooms wake the Supervisor and project rooms the PM. DMs wake the bot.
 
 ## Bot / team messaging
 

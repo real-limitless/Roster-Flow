@@ -206,6 +206,7 @@ export const api = {
     req<import("../data").Channel>("/api/v1/channels", { method: "POST", body: JSON.stringify(body) }),
   patchChannel: (id: string, body: unknown) =>
     req<import("../data").Channel>(`/api/v1/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  seatChannels: (seatId: string) => req<import("../data").SeatRoom[]>(`/api/v1/seats/${encodeURIComponent(seatId)}/channels`),
   messages: (channel: string) => req<import("../data").Msg[]>(`/api/v1/channels/${channel}/messages`),
   attach: (id: string) =>
     req<{

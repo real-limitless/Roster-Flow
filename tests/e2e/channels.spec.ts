@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { startFakeOpenCode } from "./fake-opencode";
 
 const API = "http://127.0.0.1:8790";
@@ -88,4 +88,68 @@ test("a channel lead answers un-mentioned messages in its room", async ({ reques
     await fake.close();
     await dropFakeModel(request);
   }
+});
+
+async function closeModal(page: Page) {
+  const modal = page.getByTestId("conversation-modal");
+  if (await modal.count()) await modal.click({ position: { x: 5, y: 5 } });
+  await expect(modal).toHaveCount(0);
+}
+
+type Room = { id: string; leadSeatId: string | null; respond: string; responderSeatId: string | null; seatIds: string[]; limits?: Record<string, number> };
+
+test("room settings set the lead and mode, and a quiet room only notifies people", async ({ page, request }) => {
+  await resetApi(request);
+  await page.goto("/app");
+  await page.getByTestId("channel-ship").click();
+  await expect(page.getByTestId("conversation-responder")).toHaveText("Replies: Product");
+  await page.getByTestId("conversation-title").click();
+  await expect(page.getByTestId("room-reply-settings")).toBeVisible();
+  await page.getByTestId("room-lead").selectOption("build");
+  await expect(page.getByTestId("room-responder")).toContainText("Eng.Build");
+  await page.getByTestId("room-rate").fill("2");
+  await page.getByTestId("room-rate").blur();
+  await expect
+    .poll(async () => ((await (await request.get(`${API}/api/v1/channels/ship`)).json()) as Room).limits?.implicitPerMinute)
+    .toBe(2);
+  await page.getByTestId("room-respond").selectOption("quiet");
+  await expect(page.getByTestId("room-lead")).toHaveCount(0);
+  await closeModal(page);
+  await expect(page.getByTestId("conversation-responder")).toHaveText("Quiet");
+
+  const ship = (await (await request.get(`${API}/api/v1/channels/ship`)).json()) as Room;
+  expect(ship).toMatchObject({ leadSeatId: "build", respond: "quiet", responderSeatId: null });
+
+  await page.getByTestId("composer").fill("fyi, deploy at five");
+  await page.getByTestId("send-message").click();
+  await expect(page.getByText("This room is quiet: un-mentioned messages wake nobody.").first()).toBeVisible({ timeout: 10_000 });
+  const inbox = (await (await request.get(`${API}/api/v1/seats/maya/inbox`)).json()) as { items: Array<{ text?: string }> };
+  expect(inbox.items.some((i) => i.text === "fyi, deploy at five")).toBeTruthy();
+});
+
+test("teams get a home room led by the supervisor, and seats list and leave their rooms", async ({ page, request }) => {
+  await resetApi(request);
+  const home = (await (await request.get(`${API}/api/v1/channels/team-eng`)).json()) as Room;
+  expect(home).toMatchObject({ leadSeatId: "eng-supervisor", respond: "lead", responderSeatId: "eng-supervisor" });
+  const rooms = (await (await request.get(`${API}/api/v1/seats/build/channels`)).json()) as Array<{ id: string; viaTeams: string[] }>;
+  expect(rooms.map((r) => r.id).sort()).toEqual(["eng-agents", "incidents", "ship", "team-eng"]);
+  expect(rooms.find((r) => r.id === "team-eng")?.viaTeams).toEqual(["eng"]);
+
+  await page.goto("/app");
+  await page.getByTestId("team-eng").click();
+  await expect(page.getByTestId("conversation-responder")).toHaveText("Lead: Eng Supervisor");
+  await page.getByTestId("conversation-title").click();
+  await expect(page.getByTestId("team-home-room")).toContainText("Lead: Eng Supervisor");
+  await expect(page.getByTestId("team-room-eng-agents")).toBeVisible();
+  await closeModal(page);
+
+  await page.getByTestId("channel-ship").click();
+  await page.getByTestId("conversation-member-product").click();
+  const inspector = page.getByTestId("seat-inspector");
+  await expect(inspector.getByTestId("seat-room-ship")).toContainText("Answers");
+  await inspector.getByTestId("seat-room-leave-ship").click();
+  await expect(inspector.getByTestId("seat-room-ship")).toHaveCount(0);
+  const ship = (await (await request.get(`${API}/api/v1/channels/ship`)).json()) as Room;
+  expect(ship.seatIds).not.toContain("product");
+  expect(ship.responderSeatId).toBe("devops");
 });

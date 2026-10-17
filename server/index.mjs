@@ -39,7 +39,7 @@ import { readJobFile, writeJobFile } from "./files.mjs";
 import { attachPtyServer } from "./pty.mjs";
 import { createStaffedTeam, enrichTeams, patchTeam } from "./teams.mjs";
 import { syncBotAgents, syncSeatAgent, syncTeamAgent } from "./agents.mjs";
-import { createChannel, patchChannel } from "./channels.mjs";
+import { channelsForSeat, createChannel, patchChannel, publicChannel } from "./channels.mjs";
 import { postMessage, resetChatRuntime, routeChannelMessage, startSessionSync } from "./chat.mjs";
 import { listTrace } from "./trace.mjs";
 import { createProject, patchProject } from "./projects.mjs";
@@ -971,6 +971,17 @@ const server = createServer(async (req, res) => {
       json(res, 200, box);
       return;
     }
+    const seatRooms = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/channels$/);
+    if (seatRooms && method === "GET") {
+      const id = decodeURIComponent(seatRooms[1]);
+      const st = getState();
+      if (!st.seats.some((s) => s.id === id)) {
+        json(res, 404, { error: "seat not found" });
+        return;
+      }
+      json(res, 200, channelsForSeat(st, id));
+      return;
+    }
     const seatInbox = pathname.match(/^\/api\/v1\/seats\/([^/]+)\/inbox$/);
     if (seatInbox && method === "GET") {
       const id = decodeURIComponent(seatInbox[1]);
@@ -1129,7 +1140,8 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/channels" && method === "GET") {
-      json(res, 200, getState().channels);
+      const st = getState();
+      json(res, 200, st.channels.map((c) => publicChannel(c, st)));
       return;
     }
     if (pathname === "/api/v1/channels" && method === "POST") {
@@ -1138,7 +1150,7 @@ const server = createServer(async (req, res) => {
       mutate((s) => {
         created = createChannel(s, body);
       });
-      json(res, 201, created);
+      json(res, 201, publicChannel(created, getState()));
       return;
     }
     const chOne = pathname.match(/^\/api\/v1\/channels\/([^/]+)$/);
@@ -1149,7 +1161,7 @@ const server = createServer(async (req, res) => {
         json(res, 404, { error: "channel not found" });
         return;
       }
-      json(res, 200, ch);
+      json(res, 200, publicChannel(ch, getState()));
       return;
     }
     if (chOne && method === "PATCH") {
@@ -1163,7 +1175,7 @@ const server = createServer(async (req, res) => {
         json(res, 404, { error: "channel not found" });
         return;
       }
-      json(res, 200, updated);
+      json(res, 200, publicChannel(updated, getState()));
       return;
     }
     const chMsg = pathname.match(/^\/api\/v1\/channels\/([^/]+)\/messages$/);
@@ -1195,6 +1207,8 @@ const server = createServer(async (req, res) => {
         started: wakeResults.length ? wakeResults.every((row) => row.started) : false,
         wakeResults,
         ...(routed.queued ? { queued: true } : {}),
+        ...(routed.rateLimited ? { rateLimited: true } : {}),
+        ...(routed.quiet ? { quiet: true } : {}),
         messages: getState().messages.filter((m) => m.channel === id),
       });
       return;

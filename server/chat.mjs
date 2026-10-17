@@ -1,7 +1,8 @@
 import { getState, mutate, uid } from "./store.mjs";
 import { blockLatestRun, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
-import { resolveMembers, responderCandidates } from "./channels.mjs";
+import { resolveMembers, responderCandidates, roomLimits } from "./channels.mjs";
+import { normalizeRespond } from "./room-config.mjs";
 import { isOpenCodeAdapter } from "./adapters.mjs";
 import { seatOverBudget } from "./budget.mjs";
 import { teamWakeTarget } from "./teams.mjs";
@@ -57,15 +58,31 @@ export function rememberSessionRoom(seatId, channelId) {
   });
 }
 
+function roomRecord(state, id) {
+  return (state.channels || []).find((c) => c.id === id) || null;
+}
+
+function responderTargets(room, state, firstId = null) {
+  const mode = normalizeRespond(room.respond);
+  if (mode === "quiet") return [];
+  if (mode === "conductor") return [{ to: CONDUCTOR_ID, reason: "implicit", candidates: [CONDUCTOR_ID] }];
+  let candidates = responderCandidates(room, state);
+  if (firstId && !room.leadSeatId) candidates = [firstId, ...candidates.filter((c) => c !== firstId)];
+  return [{ to: candidates[0], reason: "implicit", candidates }];
+}
+
 export function implicitTargets(channelId, state = getState()) {
   const id = String(channelId || "");
+  const room = roomRecord(state, id);
   if (id.startsWith("team-")) {
+    if (room) return responderTargets(room, state);
     return [{ to: `team:${id.slice("team-".length)}`, reason: "team-room" }];
   }
   if (id.startsWith("project-")) {
     const projectId = id.slice("project-".length);
     const project = (state.projects || []).find((p) => p.id === projectId);
     const pm = project?.pmSeatId && (state.seats || []).find((s) => s.id === project.pmSeatId);
+    if (room) return responderTargets(room, state, pm?.kind === "bot" ? pm.id : null);
     if (pm?.kind === "bot") return [{ to: pm.id, reason: "project-pm" }];
     return [{ to: CONDUCTOR_ID, reason: "project-channel" }];
   }
@@ -76,9 +93,15 @@ export function implicitTargets(channelId, state = getState()) {
     return [];
   }
   if (id.startsWith("session-")) return [];
-  const room = (state.channels || []).find((c) => c.id === id) || { id, seatIds: [], teamIds: [] };
-  const candidates = responderCandidates(room, state);
-  return [{ to: candidates[0], reason: "implicit", candidates }];
+  return responderTargets(room || { id, seatIds: [], teamIds: [] }, state);
+}
+
+/** True when the room is quiet, so un-mentioned posts only notify the humans in it. */
+export function quietRoom(channelId, state = getState()) {
+  const id = String(channelId || "");
+  if (id.startsWith("dm-") || id.startsWith("session-")) return false;
+  const room = roomRecord(state, id);
+  return Boolean(room) && normalizeRespond(room.respond) === "quiet";
 }
 
 export function collectWakeTargets(channelId, text, state = getState()) {
@@ -335,10 +358,24 @@ function repliers(results) {
 }
 
 const implicitInflight = new Map();
+const implicitStarts = new Map();
 
 export function resetChatRuntime() {
   implicitInflight.clear();
+  implicitStarts.clear();
   followingSeats.clear();
+}
+
+/** Record an implicit wake for the room unless it already had `limit` in the last minute. */
+function takeImplicitSlot(channelId, limit, now = Date.now()) {
+  const recent = (implicitStarts.get(channelId) || []).filter((t) => now - t < 60_000);
+  if (recent.length >= limit) {
+    implicitStarts.set(channelId, recent);
+    return false;
+  }
+  recent.push(now);
+  implicitStarts.set(channelId, recent);
+  return true;
 }
 
 function queueImplicit(channelId, text) {
@@ -413,6 +450,30 @@ export function routeChannelMessage({ channelId, text, from = "you", wake = true
     queueImplicit(channelId, text);
     const none = Promise.resolve([]);
     return { mentions, wakes: 0, notify, targets: [], queued: true, started: none, pending: none };
+  }
+
+  if (wake && implicit && targets.length) {
+    const room = (state.channels || []).find((c) => c.id === channelId);
+    const limit = roomLimits(room).implicitPerMinute;
+    if (!takeImplicitSlot(channelId, limit)) {
+      statusMessage(
+        channelId,
+        `Rate limit: this room answers ${limit} un-mentioned ${limit === 1 ? "message" : "messages"} a minute. @mention a seat to wake it now.`,
+      );
+      emit({ level: "warn", scope: "chat", step: "chat.ratelimit", channel: channelId, detail: { limit } });
+      const none = Promise.resolve([]);
+      return { mentions, wakes: 0, notify, targets: [], rateLimited: true, started: none, pending: none };
+    }
+  }
+
+  if (wake && !targets.length && !mentions.length && author?.kind === "human" && quietRoom(channelId, state)) {
+    const room = (state.channels || []).find((c) => c.id === channelId);
+    const humans = resolveMembers(room, state).filter((seat) => seat.kind === "human" && seat.id !== from);
+    for (const seat of humans) postBus({ from, to: seat.id, kind: "notify", text, wake: false, channel: channelId });
+    statusMessage(channelId, "This room is quiet: un-mentioned messages wake nobody. @mention a seat to get a reply.");
+    emit({ scope: "chat", step: "chat.quiet", channel: channelId, detail: { notified: humans.map((h) => h.id) } });
+    const none = Promise.resolve([]);
+    return { mentions, wakes: 0, notify: humans.map((h) => h.id), targets: [], quiet: true, started: none, pending: none };
   }
 
   if (wake && targets.length) {

@@ -1,6 +1,8 @@
 /** Starter company — keep aligned with src/data.ts */
 import { examplePayload } from "roster-flow-blocks";
 import { skipOnboarding } from "./flags.mjs";
+import { ensureTeamRooms } from "./channels.mjs";
+import { normalizeLimits, normalizeRespond } from "./room-config.mjs";
 
 export const seats = [
   { id: "you", name: "You", role: "Board", kind: "human", seatType: "human", job: "Approve deploys. Fire any seat.", tools: ["approve"], deny: [], status: "idle" },
@@ -435,8 +437,11 @@ export function migrateState(state) {
       teamIds: teamIds.length ? teamIds : seeded.teamIds,
       seatIds: [...new Set((seatIds.length ? seatIds : seeded.seatIds).concat(["channel"]))],
       leadSeatId: ch.leadSeatId ? String(ch.leadSeatId) : null,
+      ...(ch.respond !== undefined ? { respond: normalizeRespond(ch.respond) } : {}),
+      limits: normalizeLimits(ch.limits),
     };
   });
+  ensureTeamRooms(next);
   migrateCompanyLoop(next);
   if (!holdOrgSeed(next) && !(next.seats || []).some((s) => s.id === "mcp-guest")) {
     const guest = seats.find((s) => s.id === "mcp-guest");

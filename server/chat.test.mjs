@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import test, { before } from "node:test";
-import { emptyState } from "./seed.mjs";
+import test, { before, beforeEach } from "node:test";
+import { emptyState, migrateState } from "./seed.mjs";
 import { getState, mutate, save } from "./store.mjs";
 import { assistantText, sessionTranscript, bindSessionMeta } from "./harness.mjs";
 import {
@@ -9,6 +9,8 @@ import {
   implicitTargets,
   mirrorTranscript,
   providerHint,
+  quietRoom,
+  resetChatRuntime,
   routeChannelMessage,
   seatModelPlan,
   deps,
@@ -20,6 +22,8 @@ import { emit, listTrace, resetTrace } from "./trace.mjs";
 before(() => {
   if (!getState().seats?.some((seat) => seat.id === "channel")) mutate(() => emptyState());
 });
+
+beforeEach(() => resetChatRuntime());
 
 test("implicit targets cover channel, team, project, and DM rooms", () => {
   const state = emptyState();
@@ -442,6 +446,7 @@ function withChannelPatch(id, patch) {
   const before = { ...ch, seatIds: [...ch.seatIds], teamIds: [...ch.teamIds] };
   Object.assign(ch, patch);
   return () => {
+    for (const key of Object.keys(patch)) if (!(key in before)) delete ch[key];
     Object.assign(ch, before);
     save();
   };
@@ -619,4 +624,89 @@ test("messages sent while the responder is answering are queued and delivered as
   } finally {
     Object.assign(deps, prev);
   }
+});
+
+test("a room in conductor mode sends un-mentioned posts to the Channel conductor", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { respond: "conductor", leadSeatId: "build" });
+  const calls = stubAwake({ pullAssistant: async () => [], followTicks: 0 });
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "who owns this?" });
+    await routed.pending;
+    assert.deepEqual(calls.map((c) => c.to), ["channel"]);
+    assert.equal(calls[0].meta.kind, "implicit");
+  } finally {
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("a quiet room wakes nobody, notifies the other humans, and posts one System line", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { respond: "quiet" });
+  const calls = stubAwake();
+  const before = getState().messages.length;
+  const busBefore = getState().bus.length;
+  try {
+    assert.equal(quietRoom("ship"), true);
+    assert.equal(quietRoom("general"), false);
+    const first = routeChannelMessage({ channelId: "ship", text: "fyi, deploy at 5" });
+    const second = routeChannelMessage({ channelId: "ship", text: "and the docs too" });
+    await first.pending;
+    await second.pending;
+    assert.equal(first.quiet, true);
+    assert.equal(first.wakes, 0);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(first.notify, ["maya"]);
+    const notes = getState().bus.slice(busBefore).filter((b) => b.kind === "notify" && b.channel === "ship");
+    assert.deepEqual(notes.map((b) => b.to), ["maya", "maya"]);
+    const lines = getState().messages.slice(before).filter((m) => m.system && /This room is quiet/.test(m.text));
+    assert.equal(lines.length, 1);
+    const mentioned = routeChannelMessage({ channelId: "ship", text: "@build can you look?" });
+    await mentioned.started;
+    assert.deepEqual(calls.map((c) => c.to), ["build"]);
+  } finally {
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("implicitPerMinute caps un-mentioned wakes per room with a single System line", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("general", { limits: { implicitPerMinute: 1 } });
+  const calls = stubAwake({ pullAssistant: async () => [], followTicks: 0 });
+  const before = getState().messages.length;
+  try {
+    const first = routeChannelMessage({ channelId: "general", text: "Anyone here" });
+    await first.pending;
+    const second = routeChannelMessage({ channelId: "general", text: "still there?" });
+    const third = routeChannelMessage({ channelId: "general", text: "hello?" });
+    assert.equal(second.rateLimited, true);
+    assert.equal(third.rateLimited, true);
+    assert.equal(calls.length, 1);
+    const lines = getState().messages.slice(before).filter((m) => m.system && /^Rate limit:/.test(m.text));
+    assert.equal(lines.length, 1);
+    assert.match(lines[0].text, /1 un-mentioned message a minute/);
+    const mentioned = routeChannelMessage({ channelId: "general", text: "@channel ping" });
+    await mentioned.started;
+    assert.equal(calls.length, 2);
+  } finally {
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("team and project room records route un-mentioned posts to the supervisor and the PM first", () => {
+  const state = migrateState(emptyState());
+  const team = implicitTargets("team-eng", state)[0];
+  assert.equal(team.reason, "implicit");
+  assert.equal(team.to, "eng-supervisor");
+  assert.ok(team.candidates.includes("build"));
+  state.channels.push({ id: "project-billing", name: "Billing", teamIds: ["eng"], seatIds: ["channel", "you", "product"] });
+  const project = implicitTargets("project-billing", state)[0];
+  assert.equal(project.reason, "implicit");
+  assert.equal(project.to, "product");
+  const quiet = state.channels.find((c) => c.id === "team-eng");
+  quiet.respond = "quiet";
+  assert.deepEqual(implicitTargets("team-eng", state), []);
 });
