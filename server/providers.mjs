@@ -1,10 +1,11 @@
 /** OpenChamber-shaped write-through to OpenCode config + local auth sidecar. */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { normalizeModelId } from "./seed.mjs";
 import { authPath, opencodeDir as ocDir } from "./paths.mjs";
+import { protectPrivateFile, writePrivateFile } from "./private-file.mjs";
 
 const ocPath = join(ocDir, "opencode.json");
 
@@ -75,12 +76,12 @@ export function writeOpenCodeConfig(cfg) {
 }
 
 function readAuth() {
+  protectPrivateFile(authPath);
   return readJson(authPath, {});
 }
 
 function writeAuth(auth) {
-  mkdirSync(dirname(authPath), { recursive: true });
-  writeFileSync(authPath, JSON.stringify(auth, null, 2));
+  writePrivateFile(authPath, JSON.stringify(auth, null, 2));
 }
 
 export function listProviders() {
