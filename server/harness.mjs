@@ -13,6 +13,7 @@ import {
   readGlobalOpenCodeConfig,
   ensureAuthProviders,
   loadedProviderIds,
+  isBuiltinProvider,
 } from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
@@ -53,7 +54,9 @@ export function spec(kind) {
   return {
     kind: COMPANY,
     workspace: companyWorkspace,
-    cwd: root,
+    // Not the git repo. OpenCode walks up from cwd and would load /app/.opencode
+    // (or a broken project opencode.json) instead of ROSTER_OPENCODE_DIR.
+    cwd: companyWorkspace,
     preferredPort: Number(process.env.OPENCODE_PORT) || 14180,
     logFile: join(dataDir, "opencode-serve.log"),
     sessionKey: "sessions",
@@ -78,25 +81,39 @@ export function configPaths(kind = COMPANY) {
 
 /**
  * Env for `opencode serve`: provider keys, plugin env, and the config to load.
- * A non-empty OPENCODE_CONFIG is an operator override for the company serve.
- * OpenCode loads it before OPENCODE_CONFIG_DIR/opencode.json, so the providers
- * Settings and roster-setup write still apply on top. Compose passes "" when
- * unset, which means "use the default".
+ * Both harnesses load the file this process writes. An operator OPENCODE_CONFIG
+ * is merged into the company file first; the serve does not point at it directly,
+ * and project config discovered from a git checkout is disabled.
  */
 export function serveEnv(kind = COMPANY, base = process.env) {
   const k = harnessKind(kind);
   const s = spec(k);
   const { dir, file } = configPaths(k);
-  const override = k === COMPANY ? String(base.OPENCODE_CONFIG || "").trim() : "";
   return {
     ...serveChildEnv(base),
-    OPENCODE_CONFIG: override || file,
-    // Also scanned for opencode.json and agents/*.md.
+    OPENCODE_CONFIG: file,
     OPENCODE_CONFIG_DIR: dir,
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_CLIENT: s.client,
     NODE_PATH: [join(root, "node_modules"), base.NODE_PATH].filter(Boolean).join(":"),
     ROSTER_API: rosterApiUrl(),
   };
+}
+
+function readConfigFile(path) {
+  if (!path || !existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** Operator OPENCODE_CONFIG, when it is a different file than the one we write. */
+function operatorOverrideConfig() {
+  const override = String(process.env.OPENCODE_CONFIG || "").trim();
+  if (!override || override === configPaths(COMPANY).file) return {};
+  return readConfigFile(override);
 }
 
 export function whichOpenCode() {
@@ -162,11 +179,13 @@ function writeCompanyConfig() {
       /* keep defaults */
     }
   }
-  if (!Array.isArray(cfg.plugin) || !cfg.plugin.includes("roster-flow-opencode")) {
-    cfg.plugin = [...(cfg.plugin || []), "roster-flow-opencode"];
-  }
-  cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}) };
-  cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}) };
+  const extra = operatorOverrideConfig();
+  // Same plugin list as the system serve. A stale data-dir config that names
+  // a missing project plugin (for example graphify) makes this serve report
+  // no providers while system, which rewrites the list, still loads them.
+  cfg.plugin = ["roster-flow-opencode"];
+  cfg.provider = { ...(global.provider || {}), ...(extra.provider || {}), ...(cfg.provider || {}) };
+  cfg.providers = { ...(global.providers || {}), ...(extra.providers || {}), ...(cfg.providers || {}) };
   writeFileSync(dest, JSON.stringify(normalizeOpenCodeConfig(cfg), null, 2));
 }
 
@@ -239,7 +258,26 @@ export async function refreshHealth(kind = COMPANY) {
 
 export async function liveCombinedStatus() {
   await Promise.all([refreshHealth(COMPANY), refreshHealth(SYSTEM)]);
+  await Promise.all([loadedModels(COMPANY).catch(() => null), loadedModels(SYSTEM).catch(() => null)]);
   return combinedStatus();
+}
+
+/** Why harnessReady is false when a company seat's provider is not loaded. */
+export function seatProviderGap(state, loadedIds) {
+  const have = new Set(loadedIds || []);
+  const missing = [];
+  for (const seat of state?.seats || []) {
+    if (seat.kind !== "bot" || seat.system || seat.mcpGuest) continue;
+    const adapter = String(seat.adapter || "opencode").toLowerCase();
+    if (adapter && adapter !== "opencode") continue;
+    const model = String(seat.model || "").trim();
+    if (!model) continue;
+    const providerID = model.split("/")[0];
+    if (!providerID || isBuiltinProvider(providerID)) continue;
+    if (!have.has(providerID)) missing.push(`${seat.name || seat.id} needs ${model}`);
+  }
+  if (!missing.length) return null;
+  return `company harness loaded [${[...have].join(", ") || "none"}]; ${missing.join("; ")}`;
 }
 
 /**
@@ -265,11 +303,14 @@ export async function loadedModels(kind = COMPANY) {
   const inst = instances[k];
   if (!inst?.healthy) return null;
   try {
-    const loaded = flattenConfigProviders(await ocFetch("/config/providers", {}, k));
+    const loaded = flattenConfigProviders(await ocFetch("/config/providers", {}, k)) ?? [];
     if (instances[k] === inst) inst.loaded = loaded;
     return loaded;
   } catch {
-    return inst.loaded ?? null;
+    // A healthy serve that cannot report providers is an empty list, not
+    // "unknown". Unknown is what lets a wake send a model and time out.
+    if (instances[k] === inst && !Array.isArray(inst.loaded)) inst.loaded = [];
+    return instances[k] === inst ? inst.loaded ?? [] : [];
   }
 }
 

@@ -5,6 +5,7 @@ import {
   status as harnessStatus,
   combinedStatus,
   liveCombinedStatus,
+  seatProviderGap,
   listBoundSessions,
   createSession,
   promptSession,
@@ -429,11 +430,14 @@ const server = createServer(async (req, res) => {
 
     if (pathname === "/api/v1/health" && method === "GET") {
       const status = await liveCombinedStatus();
+      const harnessError = status.harness === "up" ? seatProviderGap(getState(), status.loadedProviders) : null;
+      const harnessReady = status.harness === "up" && !harnessError;
       json(res, 200, {
         ok: true,
         ...status,
-        harnessReady: status.harness === "up",
-        ready: status.harness === "up" && status.systemHarness?.harness === "up",
+        harnessReady,
+        harnessError,
+        ready: harnessReady && status.systemHarness?.harness === "up",
         seats: getState().seats.length,
         providerKeys: hasProviderKey(),
         demo: demoMode(),

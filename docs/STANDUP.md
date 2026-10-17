@@ -68,7 +68,7 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_PROVIDER_BASE_URL` | unset | OpenAI-compatible base URL. |
 | `ROSTER_PROVIDER_API_KEY_ENV` | unset | **Name** of the env var that holds the key. The key is not written into config. |
 | `ROSTER_PROVIDER_MODELS` | unset | Comma-separated model ids. |
-| `OPENCODE_CONFIG` | empty | Optional extra OpenCode config file for the company serve. Empty means only `ROSTER_OPENCODE_DIR/opencode.json`, which the serve always loads (it applies on top of this file). |
+| `OPENCODE_CONFIG` | empty | Optional extra OpenCode config merged into `ROSTER_OPENCODE_DIR/opencode.json` before either serve starts. The serve always loads that roster file, not this path. |
 | `FEATHERLESS_API_KEY` | unset | Key for the `featherless` provider that `roster-setup` writes as `{env:FEATHERLESS_API_KEY}`. Passed through to both OpenCode serves. |
 
 `ROSTER_OWNER_*`, `ROSTER_BOOTSTRAP_TOKEN`, and `ROSTER_API_TOKEN` / `ROSTER_API_TOKEN_SCOPES` are applied on boot. See [Headless bootstrap](#headless-bootstrap-no-setup-screen) below.

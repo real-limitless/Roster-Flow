@@ -113,14 +113,29 @@ test("serveEnv sets OPENCODE_CONFIG and OPENCODE_CONFIG_DIR for both serves", ()
   assert.equal(system.FEATHERLESS_API_KEY, "k");
 });
 
-test("an empty OPENCODE_CONFIG (compose default) keeps ROSTER_OPENCODE_DIR; a set one overrides the company serve only", () => {
+test("an empty or extra OPENCODE_CONFIG still points both serves at the file this process writes", () => {
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "" }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
   assert.equal(harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "  " }).OPENCODE_CONFIG, join(ocDir, "opencode.json"));
-  const override = harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
-  assert.equal(override.OPENCODE_CONFIG, "/etc/oc/extra.json");
-  assert.equal(override.OPENCODE_CONFIG_DIR, ocDir);
+  const company = harness.serveEnv("company", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
+  assert.equal(company.OPENCODE_CONFIG, join(ocDir, "opencode.json"));
+  assert.equal(company.OPENCODE_CONFIG_DIR, ocDir);
+  assert.equal(company.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
   const system = harness.serveEnv("system", { PATH: "/bin", OPENCODE_CONFIG: "/etc/oc/extra.json" });
   assert.equal(system.OPENCODE_CONFIG, join(dataDir, "system", ".opencode", "opencode.json"));
+  assert.equal(system.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+});
+
+test("seatProviderGap names a company seat whose provider the serve did not load", () => {
+  const state = {
+    seats: [
+      { id: "wiki-scribe", name: "Wiki Scribe", kind: "bot", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash" },
+      { id: "architect", name: "Architect", kind: "bot", system: true, model: "featherless/stub-model" },
+      { id: "human", name: "You", kind: "human", model: "featherless/stub-model" },
+    ],
+  };
+  assert.equal(harness.seatProviderGap(state, ["opencode", "featherless"]), null);
+  assert.match(harness.seatProviderGap(state, []), /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
+  assert.match(harness.seatProviderGap(state, ["opencode"]), /loaded \[opencode\]/);
 });
 
 test("serveChildEnv passes through every {env:VAR} a provider block references", () => {
@@ -150,6 +165,8 @@ test("ensure spawns both serves with the roster config and key, and reports load
   const seen = JSON.parse(readFileSync(join(envOut, "roster-flow.json"), "utf8"));
   assert.equal(seen.env.OPENCODE_CONFIG, join(ocDir, "opencode.json"));
   assert.equal(seen.env.OPENCODE_CONFIG_DIR, ocDir);
+  assert.equal(seen.env.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+  assert.equal(seen.cwd, join(dir, "ws"));
   assert.equal(seen.env.FEATHERLESS_API_KEY, "fl-test-key");
   const written = JSON.parse(readFileSync(seen.env.OPENCODE_CONFIG, "utf8"));
   assert.ok(written.provider.featherless);
