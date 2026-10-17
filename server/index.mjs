@@ -21,7 +21,7 @@ import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
-import { pendingWake, postBus, wakeSeat, cycleSafe } from "./bus.mjs";
+import { pendingWake, postBus, publishedWake, wakeSeat, cycleSafe } from "./bus.mjs";
 import {
   callbackSecretInfo,
   deliverCallback,
@@ -1215,11 +1215,7 @@ const server = createServer(async (req, res) => {
       const routed = text
         ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you", messageId: msg?.id || null })
         : { mentions: [], wakes: [], notify: [], pending: Promise.resolve([]) };
-      const wakeResults = (await (routed.started || routed.pending) || []).map((row) => ({
-        seat: row?.seat || null,
-        runId: row?.runId || null,
-        started: Boolean(row?.started),
-      }));
+      const wakeResults = (await (routed.started || routed.pending) || []).map((row) => publishedWake(row));
       json(res, 201, {
         ...msg,
         mentions: routed.mentions,
@@ -1282,7 +1278,8 @@ const server = createServer(async (req, res) => {
         wake: body.wake !== false && !String(to).startsWith("channel:"),
       });
       const woke = await pendingWake(entry);
-      json(res, 201, woke ? { ...entry, runId: woke.runId || entry.runId, started: Boolean(woke.started) } : entry);
+      const fields = woke ? publishedWake(woke) : null;
+      json(res, 201, fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry);
       return;
     }
     if (pathname === "/api/v1/bus" && method === "GET") {
@@ -1311,7 +1308,8 @@ const server = createServer(async (req, res) => {
       void mirrorToSlack(msg, { kind: body.kind }).catch(() => undefined);
       const entry = postBus({ ...body, text, channel: body.channel || (body.wake ? "ship" : undefined) });
       const woke = await pendingWake(entry);
-      json(res, 201, woke ? { ...entry, runId: woke.runId || entry.runId, started: Boolean(woke.started) } : entry);
+      const fields = woke ? publishedWake(woke) : null;
+      json(res, 201, fields ? { ...entry, runId: fields.runId || entry.runId, started: fields.started } : entry);
       return;
     }
     if (pathname === "/api/v1/github" && method === "GET") {

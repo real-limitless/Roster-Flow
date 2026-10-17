@@ -108,6 +108,13 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
     state,
   );
   assert.equal(open, null);
+  const step = providerTurnVerdict(
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "step-start", messageID: "a1" } } },
+    "s1",
+    state,
+  );
+  assert.equal(step.reached, true);
+  assert.equal(step.done, false);
   const chunk = providerTurnVerdict(
     { type: "message.part.updated", properties: { sessionID: "s1", part: { type: "text", text: "stub-reply-ok", messageID: "a1" } } },
     "s1",
@@ -180,25 +187,33 @@ test("wakeSeat starts a run id and puts it on the prompt", async () => {
   }
 });
 
-test("a followed room wake leaves the reply to the follow loop; an unfollowed one posts it", async () => {
+test("a room wake whose reply the follow loop already mirrored is not posted again", async () => {
   const prev = { ...deps };
   const channel = `posted-${Date.now()}`;
   deps.harnessStatus = () => ({ harness: "up" });
   deps.createSession = async () => ({ id: "ses_posted" });
-  deps.promptSession = async () => undefined;
-  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "Room reply." }), { cancel() {} });
+  deps.promptSession = async () => {
+    mutate((s) => {
+      s.messages = [
+        ...s.messages,
+        { id: `m-${channel}`, channel, who: "Eng.Build", kind: "bot", seatId: "build", text: "Room reply.", sessionId: "msg_room", mirrored: true },
+      ];
+    });
+  };
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () =>
+    Object.assign(Promise.resolve({ reached: true, done: true, text: "Room reply.", messageId: "msg_room" }), { cancel() {} });
   mutate((s) => {
     if (s.sessions) delete s.sessions.build;
     const seat = (s.seats || []).find((x) => x.id === "build");
     if (seat) seat.status = "idle";
   });
-  const posted = () => getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.").length;
   try {
-    const followed = await wakeSeat("build", "status?", { from: "you", kind: "mention-seat", channel, followed: true });
-    assert.equal(followed.started, true);
-    assert.equal(posted(), 0);
-    await wakeSeat("build", "status?", { from: "product", kind: "handoff", channel });
-    assert.equal(posted(), 1);
+    const woke = await wakeSeat("build", "status?", { from: "you", kind: "mention-seat", channel });
+    assert.equal(woke.started, true);
+    const posted = getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.");
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].runId, woke.runId);
   } finally {
     Object.assign(deps, prev);
   }
@@ -228,10 +243,10 @@ test("a serve restart for a late hire reopens the room's session, not the DM", a
     s.runs = (s.runs || []).map((run) => (run.status === "starting" || run.status === "running" ? { ...run, status: "done" } : run));
   });
   try {
-    await wakeSeat("build", "first", { from: "you", kind: "mention-seat", channel: "ship", followed: true });
+    await wakeSeat("build", "first", { from: "you", kind: "mention-seat", channel: "ship" });
     const before = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
     restart = true;
-    await wakeSeat("build", "second", { from: "you", kind: "mention-seat", channel: "ship", followed: true });
+    await wakeSeat("build", "second", { from: "you", kind: "mention-seat", channel: "ship" });
     const after = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
     assert.equal(restarts.length, 1);
     assert.equal(restarts[0].forceRestart, true);
@@ -661,6 +676,28 @@ test("team-mode wakes are told to reply PASS when they have nothing to add", () 
   assert.ok(isPass("PASS") && isPass(" pass. ") && !isPass("PASS: I disagree"));
 });
 
+test("a PASS reply finishes the run without posting in the room", async () => {
+  const prev = { ...deps };
+  const channel = `pass-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_pass" });
+  deps.promptSession = async () => undefined;
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, done: true, text: "PASS", messageId: "msg_pass" }), { cancel() {} });
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    const woke = await wakeSeat("build", "anyone?", { from: "you", kind: "implicit", channel, teamMode: true, announce: false });
+    assert.equal(woke.started, true);
+    assert.equal((getState().runs || []).find((r) => r.id === woke.runId)?.status, "done");
+    assert.equal(getState().messages.filter((m) => m.channel === channel && !m.system).length, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("meterTurn corrects the wake's usage row from the session's reported tokens", async () => {
   const prev = { ...deps };
   const runId = `run-meter-${Date.now()}`;
@@ -845,7 +882,7 @@ test("waitForIdleServe holds while another run is streaming", async () => {
       ...(s.runs || []).map((run) =>
         run.status === "starting" || run.status === "running" ? { ...run, status: "done" } : run,
       ),
-      { id: "run-stream-x", seatId: "build", status: "running", at: new Date().toISOString() },
+      { id: "run-stream-x", seatId: "build", status: "running", started: false, at: new Date().toISOString() },
     ];
     return null;
   });
@@ -861,4 +898,75 @@ test("waitForIdleServe holds while another run is streaming", async () => {
   });
   await pending;
   assert.equal(settled, true);
+});
+
+test("a wake posts only the assistant message from this run", async () => {
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_hist" });
+  deps.promptSession = async () => ({ ok: true });
+  const freshId = `hist-${Date.now()}`;
+  deps.sessionMessages = async () => [
+    { id: "old", info: { role: "assistant", time: { created: 1 } }, parts: [{ type: "text", text: "old-reply" }] },
+    { id: freshId, info: { role: "assistant", time: { created: Date.now() + 60_000 } }, parts: [{ type: "text", text: "new-reply" }] },
+  ];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: true, text: "old-reply\nnew-reply", done: true });
+    pending.rest = pending;
+    pending.arm = () => {};
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const result = await wakeSeat("build", "next", { from: "product", channel: "ship" });
+    const posted = (getState().messages || []).filter((m) => m.runId === result.runId && m.seatId === "build" && !m.system);
+    assert.equal(
+      posted.length,
+      1,
+      JSON.stringify({
+        started: result.started,
+        messageId: result.messageId,
+        hits: (getState().messages || []).filter((m) => String(m.text).includes("new-reply")).map((m) => ({ runId: m.runId, sessionId: m.sessionId, text: m.text })),
+      }),
+    );
+    assert.equal(posted[0].text, "new-reply");
+    assert.equal(posted[0].sessionId, freshId);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("overlapping wakes share one wakeSeat result", async () => {
+  const prev = { ...deps };
+  let prompts = 0;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_share" });
+  deps.promptSession = async () => {
+    prompts += 1;
+  };
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: true, text: "shared-reply", done: true, messageId: "shared-1" });
+    pending.rest = pending;
+    pending.arm = () => {};
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const first = wakeSeat("build", "one", { from: "product", channel: "ship" });
+    const second = wakeSeat("build", "two", { from: "product", channel: "ship" });
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(prompts, 1);
+    assert.equal(a.started, true);
+    assert.equal(b.started, a.started);
+    assert.equal(b.runId, a.runId);
+  } finally {
+    Object.assign(deps, prev);
+  }
 });
