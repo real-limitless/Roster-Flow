@@ -68,7 +68,7 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_PROVIDER_BASE_URL` | unset | OpenAI-compatible base URL. |
 | `ROSTER_PROVIDER_API_KEY_ENV` | unset | **Name** of the env var that holds the key. The key is not written into config. |
 | `ROSTER_PROVIDER_MODELS` | unset | Comma-separated model ids. |
-| `OPENCODE_CONFIG` | empty | Optional extra OpenCode config file for the company serve. Empty means only `ROSTER_OPENCODE_DIR/opencode.json`, which the serve always loads (it applies on top of this file). |
+| `OPENCODE_CONFIG` | empty | Optional operator OpenCode config. The whole file is deep-merged into both harness configs (`username`, `mcp`, plugins, and other keys). Roster provider blocks win on a conflicting id. Plugin lists are a union and always include `roster-flow-opencode`. The serve loads the roster file, not this path. |
 | `FEATHERLESS_API_KEY` | unset | Key for the `featherless` provider that `roster-setup` writes as `{env:FEATHERLESS_API_KEY}`. Passed through to both OpenCode serves. |
 
 `ROSTER_OWNER_*`, `ROSTER_BOOTSTRAP_TOKEN`, and `ROSTER_API_TOKEN` / `ROSTER_API_TOKEN_SCOPES` are applied on boot. See [Headless bootstrap](#headless-bootstrap-no-setup-screen) below.
@@ -241,7 +241,7 @@ ROSTER_PROVIDER_API_KEY_ENV=FEATHERLESS_API_KEY
 ROSTER_PROVIDER_MODELS=model-a,model-b
 ```
 
-`ROSTER_HARNESS_AUTOSTART=0` (or the older `ROSTER_DISABLE_HARNESS_AUTOSTART=1`) skips the serve start; `ROSTER_HARNESS_AUTOSTART=1` starts it without the provider check. The provider seed still runs. `auto` also starts when a provider key is already in the environment (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `FEATHERLESS_API_KEY`, or the variable named by `ROSTER_PROVIDER_API_KEY_ENV`) or a model is already written in `opencode.json`. `GET /api/v1/health` then reports `harnessReady: true` once the company serve answers.
+`ROSTER_HARNESS_AUTOSTART=0` (or the older `ROSTER_DISABLE_HARNESS_AUTOSTART=1`) skips the serve start; `ROSTER_HARNESS_AUTOSTART=1` starts it without the provider check. The provider seed still runs. `auto` also starts when a provider key is already in the environment (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `FEATHERLESS_API_KEY`, or the variable named by `ROSTER_PROVIDER_API_KEY_ENV`) or a model is already written in `opencode.json`. `GET /api/v1/health` then reports `harnessReady: true` once the company serve answers and at least one company seat can run. A single seat whose provider is missing is listed on `seats` with `ready: false` and does not clear `harnessReady`.
 
 ## Seed / demo data
 

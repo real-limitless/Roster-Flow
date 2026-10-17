@@ -5,6 +5,7 @@ import {
   status as harnessStatus,
   combinedStatus,
   liveCombinedStatus,
+  harnessSeatReport,
   listBoundSessions,
   createSession,
   promptSession,
@@ -442,12 +443,13 @@ const server = createServer(async (req, res) => {
 
     if (pathname === "/api/v1/health" && method === "GET") {
       const status = await liveCombinedStatus();
+      const report = harnessSeatReport(getState(), status);
       json(res, 200, {
         ok: true,
         ...status,
-        harnessReady: status.harness === "up",
-        ready: status.harness === "up" && status.systemHarness?.harness === "up",
-        seats: getState().seats.length,
+        ...report,
+        ready: report.harnessReady && status.systemHarness?.harness === "up",
+        seatCount: getState().seats.length,
         providerKeys: hasProviderKey(),
         demo: demoMode(),
         demoResetMs: demoResetMs(),
@@ -1488,7 +1490,8 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/harness" && method === "GET") {
-      json(res, 200, await liveCombinedStatus());
+      const status = await liveCombinedStatus();
+      json(res, 200, { ...status, ...harnessSeatReport(getState(), status) });
       return;
     }
     if (pathname === "/api/v1/harness/ensure" && method === "POST") {

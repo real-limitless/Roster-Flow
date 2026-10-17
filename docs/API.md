@@ -50,9 +50,9 @@ The demo token (`Bearer roster-demo` with `ROSTER_SKIP_ONBOARDING=1`) cannot rot
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness`. `harnessReady` is true when the company serve answers health. `ready` is true when both serves are up |
+| GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness`. `harnessReady` is true when the company serve is up and at least one company seat can run. One seat whose provider is not loaded stays `ready: false` on `seats` and does not clear `harnessReady`. `harnessReady` is false when the serve is down or every company seat is unhirable. `ready` is true when `harnessReady` is true and the system serve is up. `seats` is `[{ seat, model, ready, error }]`. `seatCount` is the roster size |
 | POST | `/api/v1/harness/ensure` | Start or reuse `opencode serve` (`{ forceRestart, kind?: "company" \| "system" }`) |
-| GET | `/api/v1/harness` | Company serve plus `systemHarness` (Architect / Channel) |
+| GET | `/api/v1/harness` | Company serve plus `systemHarness` (Architect / Channel), and the same per-seat `seats` / `harnessReady` report as `/health` |
 | WS | `/api/v1/harness/pty?seat=<id>` | xterm PTY: `opencode attach --session` |
 | POST | `/api/v1/seats/:id/attach` | Ensure serve, wake seat, return real `sessionId` + attach command |
 | GET | `/api/v1/opencode/config` | Current `opencode.json` written by settings |
