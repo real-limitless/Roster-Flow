@@ -2,10 +2,33 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
-import { bootCore } from "./test-helpers.mjs";
+import test, { after } from "node:test";
+import { bootCore, stopAllCores } from "./test-helpers.mjs";
 
-const bin = process.env.OPENCODE_BIN_TEST || `${process.env.HOME}/.opencode/bin/opencode`;
+function resolveOpenCodeBin() {
+  const fromEnv = String(process.env.OPENCODE_BIN || process.env.OPENCODE_BIN_TEST || "").trim();
+  if (fromEnv && existsSync(fromEnv)) return { bin: fromEnv, reason: "" };
+  for (const dir of String(process.env.PATH || "").split(":")) {
+    if (!dir) continue;
+    const cand = join(dir, "opencode");
+    if (existsSync(cand)) return { bin: cand, reason: "" };
+  }
+  const homeBin = join(process.env.HOME || "", ".opencode/bin/opencode");
+  if (process.env.HOME && existsSync(homeBin)) return { bin: homeBin, reason: "" };
+  const checked = [
+    fromEnv ? `OPENCODE_BIN=${fromEnv} (not a file)` : "OPENCODE_BIN is unset",
+    "opencode on PATH",
+    homeBin || "~/.opencode/bin/opencode",
+  ];
+  return { bin: "", reason: `opencode binary not found; set OPENCODE_BIN or install opencode (checked ${checked.join("; ")})` };
+}
+
+const resolvedBin = resolveOpenCodeBin();
+const bin = resolvedBin.bin;
+const binSkipReason = resolvedBin.reason;
+if (!bin) console.log(`live harness skipped: ${binSkipReason}`);
+
+after(() => stopAllCores());
 const TOKEN = "rf_liveseats_token_0000001";
 
 function stubServer() {
@@ -90,8 +113,8 @@ function stubServer() {
 }
 
 test("bad seats do not stop a stub seat or wiki-scribe from replying", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -227,8 +250,8 @@ test("bad seats do not stop a stub seat or wiki-scribe from replying", { timeout
 });
 
 test("a seat hired after the serve is up reaches the stub and posts a reply", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -295,8 +318,8 @@ test("a seat hired after the serve is up reaches the stub and posts a reply", { 
 });
 
 test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -387,8 +410,8 @@ test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }
 });
 
 test("bus, messages, and the channel agree on one slow wake", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -468,8 +491,8 @@ test("bus, messages, and the channel agree on one slow wake", { timeout: 120000 
 });
 
 test("a provider that accepts the request and sends nothing stays blocked", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -554,8 +577,8 @@ test("a provider that accepts the request and sends nothing stays blocked", { ti
 });
 
 test("each endpoint posts a seat reply exactly once", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -641,8 +664,8 @@ test("each endpoint posts a seat reply exactly once", { timeout: 120000 }, async
 });
 
 test("a slow provider agrees on started false and still finishes", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -733,8 +756,8 @@ test("a slow provider agrees on started false and still finishes", { timeout: 12
 });
 
 test("two mentions in one message reach the provider together", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();
@@ -808,8 +831,8 @@ test("two mentions in one message reach the provider together", { timeout: 12000
 });
 
 test("both harnesses load featherless and a channel mention gets a reply", { timeout: 120000 }, async (t) => {
-  if (!existsSync(bin)) {
-    t.skip("opencode 1.19.x is not installed");
+  if (!bin) {
+    t.skip(binSkipReason);
     return;
   }
   const stub = await stubServer();

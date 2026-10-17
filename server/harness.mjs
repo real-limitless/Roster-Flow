@@ -21,8 +21,10 @@ import { opencodeHostname, rosterApiUrl } from "./config.mjs";
 import { companyWorkspace, dataDir, opencodeDir, root, systemWorkspace } from "./paths.mjs";
 
 const HEALTH = "/global/health";
+const ROSTER_PLUGIN = "roster-flow-opencode";
 const instances = { company: null, system: null };
 const inflight = { company: null, system: null };
+const spawned = new Set();
 
 export const COMPANY = "company";
 export const SYSTEM = "system";
@@ -82,8 +84,9 @@ export function configPaths(kind = COMPANY) {
 /**
  * Env for `opencode serve`: provider keys, plugin env, and the config to load.
  * Both harnesses load the file this process writes. An operator OPENCODE_CONFIG
- * is merged into the company file first; the serve does not point at it directly,
- * and project config discovered from a git checkout is disabled.
+ * is deep-merged into that file first (mcp, username, plugins, and every other
+ * key); the serve does not point at the operator path, and project config
+ * discovered from a git checkout is disabled.
  */
 export function serveEnv(kind = COMPANY, base = process.env) {
   const k = harnessKind(kind);
@@ -115,6 +118,119 @@ function operatorOverrideConfig() {
   if (!override || override === configPaths(COMPANY).file) return {};
   return readConfigFile(override);
 }
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function unionPlugins(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    const items = Array.isArray(list) ? list : typeof list === "string" && list ? [list] : [];
+    for (const item of items) {
+      if (item == null || item === "") continue;
+      const key = typeof item === "string" ? item : JSON.stringify(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(item);
+    }
+  }
+  if (!seen.has(ROSTER_PLUGIN)) out.push(ROSTER_PLUGIN);
+  return out;
+}
+
+function providerMap(cfg) {
+  if (!isPlainObject(cfg)) return {};
+  const plural = isPlainObject(cfg.providers) ? cfg.providers : {};
+  const singular = isPlainObject(cfg.provider) ? cfg.provider : {};
+  return { ...plural, ...singular };
+}
+
+/** Overlay objects. Plugin and provider maps are applied by the caller. */
+function deepMerge(base, overlay) {
+  if (!isPlainObject(overlay)) return overlay === undefined ? base : overlay;
+  const out = isPlainObject(base) ? { ...base } : {};
+  for (const [key, value] of Object.entries(overlay)) {
+    if (key === "plugin" || key === "provider" || key === "providers") continue;
+    if (isPlainObject(value)) out[key] = deepMerge(out[key], value);
+    else if (Array.isArray(value)) out[key] = value.slice();
+    else out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Fold operator and global config into the file a serve loads.
+ * Later provider maps win per id, so the caller's owned blocks stay.
+ * Plugin lists are a union and always include roster-flow-opencode.
+ */
+function mergeWrittenConfig(dest, extras, owned) {
+  let cfg = deepMerge({ $schema: "https://opencode.ai/config.json" }, dest);
+  const plugins = [dest?.plugin];
+  const providers = [];
+  for (const extra of extras) {
+    if (!extra) continue;
+    cfg = deepMerge(cfg, extra);
+    plugins.push(extra.plugin);
+    providers.push(providerMap(extra));
+  }
+  providers.push(providerMap(dest));
+  if (owned) providers.push(providerMap(owned));
+  cfg.$schema = "https://opencode.ai/config.json";
+  cfg.plugin = unionPlugins(...plugins);
+  cfg.provider = Object.assign({}, ...providers);
+  delete cfg.providers;
+  return cfg;
+}
+
+function trackSpawned(child) {
+  if (!child) return child;
+  spawned.add(child);
+  child.once("exit", () => spawned.delete(child));
+  return child;
+}
+
+function killSpawned(signal) {
+  for (const child of spawned) {
+    if (child.exitCode != null) continue;
+    try {
+      child.kill(signal);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+export function spawnedServeCount() {
+  let n = 0;
+  for (const child of spawned) if (child.exitCode == null) n += 1;
+  return n;
+}
+
+/** Stop opencode serves this process started. Tests call this from after(). */
+export async function stopSpawnedServes() {
+  killSpawned("SIGTERM");
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline && spawnedServeCount()) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  killSpawned("SIGKILL");
+}
+
+function shutdownSpawned() {
+  killSpawned("SIGKILL");
+}
+
+process.on("SIGTERM", () => {
+  shutdownSpawned();
+  process.exit(143);
+});
+process.on("SIGINT", () => {
+  shutdownSpawned();
+  process.exit(130);
+});
+process.on("exit", shutdownSpawned);
 
 export function whichOpenCode() {
   const envBin = process.env.OPENCODE_BIN;
@@ -165,27 +281,8 @@ function writeCompanyConfig() {
   mkdirSync(companyWorkspace, { recursive: true });
   const { dir, file: dest } = configPaths(COMPANY);
   mkdirSync(dir, { recursive: true });
-  const global = readGlobalOpenCodeConfig();
-  let cfg = {
-    $schema: "https://opencode.ai/config.json",
-    plugin: ["roster-flow-opencode"],
-    provider: {},
-    providers: {},
-  };
-  if (existsSync(dest)) {
-    try {
-      cfg = { ...cfg, ...JSON.parse(readFileSync(dest, "utf8")) };
-    } catch {
-      /* keep defaults */
-    }
-  }
-  const extra = operatorOverrideConfig();
-  // Same plugin list as the system serve. A stale data-dir config that names
-  // a missing project plugin (for example graphify) makes this serve report
-  // no providers while system, which rewrites the list, still loads them.
-  cfg.plugin = ["roster-flow-opencode"];
-  cfg.provider = { ...(global.provider || {}), ...(extra.provider || {}), ...(cfg.provider || {}) };
-  cfg.providers = { ...(global.providers || {}), ...(extra.providers || {}), ...(cfg.providers || {}) };
+  const existing = readConfigFile(dest);
+  const cfg = mergeWrittenConfig(existing, [readGlobalOpenCodeConfig(), operatorOverrideConfig()]);
   writeFileSync(dest, JSON.stringify(normalizeOpenCodeConfig(cfg), null, 2));
 }
 
@@ -194,23 +291,8 @@ function writeSystemConfig() {
   mkdirSync(systemWorkspace, { recursive: true });
   mkdirSync(join(ocDir, "agents"), { recursive: true });
   const company = readOpenCodeConfig();
-  const global = readGlobalOpenCodeConfig();
-  let cfg = {
-    $schema: "https://opencode.ai/config.json",
-    plugin: ["roster-flow-opencode"],
-    provider: {},
-    agent: {},
-  };
-  if (existsSync(dest)) {
-    try {
-      cfg = { ...cfg, ...JSON.parse(readFileSync(dest, "utf8")) };
-    } catch {
-      /* keep defaults */
-    }
-  }
-  cfg.plugin = ["roster-flow-opencode"];
-  cfg.provider = { ...(global.provider || {}), ...(cfg.provider || {}), ...(company.provider || {}) };
-  cfg.providers = { ...(global.providers || {}), ...(cfg.providers || {}), ...(company.providers || {}) };
+  const existing = readConfigFile(dest);
+  const cfg = mergeWrittenConfig(existing, [readGlobalOpenCodeConfig(), operatorOverrideConfig(), company], company);
   writeFileSync(dest, JSON.stringify(normalizeOpenCodeConfig(cfg), null, 2));
 }
 
@@ -262,22 +344,65 @@ export async function liveCombinedStatus() {
   return combinedStatus();
 }
 
-/** Why harnessReady is false when a company seat's provider is not loaded. */
-export function seatProviderGap(state, loadedIds) {
-  const have = new Set(loadedIds || []);
-  const missing = [];
+/** Error when this seat's provider is absent from a known loaded-id list. */
+export function seatModelGap(seat, loadedIds) {
+  if (!seat || seat.kind !== "bot" || seat.mcpGuest) return null;
+  const adapter = String(seat.adapter || "opencode").toLowerCase();
+  if (adapter && adapter !== "opencode") return null;
+  if (!Array.isArray(loadedIds)) return null;
+  const model = String(seat.model || "").trim();
+  if (!model) return null;
+  const providerID = model.split("/")[0];
+  if (!providerID || isBuiltinProvider(providerID)) return null;
+  const have = new Set(loadedIds);
+  if (have.has(providerID)) return null;
+  const label = seat.system ? "system" : "company";
+  return `${seat.name || seat.id} needs ${model}; ${label} harness loaded [${[...have].join(", ") || "none"}]`;
+}
+
+/** Per-seat company readiness. System seats are reported on the system serve. */
+export function seatReadiness(state, loadedIds) {
+  const rows = [];
   for (const seat of state?.seats || []) {
-    if (seat.kind !== "bot" || seat.system || seat.mcpGuest) continue;
+    if (!seat || seat.kind !== "bot" || seat.system || seat.mcpGuest) continue;
     const adapter = String(seat.adapter || "opencode").toLowerCase();
     if (adapter && adapter !== "opencode") continue;
     const model = String(seat.model || "").trim();
-    if (!model) continue;
-    const providerID = model.split("/")[0];
-    if (!providerID || isBuiltinProvider(providerID)) continue;
-    if (!have.has(providerID)) missing.push(`${seat.name || seat.id} needs ${model}`);
+    const error = seatModelGap(seat, loadedIds);
+    rows.push({ seat: seat.id, model: model || null, ready: !error, error });
   }
-  if (!missing.length) return null;
-  return `company harness loaded [${[...have].join(", ") || "none"}]; ${missing.join("; ")}`;
+  return rows;
+}
+
+/** True when the company serve is up and at least one company seat can run. */
+export function companyHarnessReady(serveUp, rows) {
+  if (!serveUp) return false;
+  if (!rows?.length) return true;
+  return rows.some((row) => row.ready);
+}
+
+/**
+ * Summary when every company seat is unhirable. One bad seat returns null
+ * so harnessReady stays true for the seats that can still run.
+ */
+export function seatProviderGap(state, loadedIds) {
+  const rows = seatReadiness(state, loadedIds);
+  if (companyHarnessReady(true, rows)) return null;
+  const blocked = rows.filter((row) => row.error);
+  if (!blocked.length) return null;
+  return blocked.map((row) => row.error).join("; ");
+}
+
+/** `seats`, `harnessReady`, and `harnessError` for /health and /harness. */
+export function harnessSeatReport(state, status) {
+  const serveUp = status?.harness === "up";
+  const loadedIds = Array.isArray(status?.loadedProviders) ? status.loadedProviders : [];
+  const seats = seatReadiness(state, serveUp ? loadedIds : []).map((row) =>
+    serveUp ? row : { ...row, ready: false, error: "company harness is offline" },
+  );
+  const harnessReady = companyHarnessReady(serveUp, seats);
+  const harnessError = serveUp ? seatProviderGap(state, loadedIds) : null;
+  return { seats, harnessReady, harnessError };
 }
 
 /**
@@ -505,12 +630,12 @@ async function ensureOnce({ forceRestart = false, kind = COMPANY } = {}) {
   mkdirSync(dataDir, { recursive: true });
 
   const env = serveEnv(k);
-  const child = spawn(binary, ["serve", "--hostname", opencodeHostname(), "--port", String(port)], {
+  const child = trackSpawned(spawn(binary, ["serve", "--hostname", opencodeHostname(), "--port", String(port)], {
     cwd: s.cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
-  });
+  }));
   const onLog = (buf) => {
     try {
       appendFileSync(s.logFile, buf);

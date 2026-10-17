@@ -125,17 +125,34 @@ test("an empty or extra OPENCODE_CONFIG still points both serves at the file thi
   assert.equal(system.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
 });
 
-test("seatProviderGap names a company seat whose provider the serve did not load", () => {
+test("one unhirable seat does not mark the company harness down", () => {
+  const wiki = { id: "wiki-scribe", name: "Wiki Scribe", kind: "bot", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash" };
+  const build = { id: "build", name: "Eng.Build", kind: "bot", model: "opencode/big-pickle" };
   const state = {
     seats: [
-      { id: "wiki-scribe", name: "Wiki Scribe", kind: "bot", model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash" },
+      wiki,
+      build,
       { id: "architect", name: "Architect", kind: "bot", system: true, model: "featherless/stub-model" },
       { id: "human", name: "You", kind: "human", model: "featherless/stub-model" },
     ],
   };
   assert.equal(harness.seatProviderGap(state, ["opencode", "featherless"]), null);
-  assert.match(harness.seatProviderGap(state, []), /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
-  assert.match(harness.seatProviderGap(state, ["opencode"]), /loaded \[opencode\]/);
+  const mixed = harness.seatReadiness(state, ["opencode"]);
+  assert.equal(mixed.find((row) => row.seat === "wiki-scribe").ready, false);
+  assert.match(mixed.find((row) => row.seat === "wiki-scribe").error, /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
+  assert.match(mixed.find((row) => row.seat === "wiki-scribe").error, /loaded \[opencode\]/);
+  assert.equal(mixed.find((row) => row.seat === "build").ready, true);
+  assert.equal(harness.companyHarnessReady(true, mixed), true);
+  assert.equal(harness.seatProviderGap(state, ["opencode"]), null);
+  const onlyBad = harness.seatReadiness({ seats: [wiki] }, ["opencode"]);
+  assert.equal(harness.companyHarnessReady(true, onlyBad), false);
+  assert.match(harness.seatProviderGap({ seats: [wiki] }, []), /Wiki Scribe needs featherless\/deepseek-ai\/DeepSeek-V4.1-Flash/);
+  assert.match(harness.seatProviderGap({ seats: [wiki] }, ["opencode"]), /loaded \[opencode\]/);
+  const report = harness.harnessSeatReport(state, { harness: "up", loadedProviders: ["opencode"] });
+  assert.equal(report.harnessReady, true);
+  assert.equal(report.harnessError, null);
+  assert.equal(harness.harnessSeatReport(state, { harness: "offline", loadedProviders: [] }).harnessReady, false);
+  assert.equal(harness.harnessSeatReport({ seats: [wiki] }, { harness: "up", loadedProviders: ["opencode"] }).harnessReady, false);
 });
 
 test("serveChildEnv passes through every {env:VAR} a provider block references", () => {
@@ -183,6 +200,49 @@ test("ensure spawns both serves with the roster config and key, and reports load
   const loaded = await harness.loadedModels("company");
   assert.ok(loaded.some((m) => m.providerID === "featherless" && m.modelID === "Qwen/Qwen2.5-Coder-32B-Instruct"));
   assert.deepEqual(harness.knownLoadedModels("company"), loaded);
+});
+
+test("operator mcp, username, and an extra provider survive on both harnesses", async () => {
+  const operatorPath = join(dir, "operator.json");
+  writeFileSync(
+    operatorPath,
+    JSON.stringify({
+      username: "ada",
+      mcp: { wiki: { type: "remote", url: "https://wiki.example/mcp", enabled: true } },
+      plugin: ["operator-plugin"],
+      theme: "system",
+      provider: {
+        operatorprov: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "Operator",
+          options: { apiKey: "op-key" },
+          models: { "extra-model": { name: "Extra" } },
+        },
+        featherless: { npm: "nope", name: "should-not-win", options: {}, models: {} },
+      },
+    }),
+  );
+  const prev = process.env.OPENCODE_CONFIG;
+  process.env.OPENCODE_CONFIG = operatorPath;
+  try {
+    writeCompany({ featherless: FEATHERLESS_BLOCK });
+    await harness.ensure({ kind: "company" });
+    await harness.ensure({ kind: "system" });
+    for (const file of [harness.configPaths("company").file, harness.configPaths("system").file]) {
+      const cfg = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(cfg.username, "ada", file);
+      assert.equal(cfg.mcp.wiki.url, "https://wiki.example/mcp", file);
+      assert.equal(cfg.mcp.wiki.enabled, true, file);
+      assert.equal(cfg.theme, "system", file);
+      assert.equal(cfg.provider.operatorprov.name, "Operator", file);
+      assert.equal(cfg.provider.featherless.name, "Featherless", file);
+      assert.ok(cfg.plugin.includes("roster-flow-opencode"), file);
+      assert.ok(cfg.plugin.includes("operator-plugin"), file);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_CONFIG;
+    else process.env.OPENCODE_CONFIG = prev;
+  }
 });
 
 test("a serve that dies reads offline instead of a stale up", async () => {
