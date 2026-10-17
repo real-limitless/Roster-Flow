@@ -583,11 +583,11 @@ test("a wake posts only the assistant message from this run", async () => {
   deps.createSession = async () => ({ id: "ses_hist" });
   deps.promptSession = async () => ({ ok: true });
   deps.sessionMessages = async () => [
-    { id: "old", info: { role: "assistant" }, parts: [{ type: "text", text: "old-reply" }] },
-    { id: "hist-new", info: { role: "assistant" }, parts: [{ type: "text", text: "new-reply" }] },
+    { id: "old", info: { role: "assistant", time: { created: 1 } }, parts: [{ type: "text", text: "old-reply" }] },
+    { id: "hist-new", info: { role: "assistant", time: { created: Date.now() + 60_000 } }, parts: [{ type: "text", text: "new-reply" }] },
   ];
   deps.watchProviderTurn = () => {
-    const pending = Promise.resolve({ reached: true, text: "old-reply\nnew-reply", done: true, messageId: "hist-new" });
+    const pending = Promise.resolve({ reached: true, text: "old-reply\nnew-reply", done: true });
     pending.rest = pending;
     pending.arm = () => {};
     pending.cancel = () => {};

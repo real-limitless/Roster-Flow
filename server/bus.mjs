@@ -271,15 +271,8 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
       providerID: model.providerID,
       modelID: model.modelID,
     });
-    let beforeIds = new Set();
-    try {
-      for (const row of assistantText(await deps.sessionMessages(sid, kind))) {
-        if (row.id) beforeIds.add(row.id);
-      }
-    } catch {
-      beforeIds = new Set();
-    }
     const watch = (deps.watchProviderTurn || watchProviderTurn)(sid, kind);
+    const askedAt = Date.now();
     try {
       let outcome;
       if (watch.unwatched) {
@@ -329,17 +322,19 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
         err.status = 502;
         throw err;
       }
-      const messageId = final?.messageId || outcome.messageId || null;
-      let providerText = "";
+      let providerText = final?.text || outcome.text || "";
+      let messageId = final?.messageId || outcome.messageId || null;
       try {
-        const rows = assistantText(await deps.sessionMessages(sid, kind));
-        const fresh = rows.filter((row) => (messageId ? row.id === messageId : row.id && !beforeIds.has(row.id)));
-        const picked = messageId ? fresh[0] : fresh[fresh.length - 1];
-        if (picked?.text) providerText = picked.text;
+        // A reused session still holds earlier turns. Keep only assistant messages created after this prompt.
+        const replies = assistantText(await deps.sessionMessages(sid, kind)).filter((m) => m.text);
+        const dated = replies.some((m) => m.created);
+        const fresh = dated ? replies.filter((m) => m.created && m.created >= askedAt) : replies.slice(-1);
+        const polled = fresh.map((m) => m.text).join("\n");
+        if (polled) providerText = polled;
+        if (fresh.length) messageId = fresh[fresh.length - 1].id || messageId;
       } catch {
-        providerText = "";
+        /* the streamed text is enough */
       }
-      if (!providerText) providerText = final?.text || outcome.text || "";
       emit({
         scope: "chat",
         step: "seat.prompted",

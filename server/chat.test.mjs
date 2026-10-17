@@ -329,6 +329,34 @@ test("providerHint explains a missing seat key", () => {
   }
 });
 
+test("mentions in one message wake those seats at the same time", async () => {
+  const prev = { ...deps };
+  let active = 0;
+  let max = 0;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.ensure = async () => ({ harness: "up" });
+  deps.loadedModels = async () => [];
+  deps.knownLoadedModels = () => [];
+  deps.keyStatus = () => ({ providerID: "demo", modelID: "m", configured: true, connected: true, loaded: true });
+  deps.followTicks = 0;
+  deps.wakeSeat = async (to) => {
+    active += 1;
+    max = Math.max(max, active);
+    await new Promise((r) => setTimeout(r, 40));
+    active -= 1;
+    return { seat: to, runId: `run-${to}`, started: true, sessionId: `ses-${to}` };
+  };
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "please @Eng.Build and @QA both look" });
+    const results = await routed.pending;
+    assert.equal(max, 2);
+    assert.deepEqual(results.map((row) => row.seat).sort(), ["build", "qa"]);
+    assert.ok(results.every((row) => row.started === true && row.runId));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("an @mention that does not start reports started false and a blocked run", async () => {
   const prev = { ...deps };
   const prevBus = { ...busDeps };

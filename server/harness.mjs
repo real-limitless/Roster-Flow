@@ -818,7 +818,8 @@ export function assistantText(messages) {
     const role = msg.role || msg.info?.role;
     if (role && role !== "assistant") continue;
     const text = flattenText(msg);
-    if (text) out.push({ id: msg.id || msg.info?.id, text, role: "assistant" });
+    const created = Number(msg.info?.time?.created || msg.time?.created || 0) || null;
+    if (text) out.push({ id: msg.id || msg.info?.id, text, role: "assistant", created });
   }
   return out;
 }

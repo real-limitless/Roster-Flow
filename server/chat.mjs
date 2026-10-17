@@ -210,65 +210,67 @@ async function ensureForTarget(to, channelId) {
   }
 }
 
-async function runWakes(channelId, text, from, targets) {
-  const results = [];
-  const since = Date.now();
-  for (const target of targets) {
-    const ready = await ensureForTarget(target.to, channelId);
-    const seatId = resolvedSeatId(target.to, getState());
-    rememberSessionRoom(seatId, channelId);
-    if (!ready.ok) {
-      results.push({ offline: true, seat: seatId, harness: ready.kind, error: ready.error });
-      continue;
-    }
-    const loaded = await Promise.resolve(deps.loadedModels?.(ready.kind)).catch(() => null);
-    const plan = seatModelPlan(ready.seat, loaded ?? null);
-    const model = plan.model || ready.seat?.model || "default";
-    const wakeLine = `Waking ${ready.seat?.name || seatId} (${model})…`;
-    const alreadyWake = (getState().messages || []).some((m) => m.channel === channelId && m.system && m.text === wakeLine);
-    if (!alreadyWake) statusMessage(channelId, wakeLine);
-    if (plan.hint) {
-      statusMessage(channelId, plan.hint);
-      emit({
-        level: "warn",
-        scope: "chat",
-        step: plan.ok ? "seat.fallback" : "seat.nokey",
-        channel: channelId,
-        seat: seatId,
-        detail: { model, hint: plan.hint, fallback: plan.fallback },
-      });
-    }
-    if (!plan.ok) {
-      const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
-      results.push({
-        ...woke,
-        seat: woke?.seat || seatId,
-        error: woke?.error || plan.hint,
-        nokey: !woke?.started,
-        runId: woke?.runId || null,
-        started: Boolean(woke?.started),
-      });
-      continue;
-    }
+async function wakeOneTarget(channelId, text, from, target) {
+  const ready = await ensureForTarget(target.to, channelId);
+  const seatId = resolvedSeatId(target.to, getState());
+  rememberSessionRoom(seatId, channelId);
+  if (!ready.ok) return { offline: true, seat: seatId, harness: ready.kind, error: ready.error, started: false };
+  const loaded = await Promise.resolve(deps.loadedModels?.(ready.kind)).catch(() => null);
+  const plan = seatModelPlan(ready.seat, loaded ?? null);
+  const model = plan.model || ready.seat?.model || "default";
+  const wakeLine = `Waking ${ready.seat?.name || seatId} (${model})…`;
+  const alreadyWake = (getState().messages || []).some((m) => m.channel === channelId && m.system && m.text === wakeLine);
+  if (!alreadyWake) statusMessage(channelId, wakeLine);
+  if (plan.hint) {
+    statusMessage(channelId, plan.hint);
     emit({
+      level: "warn",
       scope: "chat",
-      step: "seat.wake",
+      step: plan.ok ? "seat.fallback" : "seat.nokey",
       channel: channelId,
       seat: seatId,
-      detail: { reason: target.reason, model, harness: ready.kind },
+      detail: { model, hint: plan.hint, fallback: plan.fallback },
     });
-    const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
-    if (woke?.paused) {
-      statusMessage(channelId, `${ready.seat?.name || seatId} is paused — wake skipped.`);
-    } else if (woke?.offline) {
-      statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
-    } else if (woke?.error) {
-      statusMessage(channelId, `${ready.seat?.name || seatId} did not start run ${woke.runId || ""}: ${woke.error}`.trim());
-    } else if (woke?.human) {
-      statusMessage(channelId, `${ready.seat?.name || seatId} is a human seat — notified, no model.`);
-    }
-    results.push(woke);
   }
+  if (!plan.ok) {
+    const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
+    return {
+      ...woke,
+      seat: woke?.seat || seatId,
+      error: woke?.error || plan.hint,
+      nokey: !woke?.started,
+      runId: woke?.runId || null,
+      started: Boolean(woke?.started),
+    };
+  }
+  emit({
+    scope: "chat",
+    step: "seat.wake",
+    channel: channelId,
+    seat: seatId,
+    detail: { reason: target.reason, model, harness: ready.kind },
+  });
+  const woke = await deps.wakeSeat(target.to, text, { from, kind: target.reason, channel: channelId, announce: false });
+  if (woke?.paused) {
+    statusMessage(channelId, `${ready.seat?.name || seatId} is paused — wake skipped.`);
+  } else if (woke?.offline) {
+    statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
+  } else if (woke?.error) {
+    statusMessage(channelId, `${ready.seat?.name || seatId} did not start run ${woke.runId || ""}: ${woke.error}`.trim());
+  } else if (woke?.human) {
+    statusMessage(channelId, `${ready.seat?.name || seatId} is a human seat — notified, no model.`);
+  }
+  return woke;
+}
+
+async function runWakes(channelId, text, from, targets) {
+  const since = Date.now();
+  const settled = await Promise.allSettled(targets.map((target) => wakeOneTarget(channelId, text, from, target)));
+  const results = settled.map((item) =>
+    item.status === "fulfilled"
+      ? item.value
+      : { started: false, error: String(item.reason?.message || item.reason || "wake failed") },
+  );
   const seats = results
     .filter((w) => w && w.started !== false && !w.nokey && (w.sessionId || (w.seat && !w.offline && !w.error && !w.human)))
     .map((w) => w.seat)
