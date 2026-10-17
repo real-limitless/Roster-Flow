@@ -163,6 +163,26 @@ export function applyTurnUsage(state, { seatId, runId, usage } = {}) {
   return { seat, row, over: seatOverBudget(seat) };
 }
 
+/**
+ * Meter a subagent session (`task`) against the seat it ran as. One row per
+ * child session, keyed by `runId`; later calls rewrite it like `applyTurnUsage`.
+ */
+export function meterChildSession(state, { seatId, runId, usage, channelId = null, threadId = null, parentSeatId = null } = {}) {
+  if (!runId) return null;
+  let row = (state.usage || []).find((r) => r.runId === runId && r.seatId === seatId);
+  if (!row) {
+    const made = meterWake(state, { seatId, runId, inputTokens: 0, outputTokens: 0, source: "task", channelId, threadId });
+    if (!made) return null;
+    row = made.row;
+    row.parentSeatId = parentSeatId;
+  }
+  if (!usage) {
+    const seat = (state.seats || []).find((s) => s.id === seatId);
+    return { seat, row, over: seatOverBudget(seat) };
+  }
+  return applyTurnUsage(state, { seatId, runId, usage });
+}
+
 /** Tokens the room's wakes used on the UTC day of `now`. */
 export function roomSpentToday(state, channelId, now = Date.now()) {
   const day = new Date(now).toISOString().slice(0, 10);

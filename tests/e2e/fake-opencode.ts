@@ -9,21 +9,35 @@ export type FakePrompt = { sessionId: string; title: string; agent?: string; mod
 type Part = { type: string; text: string };
 type Tokens = { input: number; output: number; reasoning: number; cache: { read: number; write: number } };
 type Msg = {
-  info: { id: string; sessionID?: string; role: string; time: { created: number; completed?: number }; providerID?: string; modelID?: string; tokens?: Tokens; cost?: number };
+  info: {
+    id: string;
+    sessionID?: string;
+    role: string;
+    agent?: string;
+    time: { created: number; completed?: number };
+    providerID?: string;
+    modelID?: string;
+    tokens?: Tokens;
+    cost?: number;
+  };
   parts: Part[];
 };
+
+/** A subagent run the fake records as a child session, like OpenCode's `task` tool. */
+export type FakeChild = { agent: string; title: string; text: string; tokens: Tokens; cost: number };
+export type FakeReply = string | null | { text: string; children?: FakeChild[] };
 
 export type FakeOpenCode = {
   port: number;
   prompts: FakePrompt[];
-  sessions: Map<string, { id: string; title: string; messages: Msg[] }>;
+  sessions: Map<string, { id: string; title: string; parentID?: string; created: number; messages: Msg[] }>;
   close: () => Promise<void>;
 };
 
 export async function startFakeOpenCode(opts: {
   port: number;
   providers: Record<string, string[]>;
-  reply: (prompt: FakePrompt) => string | null;
+  reply: (prompt: FakePrompt) => FakeReply;
   delayMs?: number | ((prompt: FakePrompt) => number);
   /** Tokens and cost reported on each assistant message, like OpenCode's `info.tokens` / `info.cost`. */
   usage?: (prompt: FakePrompt) => { tokens: Tokens; cost: number } | null;
@@ -72,14 +86,14 @@ export async function startFakeOpenCode(opts: {
       req.on("close", () => streams.delete(res));
       return;
     }
-    if (path === "/session" && method === "GET") return send(res, 200, [...sessions.values()].map(({ id, title }) => ({ id, title })));
+    if (path === "/session" && method === "GET") return send(res, 200, [...sessions.values()].map(({ id, title, parentID }) => ({ id, title, parentID })));
     if (path === "/session" && method === "POST") {
       const body = await read(req);
       const id = `ses_fake_${run}_${++n}`;
-      sessions.set(id, { id, title: String(body.title || id), messages: [] });
+      sessions.set(id, { id, title: String(body.title || id), created: Date.now(), messages: [] });
       return send(res, 200, { id, title: body.title || id });
     }
-    const m = path.match(/^\/session\/([^/]+)(?:\/(message|prompt_async|abort))?$/);
+    const m = path.match(/^\/session\/([^/]+)(?:\/(message|prompt_async|abort|children))?$/);
     const ses = m ? sessions.get(m[1]) : undefined;
     if (m && !ses) return send(res, 404, { name: "NotFoundError", data: { message: "session not found" } });
     if (m && ses && !m[2] && method === "DELETE") {
@@ -87,6 +101,10 @@ export async function startFakeOpenCode(opts: {
       return send(res, 200, true);
     }
     if (m && ses && m[2] === "message" && method === "GET") return send(res, 200, ses.messages);
+    if (m && ses && m[2] === "children" && method === "GET") {
+      const kids = [...sessions.values()].filter((s) => s.parentID === ses.id);
+      return send(res, 200, kids.map((s) => ({ id: s.id, title: s.title, parentID: s.parentID, time: { created: s.created } })));
+    }
     if (m && ses && m[2] === "abort") return send(res, 200, true);
     if (m && ses && m[2] === "prompt_async" && method === "POST") {
       const body = await read(req);
@@ -95,7 +113,25 @@ export async function startFakeOpenCode(opts: {
       const prompt: FakePrompt = { sessionId: ses.id, title: ses.title, agent: body.agent as string | undefined, model: body.model, text };
       prompts.push(prompt);
       ses.messages.push({ info: { id: `msg_u_${++n}`, role: "user", time: { created: Date.now() } }, parts: [{ type: "text", text }] });
-      const answer = opts.reply(prompt);
+      const out = opts.reply(prompt);
+      const answer = typeof out === "string" || out === null ? out : out.text;
+      for (const child of (out && typeof out === "object" ? out.children : null) || []) {
+        const id = `ses_fake_${run}_${++n}`;
+        const now = Date.now();
+        sessions.set(id, {
+          id,
+          title: `${child.title} (@${child.agent} subagent)`,
+          parentID: ses.id,
+          created: now,
+          messages: [
+            { info: { id: `msg_u_${++n}`, sessionID: id, role: "user", agent: child.agent, time: { created: now } }, parts: [{ type: "text", text: child.title }] },
+            {
+              info: { id: `msg_a_${++n}`, sessionID: id, role: "assistant", agent: child.agent, time: { created: now }, tokens: child.tokens, cost: child.cost },
+              parts: [{ type: "text", text: child.text }],
+            },
+          ],
+        });
+      }
       publish({ type: "session.status", properties: { sessionID: ses.id, status: { type: "busy" } } });
       const delay = typeof opts.delayMs === "function" ? opts.delayMs(prompt) : opts.delayMs ?? 150;
       setTimeout(() => {

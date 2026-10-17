@@ -777,6 +777,22 @@ export function serveBaseUrl(kind = COMPANY) {
   return inst?.healthy && inst.baseUrl ? inst.baseUrl : null;
 }
 
+/** Sessions OpenCode started from this one (the `task` tool's subagent runs). */
+export async function sessionChildren(sessionId, kind = COMPANY) {
+  const data = await ocFetch(`/session/${sessionId}/children`, {}, kind);
+  return Array.isArray(data) ? data : [];
+}
+
+/** The agent a session ran as: `info.agent` (OpenCode 1.19) or `info.mode` (older assistant messages). */
+export function sessionAgent(messages) {
+  for (const msg of messages || []) {
+    const info = msg.info || msg;
+    const agent = info.agent || (info.role === "assistant" ? info.mode : null);
+    if (agent) return String(agent);
+  }
+  return null;
+}
+
 /**
  * Decide whether one SSE event shows that this session's provider turn
  * finished or failed. User echoes are ignored. `state.userIds` collects them.

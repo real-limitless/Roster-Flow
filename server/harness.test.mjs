@@ -369,3 +369,10 @@ test("flattenConfigProviders reads OpenCode's /config/providers shape", () => {
   );
   assert.equal(harness.flattenConfigProviders({}), null);
 });
+
+test("sessionAgent reads the agent a session ran as", () => {
+  assert.equal(harness.sessionAgent([{ info: { role: "user", agent: "build" } }]), "build");
+  assert.equal(harness.sessionAgent([{ info: { role: "user" } }, { info: { role: "assistant", mode: "review" } }]), "review");
+  assert.equal(harness.sessionAgent([{ info: { role: "user", mode: "x" } }]), null);
+  assert.equal(harness.sessionAgent([]), null);
+});

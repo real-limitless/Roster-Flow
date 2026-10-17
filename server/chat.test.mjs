@@ -1248,6 +1248,39 @@ test("a reset stops follow loops that started before it", async () => {
   }
 });
 
+test("a seat's subagent sessions post one delegation line in the room", async () => {
+  const prev = { ...deps };
+  const stamp = Date.now();
+  const child = { childSessionId: `ses-kid-${stamp}`, agent: "build", seatId: "build", title: "Fix flaky webhook test", tokens: 1234, paused: false };
+  let idle;
+  stubAwake({
+    followTicks: 2,
+    followDelayMs: 5,
+    onSessionIdle: (_id, fn) => (idle = fn),
+    meterTurn: async () => null,
+    meterChildren: async (seat, opts) => {
+      assert.equal(seat, "review");
+      assert.equal(opts.channelId, "ship");
+      return [child, { childSessionId: `ses-ghost-${stamp}`, agent: "explore", seatId: null, title: "Explore", tokens: 0 }];
+    },
+    pullAssistant: async (seat) => (seat === "review" ? [{ id: `del-${stamp}`, text: "Handed it to build.", created: stamp + 1000 }] : []),
+  });
+  try {
+    const before = getState().messages.length;
+    await routeChannelMessage({ channelId: "ship", text: "@review fix the flaky test" }).pending;
+    await new Promise((r) => setTimeout(r, 20));
+    idle?.();
+    await new Promise((r) => setTimeout(r, 20));
+    const lines = getState().messages.slice(before).filter((m) => m.delegation);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].text, 'Eng.Review delegated to Eng.Build with task: "Fix flaky webhook test" (1,234 tokens).');
+    assert.deepEqual(lines[0].delegation, { parentSeatId: "review", childSeatId: "build", childSessionId: child.childSessionId, tokens: 1234 });
+    assert.equal(lines[0].who, "System");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("a follow opens the serve's event stream even when the first poll already has the reply", async () => {
   const prev = { ...deps };
   const opened = [];
