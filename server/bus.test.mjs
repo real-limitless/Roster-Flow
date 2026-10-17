@@ -576,3 +576,73 @@ test("waitForIdleServe holds while another run is streaming", async () => {
   await pending;
   assert.equal(settled, true);
 });
+
+test("a wake posts only the assistant message from this run", async () => {
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_hist" });
+  deps.promptSession = async () => ({ ok: true });
+  deps.sessionMessages = async () => [
+    { id: "old", info: { role: "assistant" }, parts: [{ type: "text", text: "old-reply" }] },
+    { id: "hist-new", info: { role: "assistant" }, parts: [{ type: "text", text: "new-reply" }] },
+  ];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: true, text: "old-reply\nnew-reply", done: true, messageId: "hist-new" });
+    pending.rest = pending;
+    pending.arm = () => {};
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const result = await wakeSeat("build", "next", { from: "product", channel: "ship" });
+    const posted = (getState().messages || []).filter((m) => m.runId === result.runId && m.seatId === "build" && !m.system);
+    assert.equal(
+      posted.length,
+      1,
+      JSON.stringify({
+        started: result.started,
+        messageId: result.messageId,
+        hits: (getState().messages || []).filter((m) => String(m.text).includes("new-reply")).map((m) => ({ runId: m.runId, sessionId: m.sessionId, text: m.text })),
+      }),
+    );
+    assert.equal(posted[0].text, "new-reply");
+    assert.equal(posted[0].sessionId, "hist-new");
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("overlapping wakes share one wakeSeat result", async () => {
+  const prev = { ...deps };
+  let prompts = 0;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async () => ({ id: "ses_share" });
+  deps.promptSession = async () => {
+    prompts += 1;
+  };
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () => {
+    const pending = Promise.resolve({ reached: true, text: "shared-reply", done: true, messageId: "shared-1" });
+    pending.rest = pending;
+    pending.arm = () => {};
+    pending.cancel = () => {};
+    return pending;
+  };
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+  });
+  try {
+    const first = wakeSeat("build", "one", { from: "product", channel: "ship" });
+    const second = wakeSeat("build", "two", { from: "product", channel: "ship" });
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(prompts, 1);
+    assert.equal(a.started, true);
+    assert.equal(b.started, a.started);
+    assert.equal(b.runId, a.runId);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});

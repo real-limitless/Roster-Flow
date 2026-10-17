@@ -599,6 +599,17 @@ export function serveStartedAt(kind = COMPANY) {
   return instances[harnessKind(kind)]?.startedAt || 0;
 }
 
+export function providerStartMs() {
+  const n = Number(process.env.ROSTER_PROVIDER_TURN_MS);
+  return Number.isFinite(n) && n > 0 ? n : 6000;
+}
+
+function withMessageId(state, verdict) {
+  if (!verdict) return null;
+  const messageId = state.messageId || null;
+  return messageId ? { ...verdict, messageId } : verdict;
+}
+
 export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() }) {
   const props = ev?.properties || {};
   if (!props.sessionID || props.sessionID !== sessionId) return null;
@@ -607,15 +618,18 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
     if (info.role === "user" && info.id) state.userIds.add(info.id);
     if (info.role !== "assistant") return null;
     if (info.id) state.assistantIds = state.assistantIds || new Set();
-    if (info.id) state.assistantIds.add(info.id);
+    if (info.id) {
+      state.assistantIds.add(info.id);
+      state.messageId = info.id;
+    }
     if (info.id && state.parts?.get(info.id)) state.text = state.parts.get(info.id);
     if (info.error) {
       const described = describeOpenCodeError(info.error, {
         model: info.providerID ? `${info.providerID}/${info.modelID || ""}` : "",
       });
-      return { reached: false, error: described.message, code: described.code, done: true };
+      return withMessageId(state, { reached: false, error: described.message, code: described.code, done: true });
     }
-    if (info.time?.completed && state.text) return { reached: true, text: state.text, done: true };
+    if (info.time?.completed && state.text) return withMessageId(state, { reached: true, text: state.text, done: true });
     return null;
   }
   if (ev?.type === "message.part.updated") {
@@ -630,12 +644,13 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
       state.parts.set(part.messageID, merged.length >= prev.length ? merged : prev);
     }
     const knownAssistant = part.messageID && state.assistantIds?.has(part.messageID);
+    if (knownAssistant) state.messageId = part.messageID;
     if (knownAssistant && state.parts?.get(part.messageID)) state.text = state.parts.get(part.messageID);
-    if (knownAssistant && (state.text || part.type === "step-start" || part.type === "text")) {
-      return { reached: true, text: state.text || "", done: false };
+    if (knownAssistant && state.text) {
+      return withMessageId(state, { reached: true, text: state.text, done: false });
     }
   }
-  if (state.text && state.assistantIds?.size) return { reached: true, text: state.text, done: false };
+  if (state.text && state.assistantIds?.size) return withMessageId(state, { reached: true, text: state.text, done: false });
   return null;
 }
 
@@ -709,12 +724,14 @@ function eventStream(kind) {
  * MaxListenersExceededWarning into opencode-serve.log.
  * When this process is not running a serve, the prompt mock is the signal.
  */
-export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(process.env.ROSTER_PROVIDER_TURN_MS) || 6000) {
+export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = providerStartMs()) {
   const inst = instances[harnessKind(kind)];
   if (!inst?.baseUrl || !sessionId) {
     const verdict = { reached: true, unwatched: true, done: true, text: "" };
     const idle = Promise.resolve(verdict);
     idle.rest = idle;
+    idle.arm = () => {};
+    idle.unwatched = true;
     idle.cancel = () => {};
     return idle;
   }
@@ -745,7 +762,10 @@ export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(
     entry.listeners.delete(listener);
     resolveRest({ ...verdict, text: verdict.text || state.text || "" });
   };
-  timer = setTimeout(() => settleFirst({ reached: false, timeout: true, done: false, text: "" }), timeoutMs);
+  const arm = () => {
+    if (firstSettled || timer) return;
+    timer = setTimeout(() => settleFirst({ reached: false, timeout: true, done: false, text: "" }), timeoutMs);
+  };
   listener = (ev) => {
     const verdict = providerTurnVerdict(ev, sessionId, state);
     if (!verdict) return;
@@ -755,6 +775,7 @@ export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = Number(
   };
   entry.listeners.add(listener);
   promise.rest = rest;
+  promise.arm = arm;
   promise.cancel = () => {
     const cancelled = { reached: false, cancelled: true, done: true, text: state.text || "" };
     settleFirst(cancelled);

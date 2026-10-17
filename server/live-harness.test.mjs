@@ -10,6 +10,7 @@ const TOKEN = "rf_liveseats_token_0000001";
 
 function stubServer() {
   const hits = [];
+  const sockets = new Set();
   const server = createServer((req, res) => {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -22,6 +23,22 @@ function stubServer() {
           object: "chat.completion.chunk",
           choices: [{ index: 0, delta: content ? { content } : {}, ...(finish ? { finish_reason: finish } : {}) }],
         })}\n\n`;
+      if (raw.includes("SILENT")) {
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        return;
+      }
+      if (raw.includes("SLOWAGREE")) {
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        setTimeout(() => {
+          res.write(chunk("agree-reply"));
+          setTimeout(() => {
+            res.write(chunk("", "stop"));
+            res.write("data: [DONE]\n\n");
+            res.end();
+          }, 400);
+        }, 1200);
+        return;
+      }
       if (raw.includes("LONG")) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
         res.write(chunk("hello-"));
@@ -31,8 +48,8 @@ function stubServer() {
             res.write(chunk("", "stop"));
             res.write("data: [DONE]\n\n");
             res.end();
-          }, 1200);
-        }, 1200);
+          }, 4000);
+        }, 4000);
         return;
       }
       const body = [chunk("stub-reply-ok"), chunk("", "stop"), "data: [DONE]\n\n"].join("");
@@ -40,8 +57,22 @@ function stubServer() {
       res.end(body);
     });
   });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve({ server, hits, port: server.address().port }));
+    server.listen(0, "127.0.0.1", () =>
+      resolve({
+        server,
+        hits,
+        port: server.address().port,
+        close() {
+          for (const socket of sockets) socket.destroy();
+          return new Promise((done) => server.close(() => done()));
+        },
+      }),
+    );
   });
 }
 
@@ -178,7 +209,7 @@ test("bad seats do not stop a stub seat or wiki-scribe from replying", { timeout
     assert.doesNotMatch(log, /MaxListenersExceeded/);
   } finally {
     await core.stop();
-    await new Promise((resolve) => stub.server.close(resolve));
+    await stub.close();
   }
 });
 
@@ -239,13 +270,14 @@ test("a seat hired after the serve is up reaches the stub and posts a reply", { 
     const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
     assert.equal((state.runs || []).find((item) => item.id === row.runId)?.status, "done");
     const room = (state.messages || []).filter((m) => m.channel === "ship");
-    assert.ok(room.some((m) => m.seatId === seat.id && String(m.text).includes("stub-reply-ok")), room.map((m) => `${m.seatId}: ${m.text}`).join(" | "));
+    const replies = room.filter((m) => m.seatId === seat.id && String(m.text).includes("stub-reply-ok"));
+    assert.equal(replies.length, 1, room.map((m) => `${m.seatId}: ${m.text}`).join(" | "));
     const logPath = join(core.dir, "data", "opencode-serve.log");
     const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
     assert.doesNotMatch(log, /MaxListenersExceeded/);
   } finally {
     await core.stop();
-    await new Promise((resolve) => stub.server.close(resolve));
+    await stub.close();
   }
 });
 
@@ -269,7 +301,7 @@ test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }
     ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
     ROSTER_PROVIDER_MODELS: "stub-model",
     FEATHERLESS_API_KEY: "stub-key",
-    ROSTER_PROVIDER_TURN_MS: "2000",
+    ROSTER_PROVIDER_TURN_MS: "30000",
     ROSTER_RESTART_WAIT_MS: "30000",
     XAI_API_KEY: "",
     ANTHROPIC_API_KEY: "",
@@ -325,6 +357,7 @@ test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }
       room.some((m) => m.seatId === seatX.id && m.runId === xRow.runId && String(m.text).includes("hello-from-x")),
       room.map((m) => `${m.seatId}: ${m.text}`).join(" | "),
     );
+    assert.equal(room.filter((m) => m.runId === xRow.runId && m.seatId === seatX.id).length, 1);
     assert.equal((state.runs || []).find((item) => item.id === xRow.runId)?.status, "done");
     assert.equal((state.runs || []).find((item) => item.id === yRow.runId)?.status, "done");
     assert.ok(room.some((m) => m.seatId === seatY.id && String(m.text).includes("stub-reply-ok")));
@@ -336,6 +369,173 @@ test("a seat mid-stream finishes after a new seat is hired", { timeout: 120000 }
     assert.doesNotMatch(log, /MaxListenersExceeded/);
   } finally {
     await core.stop();
-    await new Promise((resolve) => stub.server.close(resolve));
+    await stub.close();
+  }
+});
+
+test("bus, messages, and the channel agree on one slow wake", { timeout: 120000 }, async (t) => {
+  if (!existsSync(bin)) {
+    t.skip("opencode 1.19.x is not installed");
+    return;
+  }
+  const stub = await stubServer();
+  const core = await bootCore({
+    OPENCODE_BIN: bin,
+    OPENCODE_PORT: String(26000 + Math.floor(Math.random() * 2000)),
+    OPENCODE_SYSTEM_PORT: String(28000 + Math.floor(Math.random() * 2000)),
+    ROSTER_HARNESS_AUTOSTART: "1",
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_NAME: "Featherless",
+    ROSTER_PROVIDER_BASE_URL: `http://127.0.0.1:${stub.port}/v1`,
+    ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
+    ROSTER_PROVIDER_MODELS: "stub-model",
+    FEATHERLESS_API_KEY: "stub-key",
+    ROSTER_PROVIDER_TURN_MS: "5000",
+    XAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    GOOGLE_GENERATIVE_AI_API_KEY: "",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    let health;
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      health = await (await fetch(`${core.base}/api/v1/health`)).json();
+      if (health.harnessReady) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(health.harnessReady, true, JSON.stringify(health));
+    const hired = await fetch(`${core.base}/api/v1/seats`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id: "agree", name: "Agree", model: "featherless/stub-model", job: "Same wake everywhere." }),
+    });
+    const seat = await hired.json();
+    assert.equal(hired.status, 201, JSON.stringify(seat));
+    const [busRes, msgRes, channelRes] = await Promise.all([
+      fetch(`${core.base}/api/v1/bus/send`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ from: "you", to: seat.id, text: "SLOWAGREE from the bus", wake: true, channel: "ship" }),
+      }),
+      fetch(`${core.base}/api/v1/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ from: "you", to: seat.id, text: "SLOWAGREE from messages" }),
+      }),
+      fetch(`${core.base}/api/v1/channels/ship/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text: "SLOWAGREE please @Agree answer", who: "You" }),
+      }),
+    ]);
+    const bus = await busRes.json();
+    const msg = await msgRes.json();
+    const channel = await channelRes.json();
+    assert.equal(busRes.status, 201, JSON.stringify(bus));
+    assert.equal(msgRes.status, 201, JSON.stringify(msg));
+    assert.equal(channelRes.status, 201, JSON.stringify(channel));
+    assert.equal(bus.started, true, JSON.stringify({ bus, msg, channel: channel.wakeResults }));
+    assert.equal(msg.started, bus.started);
+    assert.equal(channel.started, bus.started);
+    assert.equal(msg.runId, bus.runId);
+    assert.equal(channel.runId, bus.runId);
+    const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    const replies = (state.messages || []).filter((m) => m.channel === "ship" && m.runId === bus.runId && m.seatId === seat.id);
+    assert.equal(replies.length, 1);
+    assert.match(replies[0].text, /agree-reply/);
+  } finally {
+    await core.stop();
+    await stub.close();
+  }
+});
+
+test("a provider that accepts the request and sends nothing stays blocked", { timeout: 120000 }, async (t) => {
+  if (!existsSync(bin)) {
+    t.skip("opencode 1.19.x is not installed");
+    return;
+  }
+  const stub = await stubServer();
+  const core = await bootCore({
+    OPENCODE_BIN: bin,
+    OPENCODE_PORT: String(30000 + Math.floor(Math.random() * 2000)),
+    OPENCODE_SYSTEM_PORT: String(32000 + Math.floor(Math.random() * 2000)),
+    ROSTER_HARNESS_AUTOSTART: "1",
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_NAME: "Featherless",
+    ROSTER_PROVIDER_BASE_URL: `http://127.0.0.1:${stub.port}/v1`,
+    ROSTER_PROVIDER_API_KEY_ENV: "FEATHERLESS_API_KEY",
+    ROSTER_PROVIDER_MODELS: "stub-model",
+    FEATHERLESS_API_KEY: "stub-key",
+    ROSTER_PROVIDER_TURN_MS: "1500",
+    XAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    GOOGLE_GENERATIVE_AI_API_KEY: "",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    let health;
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      health = await (await fetch(`${core.base}/api/v1/health`)).json();
+      if (health.harnessReady) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(health.harnessReady, true, JSON.stringify(health));
+    const hired = await fetch(`${core.base}/api/v1/seats`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id: "quiet", name: "Quiet", model: "featherless/stub-model", job: "Never answers." }),
+    });
+    const seat = await hired.json();
+    assert.equal(hired.status, 201, JSON.stringify(seat));
+    const calls = [
+      () =>
+        fetch(`${core.base}/api/v1/bus/send`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: "you", to: seat.id, text: "SILENT from the bus", wake: true, channel: "ship" }),
+        }),
+      () =>
+        fetch(`${core.base}/api/v1/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: "you", to: seat.id, text: "SILENT from messages" }),
+        }),
+      () =>
+        fetch(`${core.base}/api/v1/channels/ship/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ text: "SILENT please @Quiet stay quiet", who: "You" }),
+        }),
+    ];
+    const bodies = [];
+    for (const call of calls) {
+      const res = await call();
+      const body = await res.json();
+      assert.equal(res.status, 201, JSON.stringify(body));
+      bodies.push(body);
+    }
+    assert.ok(bodies.every((body) => body.started === false), JSON.stringify(bodies.map((body) => body.started)));
+    const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    for (const body of bodies) {
+      const run = (state.runs || []).find((item) => item.id === body.runId);
+      assert.equal(run?.status, "blocked", JSON.stringify(run));
+      assert.ok(
+        (state.messages || []).some((m) => m.channel === "ship" && m.system && String(m.text).includes(body.runId)),
+        body.runId,
+      );
+    }
+  } finally {
+    await core.stop();
+    await stub.close();
   }
 });

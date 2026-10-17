@@ -160,6 +160,15 @@ export function seatModelPlan(seat, loaded = null) {
   return { ok: false, model: "", hint: providerHint(seat, loaded), fallback: false };
 }
 
+function alreadyMirrored(channelId, seatId, part) {
+  const text = String(part?.text || "");
+  return (getState().messages || []).some((m) => {
+    if (m.channel !== channelId || m.system) return false;
+    if (part?.id && m.sessionId === part.id) return true;
+    return m.seatId === seatId && Boolean(m.runId) && m.text === text;
+  });
+}
+
 function looksLikeWakePrompt(text) {
   const t = String(text || "");
   return /You are .+ on the Roster-flow org chart/.test(t) || t.includes("Propose ONE OrgPlan");
@@ -254,7 +263,7 @@ async function runWakes(channelId, text, from, targets) {
     } else if (woke?.offline) {
       statusMessage(channelId, `Harness offline: ${ready.kind} serve is not up.`);
     } else if (woke?.error) {
-      statusMessage(channelId, `Wake failed for ${ready.seat?.name || seatId}: ${woke.error}`);
+      statusMessage(channelId, `${ready.seat?.name || seatId} did not start run ${woke.runId || ""}: ${woke.error}`.trim());
     } else if (woke?.human) {
       statusMessage(channelId, `${ready.seat?.name || seatId} is a human seat — notified, no model.`);
     }
@@ -355,13 +364,7 @@ export async function followChannel(channelId, seatIds = [], ticks = deps.follow
         for (const p of parts) {
           if (!p.id || seen.has(p.id)) continue;
           seen.add(p.id);
-          if (
-            getState().messages.some(
-              (m) => m.channel === channelId && (m.sessionId === p.id || (m.seatId === seatId && m.text === p.text)),
-            )
-          ) {
-            continue;
-          }
+          if (alreadyMirrored(channelId, seatId, p)) continue;
           const seat = getState().seats.find((s) => s.id === seatId);
           postMessage(channelId, seat?.name || seatId, "bot", p.text, { seatId, mirrored: true, sessionId: p.id });
           posted += 1;
@@ -438,7 +441,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
   for (const p of parts || []) {
     if (!p?.id || !p.text) continue;
     if (looksLikeWakePrompt(p.text)) continue;
-    if (getState().messages.some((m) => (m.sessionId === p.id || m.text === p.text) && m.channel === channelId)) continue;
+    if (alreadyMirrored(channelId, seatId, p)) continue;
     const role = p.role === "user" ? "human" : "bot";
     const who = role === "human" ? "You" : seat?.name || seatId;
     posted.push(
