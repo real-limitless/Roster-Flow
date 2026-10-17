@@ -23,6 +23,7 @@ import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
 import { isOpenCodeAdapter, wakeAdapter } from "./adapters.mjs";
 import { estimateTokens, meterWake } from "./budget.mjs";
+import { dropRoomSession, liveRoomSession, roomContext, roomSessionTitle, setRoomSession } from "./room-sessions.mjs";
 import { agentNeedsServeRestart, syncSeatAgent } from "./agents.mjs";
 
 export const deps = {
@@ -33,6 +34,7 @@ export const deps = {
   loadedModels,
   watchProviderTurn,
   ensure,
+  agentNeedsServeRestart,
 };
 
 function modelRef(model) {
@@ -173,12 +175,27 @@ function seatById(id) {
   return getState().seats.find((x) => x.id === id);
 }
 
-export async function ensureSeatSession(to) {
+/**
+ * The seat's OpenCode session. With `channel`, its session for that room
+ * (`roster:<seat>:<room>`); without, its DM session (`roster:<seat>`), which
+ * the Harness attach pane, heartbeats, and bus mail use.
+ */
+export async function ensureSeatSession(to, { channel = null } = {}) {
   const seat = seatById(to);
   if (!seat || seat.kind !== "bot") return null;
   const kind = harnessKindForSeat(seat);
   const h = deps.harnessStatus(kind);
   if (h.harness !== "up") return null;
+  if (channel) {
+    const entry = liveRoomSession(getState(), seat, channel);
+    if (entry) return entry.sessionId;
+    const ses = await deps.createSession({ title: roomSessionTitle(to, channel), agent: to }, kind);
+    const id = ses?.id || ses?.sessionID;
+    if (!id) return null;
+    setRoomSession(to, channel, { sessionId: id, harness: kind, cursor: null, lastWakeAt: new Date().toISOString() });
+    emit({ scope: "harness", step: "session.room", seat: to, channel, detail: { sessionId: id, harness: kind } });
+    return id;
+  }
   const { key, sessions } = sessionMap(getState(), seat);
   let sessionId = sessions[to];
   if (sessionId) return sessionId;
@@ -195,6 +212,14 @@ export async function ensureSeatSession(to) {
 export const IMPLICIT = "implicit";
 
 const ROOM_KINDS = new Set([IMPLICIT, "mention-seat", "mention-team", "mention-channel", "team-room", "project-pm", "project-channel", "dm"]);
+
+/** The room whose session a wake runs in, or null for the seat's DM session (its own DM, bus mail, heartbeats). */
+export function roomSessionChannel(meta = {}, seatId) {
+  const room = String(meta.channel || "");
+  if (!room || !ROOM_KINDS.has(meta.kind)) return null;
+  if (room === `dm-${seatId}` || room.startsWith("session-")) return null;
+  return room;
+}
 
 /** Lines that tell a seat woken from a room how its reply gets back there. */
 export function roomReplyLines(meta = {}) {
@@ -233,6 +258,9 @@ export function promptBody(seat, to, text, meta, model) {
             ? `Job ${meta.jobId}. Finish with roster_report jobId=${meta.jobId}. Park with roster_ask_human jobId=${meta.jobId}.`
             : "",
           ...roomReplyLines(meta),
+          ...(meta.context?.length
+            ? [`Messages in #${meta.channel} since your last turn there (oldest first):`, ...meta.context]
+            : []),
           `Message from ${meta.from || "bus"} (${meta.kind || "send_message"}):`,
           text,
           meta.kind === IMPLICIT
@@ -246,7 +274,7 @@ export function promptBody(seat, to, text, meta, model) {
   };
 }
 
-async function promptWithFallback(sessionId, seat, to, text, meta) {
+async function promptWithFallback(sessionId, seat, to, text, meta, room = null) {
   const state = getState();
   const kind = harnessKindForSeat(seat);
   const team = seat.team ? (state.teams || []).find((t) => t.id === seat.team) : null;
@@ -285,22 +313,25 @@ async function promptWithFallback(sessionId, seat, to, text, meta) {
   let sid = sessionId;
   const first = refs[0];
   const seeded = { ...seat, model: modelRef(first) || seat.model || "" };
-  if (agentNeedsServeRestart(seeded, kind)) {
+  if ((deps.agentNeedsServeRestart || agentNeedsServeRestart)(seeded, kind)) {
     // OpenCode reads agents at process start. A seat hired after boot is invisible
     // until the serve is restarted. Restarting kills every in-flight stream, so
     // this seat waits until the serve is idle instead of restarting immediately.
     syncSeatAgent(seeded);
     restartWaiting.add(meta.runId);
     try {
-      await restartWhenIdle(kind, meta.runId, () => agentNeedsServeRestart(seeded, kind));
+      await restartWhenIdle(kind, meta.runId, () => (deps.agentNeedsServeRestart || agentNeedsServeRestart)(seeded, kind));
     } finally {
       restartWaiting.delete(meta.runId);
     }
-    mutate((s) => {
-      const key = sessionKeyForKind(kind);
-      if (s[key]) delete s[key][to];
-    });
-    sid = await ensureSeatSession(to);
+    if (room) dropRoomSession(to, room);
+    else {
+      mutate((s) => {
+        const key = sessionKeyForKind(kind);
+        if (s[key]) delete s[key][to];
+      });
+    }
+    sid = await ensureSeatSession(to, { channel: room });
     if (!sid) {
       const err = new Error("no session");
       err.status = 409;
@@ -482,7 +513,8 @@ export function wakeSeat(to, text, meta = {}) {
 }
 
 async function wakeSeatBody(to, text, meta = {}) {
-  if (meta.channel && !String(to).startsWith("channel:") && !String(to).startsWith("team:")) {
+  // Only the DM session is mirrored into the room it was last woken from; room wakes have their own session.
+  if (meta.channel && !String(to).startsWith("channel:") && !String(to).startsWith("team:") && !roomSessionChannel(meta, String(to))) {
     const { rememberSessionRoom } = await import("./chat.mjs");
     rememberSessionRoom(String(to), meta.channel);
   }
@@ -571,30 +603,47 @@ async function wakeSeatBody(to, text, meta = {}) {
     await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${gap}`);
     return { error: gap, code: "PROVIDER_NOT_LOADED", seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
+  const room = roomSessionChannel(runMeta, to);
+  const context = room ? roomContext(getState(), to, room, { exclude: text }) : null;
+  const promptMeta = context?.lines.length ? { ...runMeta, context: context.lines } : runMeta;
+  const markRoom = (sessionId) => {
+    if (room) setRoomSession(to, room, { cursor: context.cursor, lastWakeAt: new Date().toISOString() });
+    else if (ROOM_KINDS.has(runMeta.kind) && runMeta.channel && !String(runMeta.channel).startsWith("session-")) {
+      mutate((s) => {
+        s.sessionRooms = { ...(s.sessionRooms || {}), [to]: runMeta.channel };
+      });
+    }
+    return sessionId;
+  };
   try {
     const started = Date.now();
-    let sessionId = await ensureSeatSession(to);
+    let sessionId = await ensureSeatSession(to, { channel: room });
     if (!sessionId) {
       noteRun(runMeta.runId, to, "blocked", "no session");
       await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: OpenCode did not open a session.`);
       return { error: "no session", seat: to, harness: kind, runId: runMeta.runId, started: false };
     }
     try {
-      const result = await promptWithFallback(sessionId, seat, to, text, runMeta);
+      const result = await promptWithFallback(sessionId, seat, to, text, promptMeta, room);
+      markRoom(result?.sessionId || sessionId);
       return finishPrompted(to, seat, text, runMeta, result, started);
     } catch (err) {
       if (err.status === 404) {
-        mutate((s) => {
-          const key = sessionKeyForKind(kind);
-          if (s[key]) delete s[key][to];
-        });
-        sessionId = await ensureSeatSession(to);
+        if (room) dropRoomSession(to, room);
+        else {
+          mutate((s) => {
+            const key = sessionKeyForKind(kind);
+            if (s[key]) delete s[key][to];
+          });
+        }
+        sessionId = await ensureSeatSession(to, { channel: room });
         if (!sessionId) {
           noteRun(runMeta.runId, to, "blocked", "no session");
           await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: OpenCode did not open a session.`);
           return { error: "no session after recreate", seat: to, harness: kind, runId: runMeta.runId, started: false };
         }
-        const result = await promptWithFallback(sessionId, seat, to, text, runMeta);
+        const result = await promptWithFallback(sessionId, seat, to, text, promptMeta, room);
+        markRoom(result?.sessionId || sessionId);
         return finishPrompted(to, seat, text, runMeta, result, started);
       }
       throw err;
@@ -638,12 +687,17 @@ async function wakeSeatBody(to, text, meta = {}) {
   }
 }
 
-/** The seat's latest turn failure (e.g. provider 401) since `since` ms, or null. */
-export async function pullFailure(to, since = 0) {
+/** `sessionId` when given, else the seat's DM session. */
+function sessionFor(seat, sessionId) {
+  return sessionId || sessionMap(getState(), seat).sessions[seat.id] || null;
+}
+
+/** The latest turn failure (e.g. provider 401) since `since` ms in the session, or null. */
+export async function pullFailure(to, since = 0, { sessionId: wanted = null } = {}) {
   const seat = seatById(to);
   if (!seat) return null;
   const kind = harnessKindForSeat(seat);
-  const sessionId = sessionMap(getState(), seat).sessions[to];
+  const sessionId = sessionFor(seat, wanted);
   if (!sessionId) return null;
   try {
     return lastAssistantFailure(await deps.sessionMessages(sessionId, kind), { since, kind });
@@ -652,11 +706,11 @@ export async function pullFailure(to, since = 0) {
   }
 }
 
-export async function pullAssistant(to) {
+export async function pullAssistant(to, { sessionId: wanted = null } = {}) {
   const seat = seatById(to);
   if (!seat) return [];
   const kind = harnessKindForSeat(seat);
-  const sessionId = sessionMap(getState(), seat).sessions[to];
+  const sessionId = sessionFor(seat, wanted);
   if (!sessionId) return [];
   try {
     const msgs = await deps.sessionMessages(sessionId, kind);

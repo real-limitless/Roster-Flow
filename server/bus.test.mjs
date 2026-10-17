@@ -8,6 +8,7 @@ import { readOpenCodeConfig } from "./providers.mjs";
 import { providerTurnVerdict } from "./harness.mjs";
 import { blockLatestRun, waitForIdleServe } from "./bus.mjs";
 import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
+import { liveRoomSession } from "./room-sessions.mjs";
 import { getState, mutate } from "./store.mjs";
 
 test("promptBody tells the seat which job to finish", () => {
@@ -212,6 +213,45 @@ test("a room wake whose reply the follow loop already mirrored is not posted aga
     const posted = getState().messages.filter((m) => m.channel === channel && m.text === "Room reply.");
     assert.equal(posted.length, 1);
     assert.equal(posted[0].runId, woke.runId);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a serve restart for a late hire reopens the room's session, not the DM", async () => {
+  const prev = { ...deps };
+  const created = [];
+  const prompted = [];
+  const restarts = [];
+  let restart = false;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.createSession = async (title) => {
+    const id = `ses_restart_${created.length + 1}`;
+    created.push({ id, title: typeof title === "string" ? title : title?.title });
+    return { id };
+  };
+  deps.promptSession = async (id) => prompted.push(id);
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "ok" }), { cancel() {} });
+  deps.agentNeedsServeRestart = () => restart;
+  deps.ensure = async (opts) => restarts.push(opts);
+  const dm = getState().sessions?.build;
+  mutate((s) => {
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+    if (s.roomSessions?.build) delete s.roomSessions.build.ship;
+    s.runs = (s.runs || []).map((run) => (run.status === "starting" || run.status === "running" ? { ...run, status: "done" } : run));
+  });
+  try {
+    await wakeSeat("build", "first", { from: "you", kind: "mention-seat", channel: "ship" });
+    const before = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
+    restart = true;
+    await wakeSeat("build", "second", { from: "you", kind: "mention-seat", channel: "ship" });
+    const after = liveRoomSession(getState(), getState().seats.find((x) => x.id === "build"), "ship")?.sessionId;
+    assert.equal(restarts.length, 1);
+    assert.equal(restarts[0].forceRestart, true);
+    assert.notEqual(after, before);
+    assert.equal(prompted.at(-1), after);
+    assert.equal(getState().sessions?.build, dm);
   } finally {
     Object.assign(deps, prev);
   }
@@ -616,6 +656,66 @@ test("wakeSeat recreates session after 404", async () => {
     mutate((s) => {
       if (s.sessions?.build === "ses_fresh") delete s.sessions.build;
     });
+  }
+});
+
+test("room wakes run in the seat's session for that room and carry the messages since its last turn", async () => {
+  const prompts = [];
+  const created = [];
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.createSession = async ({ title }) => {
+    created.push(title);
+    return { id: `ses_${title}` };
+  };
+  deps.promptSession = async (id, body) => {
+    prompts.push({ id, text: body.parts?.[0]?.text || "" });
+  };
+  const room = `rs-${Date.now()}`;
+  const post = (who, seatId, text) =>
+    mutate((s) => {
+      s.messages = [...s.messages, { id: `m-${room}-${s.messages.length}`, channel: room, who, seatId, text, time: "09:00" }];
+    });
+  mutate((s) => {
+    if (s.sessions) delete s.sessions.build;
+    if (s.roomSessions) delete s.roomSessions.build;
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    if (seat) seat.status = "idle";
+  });
+  try {
+    post("Maya", "maya", "the webhook retries twice");
+    post("You", "you", "@build can you fix it?");
+    const first = await wakeSeat("build", "@build can you fix it?", { from: "you", kind: "mention-seat", channel: room, announce: false });
+    assert.equal(first.sessionId, `ses_roster:build:${room}`);
+    assert.deepEqual(created, [`roster:build:${room}`]);
+    assert.equal(getState().sessions?.build, undefined);
+    assert.match(prompts[0].text, new RegExp(`Messages in #${room} since your last turn there`));
+    assert.match(prompts[0].text, /\[09:00\] Maya: the webhook retries twice/);
+    assert.doesNotMatch(prompts[0].text, /\[09:00\] You: @build can you fix it\?/);
+
+    post("Eng.Build", "build", "on it");
+    post("Maya", "maya", "also check the logs");
+    post("You", "you", "@build any news?");
+    const second = await wakeSeat("build", "@build any news?", { from: "you", kind: "mention-seat", channel: room, announce: false });
+    assert.equal(second.sessionId, first.sessionId);
+    assert.equal(created.length, 1);
+    assert.match(prompts[1].text, /Maya: also check the logs/);
+    assert.doesNotMatch(prompts[1].text, /the webhook retries twice/);
+    assert.doesNotMatch(prompts[1].text, /Eng\.Build: on it/);
+    assert.equal(getState().roomSessions.build[room].cursor, getState().messages.filter((m) => m.channel === room).at(-1).id);
+
+    const mail = await wakeSeat("build", "ship it", { from: "product", kind: "handoff", channel: room, announce: false });
+    assert.equal(mail.sessionId, "ses_roster:build");
+    assert.doesNotMatch(prompts[2].text, /since your last turn/);
+    const dm = await wakeSeat("build", "hi", { from: "you", kind: "dm", channel: "dm-build", announce: false });
+    assert.equal(dm.sessionId, "ses_roster:build");
+    assert.equal(getState().sessionRooms.build, "dm-build");
+  } finally {
+    mutate((s) => {
+      if (s.roomSessions) delete s.roomSessions.build;
+    });
+    Object.assign(deps, prev);
   }
 });
 

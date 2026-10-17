@@ -300,6 +300,7 @@ export function migrateOrgsAndProjects(state) {
     if (!Array.isArray(state.architectPlans)) state.architectPlans = [];
     if (!state.systemSessions || typeof state.systemSessions !== "object") state.systemSessions = {};
     if (!state.sessionRooms || typeof state.sessionRooms !== "object") state.sessionRooms = {};
+    if (!state.roomSessions || typeof state.roomSessions !== "object") state.roomSessions = {};
     return state;
   }
   if (!state.projects.some((p) => p.id === "billing")) {
@@ -326,6 +327,7 @@ export function migrateOrgsAndProjects(state) {
   if (!Array.isArray(state.architectPlans)) state.architectPlans = [];
   if (!state.systemSessions || typeof state.systemSessions !== "object") state.systemSessions = {};
   if (!state.sessionRooms || typeof state.sessionRooms !== "object") state.sessionRooms = {};
+  if (!state.roomSessions || typeof state.roomSessions !== "object") state.roomSessions = {};
   return state;
 }
 
@@ -462,6 +464,7 @@ function baseFields() {
     sessions: {},
     systemSessions: {},
     sessionRooms: {},
+    roomSessions: {},
     providers: [],
     defaultProvider: "",
     defaultModel: "",

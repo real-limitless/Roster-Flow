@@ -211,6 +211,8 @@ A message with no mention, from a human, wakes one responder for the room. The o
 
 The room's `respond` mode changes this. `lead` (the default) uses the order above. `conductor` always wakes the Channel conductor. `quiet` wakes nobody: the other people in the room get a notify row, and the room gets one System line. A room answers at most `limits.implicitPerMinute` un-mentioned messages a minute (default 4); past that, the room gets one `Rate limit:` line and @mentions still work.
 
+Each seat has one OpenCode session per room it is woken in (`roster:<seat>:<room>`), separate from its DM session (`roster:<seat>`), which bus mail, heartbeats, its own DM, and Harness attach use. A room wake carries the room messages posted since the seat's last turn there (up to 20 lines, about 2k tokens, oldest first, without System lines or its own posts), and replies are read from that session only. Room sessions idle for 14 days are deleted and reopened on the next wake.
+
 Every staffed team has a `team-<id>` room record with the team as a member and the Supervisor as lead. Created teams get one, and existing teams get one on load. Team and project rooms that have a record follow the same rules, with the Supervisor or PM answering first. Without a record, team rooms wake the Supervisor and project rooms the PM. DMs wake the bot.
 
 ## Bot / team messaging
@@ -430,6 +432,7 @@ Used when `harness === "up"`:
 | Method | Path | Maps to OpenCode |
 |---|---|---|
 | GET | `/api/v1/harness/sessions` | `GET /session` |
+| GET | `/api/v1/sessions/:id/room` | Which seat and room an OpenCode session belongs to: `{ sessionId, seatId, channelId, kind, harness }`. `kind` is `room` for a seat's session in one room (`roster:<seat>:<room>`) and `dm` for its DM session (`roster:<seat>`). 404 when no seat owns the session |
 | POST | `/api/v1/harness/sessions` | `POST /session` `{ title, agent? }` |
 | POST | `/api/v1/harness/sessions/:id/prompt` | async prompt |
 | POST | `/api/v1/seats/:id/attach` | Ensure session bound to this seat |

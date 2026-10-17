@@ -600,10 +600,11 @@ async function ensureOnce({ forceRestart = false, kind = COMPANY } = {}) {
   }
   if (instances[k] && !forceRestart) {
     const h = await healthCheck(instances[k].port);
-    if (h && instances[k].child && instances[k].child.exitCode == null) {
+    const adopted = !instances[k].child;
+    if (h && (adopted || instances[k].child.exitCode == null)) {
       instances[k].healthy = true;
       instances[k].version = String(h.version || instances[k].version || "");
-      emit({ scope: "harness", step: "ensure.up", detail: { kind: k } });
+      emit({ scope: "harness", step: "ensure.up", detail: { kind: k, ...(adopted ? { adopted: true } : {}) } });
       return status(k);
     }
   }
@@ -755,6 +756,17 @@ export async function promptSession(sessionId, body, kind = COMPANY) {
     { method: "POST", body: JSON.stringify(body) },
     kind,
   );
+}
+
+export async function deleteSession(sessionId, kind = COMPANY) {
+  return ocFetch(`/session/${sessionId}`, { method: "DELETE" }, kind);
+}
+
+/** `roster:<seat>` is a seat's DM session; `roster:<seat>:<room>` is its session for that room. */
+export function parseRosterTitle(title) {
+  const m = String(title || "").match(/^roster:([^:]+)(?::(.+))?$/);
+  if (!m) return null;
+  return { seatId: m[1], channelId: m[2] || null };
 }
 
 /**
@@ -1014,9 +1026,19 @@ export function sessionTranscript(messages) {
 export function bindSessionMeta(session, harness, state = getState()) {
   const id = session?.id || session?.sessionID || null;
   const title = String(session?.title || session?.slug || "");
-  let seatId = null;
-  const rosterMatch = title.match(/^roster:(.+)$/);
-  if (rosterMatch) seatId = rosterMatch[1];
+  const parsed = parseRosterTitle(title);
+  let seatId = parsed?.seatId || null;
+  let room = parsed?.channelId || null;
+  if (!room && id) {
+    for (const [seat, rooms] of Object.entries(state.roomSessions || {})) {
+      for (const [channelId, entry] of Object.entries(rooms || {})) {
+        if (entry?.sessionId === id) {
+          seatId = seat;
+          room = channelId;
+        }
+      }
+    }
+  }
   const map = harness === SYSTEM ? state.systemSessions : state.sessions;
   if (!seatId && map) {
     for (const [seat, sid] of Object.entries(map)) {
@@ -1028,7 +1050,7 @@ export function bindSessionMeta(session, harness, state = getState()) {
     if (seat) seatId = seat.id;
   }
   const agent = session?.agent || session?.agentID || seatId || null;
-  const channel = seatId ? state.sessionRooms?.[seatId] || `dm-${seatId}` : id ? `session-${id}` : null;
+  const channel = room || (seatId ? state.sessionRooms?.[seatId] || `dm-${seatId}` : id ? `session-${id}` : null);
   return {
     id,
     title: title || (seatId ? `roster:${seatId}` : id || "session"),

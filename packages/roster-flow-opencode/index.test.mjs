@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTools, rosterAuthHeaders, wikiflowApi, wikiflowConfig } from "./index.js";
+import { buildTools, rosterAuthHeaders, systemBlock, wikiflowApi, wikiflowConfig } from "./index.js";
 
 function fakeTool(def) {
   return def;
@@ -168,4 +168,34 @@ test("wikiflow_put_page validates sources entries as {path, startLine?, endLine?
   for (const [sources, re] of bad) {
     await assert.rejects(tools.wikiflow_put_page.execute({ ...base, sources }, {}), re);
   }
+});
+
+test("systemBlock scopes a room session to the room's members and the caller's team", () => {
+  const seats = [
+    { id: "channel", name: "Channel", kind: "bot", job: "Conduct", instructions: "LONG CONDUCTOR TEXT" },
+    { id: "build", name: "Eng.Build", kind: "bot", team: "eng", job: "Ship the PR", instructions: "LONG BUILD TEXT" },
+    { id: "review", name: "Eng.Review", kind: "bot", team: "eng", job: "Review" },
+    { id: "scout", name: "Scout", kind: "bot", team: "services", job: "Search" },
+    { id: "maya", name: "Maya", kind: "human", job: "Design" },
+  ];
+  const teams = [
+    { id: "eng", name: "@eng", seatIds: ["build", "review"] },
+    { id: "services", name: "@services", seatIds: ["scout"] },
+  ];
+  const channels = [
+    { id: "general", name: "#general", teamIds: [], seatIds: ["channel", "maya"] },
+    { id: "incidents", name: "#incidents", teamIds: ["services"], seatIds: ["channel"] },
+  ];
+  const room = systemBlock({ seats, teams, channels, bound: { kind: "room", seatId: "build", channelId: "general" } }).join("\n");
+  assert.match(room, /Current room: #general/);
+  assert.match(room, /maya: Maya \(human\) — Design/);
+  assert.match(room, /review: Eng\.Review · team=eng — Review/);
+  assert.doesNotMatch(room, /scout/);
+  assert.doesNotMatch(room, /#incidents/);
+  assert.doesNotMatch(room, /LONG/);
+  const dm = systemBlock({ seats, teams, channels, bound: { kind: "dm", seatId: "build", channelId: "dm-build" } }).join("\n");
+  assert.match(dm, /#incidents/);
+  assert.match(dm, /scout: Scout/);
+  assert.match(dm, /LONG BUILD TEXT/);
+  assert.ok(room.length < dm.length);
 });
