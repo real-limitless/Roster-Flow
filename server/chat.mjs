@@ -673,7 +673,7 @@ export async function followChannel(
 }
 
 /** Thread facts shown under a mirrored reply (`↳ from @x · hop 2/4`). */
-function threadCaption(seatId, channelId) {
+export function threadCaption(seatId, channelId) {
   const thread = seatThreads.get(`${seatId}|${channelId}`);
   if (!thread?.threadId) return {};
   const room = (getState().channels || []).find((c) => c.id === channelId);

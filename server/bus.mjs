@@ -446,7 +446,7 @@ function meterPromptedWake(to, text, meta, result, started) {
 
 async function postSeatReply(to, seat, runMeta, reply, messageId) {
   if (!reply || !runMeta?.channel || !runMeta.runId) return;
-  const { postMessage } = await import("./chat.mjs");
+  const { postMessage, threadCaption } = await import("./chat.mjs");
   const existing = (getState().messages || []).find(
     (m) =>
       m.channel === runMeta.channel &&
@@ -470,6 +470,7 @@ async function postSeatReply(to, seat, runMeta, reply, messageId) {
     mirrored: true,
     runId: runMeta.runId,
     ...(messageId ? { sessionId: messageId } : {}),
+    ...threadCaption(to, runMeta.channel),
   });
 }
 
