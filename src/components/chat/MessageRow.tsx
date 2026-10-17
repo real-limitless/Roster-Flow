@@ -47,6 +47,11 @@ export function MessageRow({
             {msg.who}
           </button>
           <span className="meta">{msg.time}</span>
+          {threadCaption(msg) && (
+            <span className="meta thread-caption" data-testid={`msg-thread-caption-${msg.id}`}>
+              {threadCaption(msg)}
+            </span>
+          )}
         </div>
         {msg.text && !shouldHideFallback(msg) && <div className="body">{renderMentions(msg.text)}</div>}
         <GitHubPrCard msg={msg} />
@@ -71,14 +76,31 @@ function renderMentions(text: string) {
   );
 }
 
+export function threadCaption(msg: Msg): string {
+  const t = msg.thread;
+  if (!t || t.hop < 1) return "";
+  return `↳ from @${t.from || "?"} · hop ${t.hop}/${t.maxHops}`;
+}
+
+export function threadBudgetLow(msg: Msg): boolean {
+  const t = msg.thread;
+  return Boolean(t && t.maxBotWakes > 0 && t.botWakes > t.maxBotWakes / 2);
+}
+
 function MessageChips({ msg }: { msg: Msg }) {
   const skills = msg.skills || [];
   const files = msg.files || [];
   const attachments = msg.attachments || [];
   const viaSlack = Boolean(msg.slack?.inbound);
-  if (!skills.length && !files.length && !attachments.length && !viaSlack) return null;
+  const budget = threadBudgetLow(msg);
+  if (!skills.length && !files.length && !attachments.length && !viaSlack && !budget) return null;
   return (
     <div className="msg-chips">
+      {budget && msg.thread && (
+        <span className="chip warn" data-testid={`msg-thread-budget-${msg.id}`}>
+          thread {msg.thread.botWakes}/{msg.thread.maxBotWakes} bot wakes
+        </span>
+      )}
       {viaSlack && (
         <span className="chip" data-testid={`chip-slack-${msg.id}`}>
           via Slack

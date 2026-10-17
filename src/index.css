@@ -530,6 +530,7 @@ h2, h2.section-title {
 }
 .msg .who:hover { text-decoration: underline; color: var(--accent-hot); }
 .msg .meta { color: var(--dim); font-size: 11px; margin-left: 6px; font-family: var(--font-mono); }
+.msg .thread-caption { color: var(--muted, var(--dim)); }
 .msg .body { font-size: 13px; color: var(--ink); }
 .msg-chips, .compose-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .compose-chips { margin: 0 0 8px; }
@@ -796,6 +797,7 @@ h2, h2.section-title {
   color: var(--mute);
 }
 .chip.ok, .badge.on { color: var(--phosphor); border-color: rgba(62, 207, 142, 0.4); }
+.chip.warn { color: var(--warn); border-color: rgba(224, 180, 74, 0.4); }
 .chip.no, .badge.deny { color: var(--deny); border-color: rgba(240, 113, 120, 0.4); }
 .chip { display: inline-flex; align-items: center; gap: 6px; }
 .chip.att img { width: 18px; height: 18px; object-fit: cover; border: 1px solid var(--rail); }

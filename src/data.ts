@@ -162,6 +162,8 @@ export type RespondMode = "lead" | "conductor" | "quiet";
 
 export type RoomLimits = {
   implicitPerMinute?: number;
+  maxHops?: number;
+  maxBotWakesPerThread?: number;
 };
 
 export type Channel = {
@@ -365,6 +367,16 @@ export type Msg = {
   mirrored?: boolean;
   sessionId?: string;
   slack?: { inbound?: boolean; channel?: string; ts?: string; user?: string };
+  thread?: MsgThread;
+};
+
+export type MsgThread = {
+  threadId: string;
+  hop: number;
+  from?: string | null;
+  maxHops: number;
+  botWakes: number;
+  maxBotWakes: number;
 };
 
 export const skills: Skill[] = [

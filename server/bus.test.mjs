@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 import { syncSeatAgent } from "./agents.mjs";
 import { readOpenCodeConfig } from "./providers.mjs";
 import { providerTurnVerdict } from "./harness.mjs";
-import { blockLatestRun, waitForIdleServe } from "./bus.mjs";
-import { deps, pendingWake, postBus, promptBody, wakeSeat } from "./bus.mjs";
+import { blockLatestRun, roomForApiCall, SHIP_FALLBACK_NOTE, waitForIdleServe } from "./bus.mjs";
+import { deps, pendingWake, postBus, promptBody, roomReplyLines, wakeSeat } from "./bus.mjs";
+import { bootCore } from "./test-helpers.mjs";
 import { liveRoomSession } from "./room-sessions.mjs";
 import { getState, mutate } from "./store.mjs";
 
@@ -719,6 +720,15 @@ test("room wakes run in the seat's session for that room and carry the messages 
   }
 });
 
+test("room wakes tell the seat how to bring someone in, and hop wakes say who mentioned it", () => {
+  const plain = roomReplyLines({ channel: "ship", kind: "mention-seat" });
+  assert.ok(plain.some((l) => l.includes("@mention their seat id in your reply; that wakes them here")));
+  assert.ok(!plain.some((l) => l.includes("mentioned you in")));
+  const hop = roomReplyLines({ channel: "ship", kind: "mention-seat", thread: { hop: 2, from: "product", maxHops: 4 } });
+  assert.equal(hop[0], "@product mentioned you in #ship (hop 2 of 4). Answer them; @mention someone else only if they must act.");
+  assert.deepEqual(roomReplyLines({ kind: "send_message" }), []);
+});
+
 test("a later wake posts the same text again", async () => {
   const prev = { ...deps };
   const reply = { reached: true, text: "same-reply", done: true };
@@ -882,5 +892,57 @@ test("overlapping wakes share one wakeSeat result", async () => {
     assert.equal(b.runId, a.runId);
   } finally {
     Object.assign(deps, prev);
+  }
+});
+
+test("an API call with no room posts to #ship and says so", async () => {
+  assert.deepEqual(roomForApiCall({ channel: "general" }), { channel: "general", note: null });
+  assert.deepEqual(roomForApiCall({ sessionRoom: "incidents" }), { channel: "incidents", note: null });
+  assert.deepEqual(roomForApiCall({ channel: "ship" }), { channel: "ship", note: null });
+  assert.deepEqual(roomForApiCall({}), { channel: "ship", note: SHIP_FALLBACK_NOTE });
+
+  const TOKEN = "rf_room_fallback_token_0001";
+  const core = await bootCore({
+    ROSTER_OWNER_EMAIL: "ops@example.com",
+    ROSTER_OWNER_PASSWORD: "password1",
+    ROSTER_API_TOKEN: TOKEN,
+    ROSTER_HARNESS_AUTOSTART: "0",
+  });
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  try {
+    const sent = await fetch(`${core.base}/api/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ from: "product", to: "build", text: "no room on messages", wake: false }),
+    });
+    const body = await sent.json();
+    assert.equal(sent.status, 201, JSON.stringify(body));
+    assert.equal(body.channel, "ship");
+    assert.equal(body.note, SHIP_FALLBACK_NOTE);
+    const bus = await fetch(`${core.base}/api/v1/bus/send`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ from: "product", to: "build", text: "no room on the bus", wake: false }),
+    });
+    const busBody = await bus.json();
+    assert.equal(bus.status, 201, JSON.stringify(busBody));
+    assert.equal(busBody.note, SHIP_FALLBACK_NOTE);
+    const named = await fetch(`${core.base}/api/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ from: "product", to: "build", text: "explicit general", channel: "general", wake: false }),
+    });
+    const namedBody = await named.json();
+    assert.equal(named.status, 201);
+    assert.equal(namedBody.channel, "general");
+    assert.equal(namedBody.note, undefined);
+    const state = await (await fetch(`${core.base}/api/v1/state`, { headers })).json();
+    const ship = (state.messages || []).filter((m) => m.channel === "ship");
+    assert.equal(ship.filter((m) => m.text === SHIP_FALLBACK_NOTE && m.system).length, 2);
+    assert.ok(ship.some((m) => m.text === "no room on messages"));
+    assert.ok(ship.some((m) => m.text === "no room on the bus"));
+    assert.ok(!(state.messages || []).some((m) => m.channel === "general" && m.text === SHIP_FALLBACK_NOTE));
+  } finally {
+    await core.stop();
   }
 });

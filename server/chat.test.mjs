@@ -11,6 +11,7 @@ import {
   providerHint,
   quietRoom,
   resetChatRuntime,
+  routeBotReply,
   routeChannelMessage,
   seatModelPlan,
   deps,
@@ -709,4 +710,99 @@ test("team and project room records route un-mentioned posts to the supervisor a
   const quiet = state.channels.find((c) => c.id === "team-eng");
   quiet.respond = "quiet";
   assert.deepEqual(implicitTargets("team-eng", state), []);
+});
+
+async function until(check, tries = 50) {
+  for (let i = 0; i < tries; i++) {
+    const hit = check();
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return null;
+}
+
+test("a bot reply that @mentions a room member wakes it at hop 1 and captions its reply", async () => {
+  const prev = { ...deps };
+  const stamp = Date.now();
+  const replies = {
+    product: [{ id: `p-hop-${stamp}`, text: "@build can you check the deploy?", created: stamp + 1000 }],
+    build: [{ id: `b-hop-${stamp}`, text: "Deploy is green.", created: stamp + 1000 }],
+  };
+  const calls = stubAwake({ pullAssistant: async (seat) => replies[seat] || [] });
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "@product status?", messageId: `root-${stamp}` });
+    await routed.pending;
+    const buildReply = await until(() => getState().messages.find((m) => m.sessionId === `b-hop-${stamp}`));
+    assert.deepEqual(calls.map((c) => c.to), ["product", "build"]);
+    assert.equal(calls[0].meta.thread.hop, 0);
+    assert.deepEqual(
+      { hop: calls[1].meta.thread.hop, from: calls[1].meta.thread.from, threadId: calls[1].meta.thread.threadId },
+      { hop: 1, from: "product", threadId: `root-${stamp}` },
+    );
+    assert.equal(buildReply?.channel, "ship");
+    assert.deepEqual(buildReply.thread, { threadId: `root-${stamp}`, hop: 1, from: "product", maxHops: 4, botWakes: 1, maxBotWakes: 8 });
+    const productReply = getState().messages.find((m) => m.sessionId === `p-hop-${stamp}`);
+    assert.equal(productReply.thread.hop, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a reply session sync posted before the follow read it still routes its @mentions once", async () => {
+  const prev = { ...deps };
+  const stamp = Date.now();
+  const replies = {
+    product: [{ id: `p-sync-${stamp}`, text: "@build is the deploy done?", created: stamp + 1000 }],
+    build: [{ id: `b-sync-${stamp}`, text: "Done.", created: stamp + 1000 }],
+  };
+  const calls = [];
+  stubAwake({
+    pullAssistant: async (seat) => replies[seat] || [],
+    wakeSeat: async (to, text, meta) => {
+      calls.push({ to, text, meta });
+      if (to === "product") mirrorTranscript("ship", "product", [{ ...replies.product[0], role: "assistant" }]);
+      return { sessionId: `ses-${to}`, seat: to, runId: `run-sync-${calls.length}`, started: true };
+    },
+  });
+  try {
+    await routeChannelMessage({ channelId: "ship", text: "@product deploy?", messageId: `root-sync-${stamp}` }).pending;
+    await until(() => getState().messages.find((m) => m.sessionId === `b-sync-${stamp}`));
+    assert.deepEqual(calls.map((c) => c.to), ["product", "build"]);
+    assert.equal(calls[1].meta.thread.from, "product");
+    assert.equal(getState().messages.filter((m) => m.sessionId === `p-sync-${stamp}`).length, 1);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a bot reply past the room's hop limit posts a stop line instead of waking", async () => {
+  const prev = { ...deps };
+  const restore = withChannelPatch("ship", { limits: { maxHops: 1 } });
+  const stamp = Date.now();
+  const replies = {
+    product: [{ id: `p-stop-${stamp}`, text: "@build over to you", created: stamp + 1000 }],
+    build: [{ id: `b-stop-${stamp}`, text: "@product back to you", created: stamp + 1000 }],
+  };
+  const calls = stubAwake({ pullAssistant: async (seat) => replies[seat] || [] });
+  try {
+    const routed = routeChannelMessage({ channelId: "ship", text: "@product go", messageId: `root-stop-${stamp}` });
+    await routed.pending;
+    const stop = await until(() => getState().messages.find((m) => m.channel === "ship" && m.system && m.text === "Stopped: thread reached 1 hop."));
+    assert.ok(stop, "stop line posted");
+    assert.deepEqual(calls.map((c) => c.to), ["product", "build"]);
+  } finally {
+    restore();
+    Object.assign(deps, prev);
+  }
+});
+
+test("a mirrored reply with no recorded wake never routes its @mentions", () => {
+  const calls = stubAwake();
+  const prev = { ...deps };
+  try {
+    assert.equal(routeBotReply("ship", "product", { text: "@build hi" }), null);
+    assert.equal(calls.length, 0);
+  } finally {
+    Object.assign(deps, prev);
+  }
 });

@@ -143,9 +143,26 @@ export function pendingWake(entry) {
   return pendingWakes.get(entry) || null;
 }
 
+/** Shown in #ship and on the API response when a call had no room and no session room. */
+export const SHIP_FALLBACK_NOTE = "No room was given, so this was posted to #ship.";
+
+/**
+ * Room for POST /messages and /bus/send: explicit channel, then the session's room,
+ * then #ship. The #ship step is the documented last resort, and it is not silent.
+ */
+export function roomForApiCall({ channel, sessionRoom } = {}) {
+  const explicit = String(channel || "").trim();
+  if (explicit) return { channel: explicit, note: null };
+  const known = String(sessionRoom || "").trim();
+  if (known) return { channel: known, note: null };
+  return { channel: "ship", note: SHIP_FALLBACK_NOTE };
+}
+
 export function postBus({ from, to, kind = "send_message", text, runId, wake = false, channel, jobId }) {
   const waking = Boolean(wake) && !String(to || "").startsWith("channel:");
   const resolvedRunId = runId || (waking ? uid("run") : null);
+  // Heartbeats and routines have no room, so a wake with none still uses #ship.
+  // API calls resolve the room first and pass it, with SHIP_FALLBACK_NOTE when they fall back.
   const room = channel || (waking ? "ship" : null);
   const entry = {
     id: uid("bus"),
@@ -225,13 +242,18 @@ export function roomSessionChannel(meta = {}, seatId) {
 export function roomReplyLines(meta = {}) {
   if (!meta.channel || !ROOM_KINDS.has(meta.kind)) return [];
   const room = `#${meta.channel}`;
+  const mention = `To bring in another member of ${room}, @mention their seat id in your reply; that wakes them here.`;
+  const hop = meta.thread?.hop > 0
+    ? [`@${meta.thread.from} mentioned you in ${room} (hop ${meta.thread.hop} of ${meta.thread.maxHops}). Answer them; @mention someone else only if they must act.`]
+    : [];
   if (meta.kind === IMPLICIT) {
     return [
       `A human wrote in ${room} without mentioning anyone. You are the seat answering for ${room}.`,
       `Reply in plain text, briefly, as yourself. Roster-flow posts your text to ${room}. Do not use roster_report for this reply.`,
+      mention,
     ];
   }
-  return [`Reply in plain text. Roster-flow posts your text to ${room}.`];
+  return [...hop, `Reply in plain text. Roster-flow posts your text to ${room}.`, mention];
 }
 
 export function promptBody(seat, to, text, meta, model) {
@@ -442,7 +464,7 @@ function meterPromptedWake(to, text, meta, result, started) {
 
 async function postSeatReply(to, seat, runMeta, reply, messageId) {
   if (!reply || !runMeta?.channel || !runMeta.runId) return;
-  const { postMessage } = await import("./chat.mjs");
+  const { postMessage, threadCaption } = await import("./chat.mjs");
   const existing = (getState().messages || []).find(
     (m) =>
       m.channel === runMeta.channel &&
@@ -466,6 +488,7 @@ async function postSeatReply(to, seat, runMeta, reply, messageId) {
     mirrored: true,
     runId: runMeta.runId,
     ...(messageId ? { sessionId: messageId } : {}),
+    ...threadCaption(to, runMeta.channel),
   });
 }
 

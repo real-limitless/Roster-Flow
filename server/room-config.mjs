@@ -2,6 +2,8 @@ export const RESPOND_MODES = ["lead", "conductor", "quiet"];
 
 export const ROOM_LIMIT_DEFAULTS = Object.freeze({
   implicitPerMinute: 4,
+  maxHops: 4,
+  maxBotWakesPerThread: 8,
 });
 
 export function badRequest(message) {
