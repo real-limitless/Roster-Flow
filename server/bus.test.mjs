@@ -517,11 +517,11 @@ test("an explicitly assigned model is not swapped for a loaded one", async () =>
     assert.equal(prompted, 0);
     assert.equal(result.started, false);
     assert.equal(result.code, "PROVIDER_NOT_LOADED");
-    assert.match(result.error, /Eng\.Build needs featherless\/not-loaded-model; company harness loaded \[demo-llm\]/);
+    assert.match(result.error, /Eng\.Build needs featherless\/not-loaded-model; featherless loaded \[none\]/);
     const run = (getState().runs || []).find((r) => r.id === result.runId);
     assert.equal(run?.status, "blocked");
     const added = getState().messages.slice(before);
-    assert.ok(added.some((m) => m.channel === "ship" && m.system && /Eng\.Build needs featherless\/not-loaded-model; company harness loaded \[demo-llm\]/.test(m.text)));
+    assert.ok(added.some((m) => m.channel === "ship" && m.system && /Eng\.Build needs featherless\/not-loaded-model; featherless loaded \[none\]/.test(m.text)));
   } finally {
     Object.assign(deps, prev);
     if (prevKey === undefined) delete process.env.XAI_API_KEY;
@@ -574,7 +574,7 @@ test("a broken seat fails before fallback and a loaded seat still runs", async (
     const bad = await wakeSeat("build", "nope", { from: "you", channel: "ship" });
     assert.equal(bad.started, false);
     assert.equal(bad.code, "PROVIDER_NOT_LOADED");
-    assert.match(bad.error, /Eng\.Build needs missingprov\/model-a; company harness loaded \[demo-llm\]/);
+    assert.match(bad.error, /Eng\.Build needs missingprov\/model-a; missingprov loaded \[none\]/);
     assert.equal(prompts.length, 0);
     const good = await wakeSeat("qa", "still works", { from: "you" });
     assert.equal(good.started, true);
@@ -617,7 +617,7 @@ test("wakeSeat refuses a model the serve did not load instead of a silent prompt
     const result = await wakeSeat("build", "ship it", { from: "product" });
     assert.equal(prompted, 0);
     assert.equal(result.code, "PROVIDER_NOT_LOADED");
-    assert.match(result.error, /Eng\.Build needs featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct; company harness loaded \[opencode\]/);
+    assert.match(result.error, /Eng\.Build needs featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct; featherless loaded \[none\]/);
   } finally {
     Object.assign(deps, prev);
     restoreBuild(priorModel);

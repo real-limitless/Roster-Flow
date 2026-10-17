@@ -867,7 +867,7 @@ async function wakeSeatBody(to, text, meta = {}) {
     return { offline: true, seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
   const loadedList = await deps.loadedModels(kind).catch(() => null);
-  const gap = seatModelGap(seat, Array.isArray(loadedList) ? loadedProviderIds(loadedList) : null);
+  const gap = seatModelGap(seat, Array.isArray(loadedList) ? loadedList : null);
   if (gap) {
     noteRun(runMeta.runId, to, "blocked", gap);
     await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${gap}`);

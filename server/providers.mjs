@@ -4,8 +4,10 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { normalizeModelId } from "./seed.mjs";
+import { contextTokenLimit, outputTokenLimit } from "./model-defaults.mjs";
 import { authPath, opencodeDir as ocDir } from "./paths.mjs";
 import { protectPrivateFile, writePrivateFile } from "./private-file.mjs";
+import { getState } from "./store.mjs";
 
 const ocPath = join(ocDir, "opencode.json");
 
@@ -111,7 +113,37 @@ export function listProviders() {
   });
 }
 
-export function upsertProvider(body) {
+/** Model ids on this provider that a seat or team already assigns. A short catalog write must not drop them. */
+export function providerModelIdsInUse(providerId, state) {
+  const prefix = `${String(providerId || "").trim().toLowerCase()}/`;
+  if (prefix === "/") return [];
+  const ids = new Set();
+  const take = (ref) => {
+    const raw = String(ref || "").trim();
+    if (!raw.toLowerCase().startsWith(prefix)) return;
+    const id = raw.slice(prefix.length);
+    if (id) ids.add(id);
+  };
+  for (const seat of state?.seats || []) {
+    take(seat?.model);
+    take(seat?.fallbackModel);
+  }
+  for (const team of state?.teams || []) {
+    take(team?.defaultModel);
+    take(team?.fallbackModel);
+    for (const model of team?.allowedModels || []) take(model);
+  }
+  return [...ids];
+}
+
+function modelBlock(id, name, output, context) {
+  return {
+    name: String(name || id),
+    limit: { context: contextTokenLimit(context), output: outputTokenLimit(output) },
+  };
+}
+
+export function upsertProvider(body, state = getState()) {
   const id = String(body.id || "")
     .trim()
     .toLowerCase()
@@ -119,11 +151,20 @@ export function upsertProvider(body) {
   if (!id) throw Object.assign(new Error("provider id required"), { status: 400 });
   const cfg = readOpenCodeConfig();
   cfg.provider = cfg.provider || {};
+  const previous = cfg.provider[id]?.models && typeof cfg.provider[id].models === "object" ? cfg.provider[id].models : {};
   const models = {};
   for (const m of body.models || []) {
-    const mid = String(m.id || m).trim();
+    const mid = String(m?.id || m || "").trim();
     if (!mid) continue;
-    models[mid] = { name: String(m.name || mid) };
+    const output = m && typeof m === "object" ? (m.limit?.output ?? m.max_tokens ?? m.maxTokens) : undefined;
+    const context = m && typeof m === "object" ? m.limit?.context : undefined;
+    const name = m && typeof m === "object" ? m.name : mid;
+    models[mid] = modelBlock(mid, name, output, context);
+  }
+  for (const mid of providerModelIdsInUse(id, state)) {
+    if (models[mid]) continue;
+    const prev = previous[mid];
+    models[mid] = modelBlock(mid, prev?.name, prev?.limit?.output, prev?.limit?.context);
   }
   const apiKeyEnv = String(body.apiKeyEnv || "").trim();
   const block = {

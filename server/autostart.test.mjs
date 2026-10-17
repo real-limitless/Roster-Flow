@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 import { bootCore } from "./test-helpers.mjs";
-import { envHasProvider, providerFromEnv, shouldAutostartHarness } from "./autostart.mjs";
+import { envHasProvider, providerFromEnv, shouldAutostartHarness, withSeatModels } from "./autostart.mjs";
 
 const TOKEN = "rf_autostarttoken00000001";
 
@@ -34,6 +34,25 @@ test("providerFromEnv requires an id and at least one model", () => {
   assert.deepEqual(spec.models, [
     { id: "model-a", name: "model-a" },
     { id: "model-b", name: "model-b" },
+  ]);
+});
+
+test("withSeatModels unions assigned featherless models onto the env list", () => {
+  const spec = { id: "featherless", models: [{ id: "stub-model", name: "stub-model" }] };
+  const out = withSeatModels(spec, {
+    seats: [
+      { model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash" },
+      { model: "featherless/Qwen/Qwen2.5-Coder-32B-Instruct" },
+      { model: "opencode/big-pickle" },
+      { model: "xai/grok-4" },
+    ],
+    teams: [{ defaultModel: "featherless/deepseek-ai/DeepSeek-V4.1-Flash", allowedModels: ["featherless/extra-model"] }],
+  });
+  assert.deepEqual(out.models.map((m) => m.id), [
+    "stub-model",
+    "deepseek-ai/DeepSeek-V4.1-Flash",
+    "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "extra-model",
   ]);
 });
 
@@ -98,7 +117,7 @@ test("fresh container with owner and provider reports harness ready", async () =
     assert.ok(seeded);
     assert.equal(seeded.baseURL, "https://api.featherless.ai/v1");
     assert.equal(seeded.apiKeyEnv, "FEATHERLESS_API_KEY");
-    assert.deepEqual(seeded.models.map((m) => m.id), ["demo-small"]);
+    assert.deepEqual(seeded.models.map((m) => m.id), ["demo-small", "deepseek-ai/DeepSeek-V4.1-Flash"]);
 
     let health;
     const start = Date.now();

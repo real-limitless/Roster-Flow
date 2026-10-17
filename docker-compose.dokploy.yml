@@ -97,7 +97,7 @@ services:
       ROSTER_API: http://roster-flow:${ROSTER_API_PORT:-8790}
       ROSTER_API_TOKEN: ${ROSTER_API_TOKEN:-}
       FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
-      WIKI_MODEL: ${WIKI_MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct}
+      WIKI_MODEL: ${WIKI_MODEL:-deepseek-ai/DeepSeek-V4.1-Flash}
       WIKI_PROJECT_ID: ${WIKI_PROJECT_ID:-wiki-flow-docs}
     restart: "no"
     depends_on:

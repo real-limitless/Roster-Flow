@@ -8,7 +8,11 @@ test("enrichTeam reports seat count and models in use", () => {
   const eng = state.teams.find((t) => t.id === "eng");
   const out = enrichTeam(eng, state.seats);
   assert.ok(out.seatCount >= 4);
-  assert.ok(out.models.includes("xai/grok-4"));
+  assert.ok(out.models.includes("featherless/deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.equal(state.seats.find((s) => s.id === "channel").model, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
+  assert.equal(state.seats.find((s) => s.id === "architect").model, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
+  assert.equal(state.seats.find((s) => s.id === "build").model, "opencode/big-pickle");
+  assert.equal(state.seats.find((s) => s.id === "review").model, "openai/gpt-5");
   assert.equal(out.supervisorSeatId, "eng-supervisor");
   assert.equal(out.genericSeatId, "eng-generic");
 });

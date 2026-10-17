@@ -96,13 +96,14 @@ function agentModel(seat) {
 }
 
 /**
- * Model string safe to persist. A bad id is dropped, or replaced with a
- * configured connected model the serve can actually call. Never the built-in
- * `opencode` provider.
+ * Model string safe to persist. An explicit seat model is kept or dropped.
+ * It is never replaced with another model because the catalog changed.
+ * A seat with no model may still use the first connected model. Never the
+ * built-in `opencode` provider.
  */
 export function modelForDisk(seat) {
   const requested = agentModel(seat);
-  if (requested && modelAllowedInConfig(requested)) return requested;
+  if (requested) return modelAllowedInConfig(requested) ? requested : "";
   const fallback = firstConnectedModel();
   const ref = fallback?.providerID && fallback?.modelID ? `${fallback.providerID}/${fallback.modelID}` : "";
   if (ref && modelAllowedInConfig(ref)) return ref;

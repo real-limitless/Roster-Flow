@@ -13,20 +13,66 @@
  * Auth: ROSTER_API_TOKEN, a scoped API token (rf_..., needs "write") from
  *       Settings → API tokens, POST /api/v1/tokens, or scripts/create-token.mjs.
  * Env:  ROSTER_API (default http://127.0.0.1:8790), WIKI_PROJECT_ID (wiki-flow-docs),
- *       WIKI_MODEL (default Featherless model id).
+ *       WIKI_MODEL (default deepseek-ai/DeepSeek-V4.1-Flash). The provider
+ *       models list is the catalog, the models this script assigns, the
+ *       provider's current models, and every featherless model a seat or
+ *       team already uses.
  */
+import { contextTokenLimit, FEATHERLESS_CHAT_ID, FEATHERLESS_CODER_ID, outputTokenLimit } from "../server/model-defaults.mjs";
+
+export const FEATHERLESS_MODEL_DEFAULTS = [
+  { id: FEATHERLESS_CODER_ID, name: "Qwen2.5 Coder 32B" },
+  { id: "meta-llama/Meta-Llama-3.1-70B-Instruct", name: "Llama 3.1 70B" },
+  { id: "deepseek-ai/DeepSeek-V3-0324", name: "DeepSeek V3" },
+  { id: FEATHERLESS_CHAT_ID, name: "DeepSeek V4.1 Flash" },
+];
 
 export const FEATHERLESS = {
   id: "featherless",
   name: "Featherless",
   baseURL: "https://api.featherless.ai/v1",
   apiKeyEnv: "FEATHERLESS_API_KEY",
-  models: [
-    { id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen2.5 Coder 32B" },
-    { id: "meta-llama/Meta-Llama-3.1-70B-Instruct", name: "Llama 3.1 70B" },
-    { id: "deepseek-ai/DeepSeek-V3-0324", name: "DeepSeek V3" },
-  ],
+  models: FEATHERLESS_MODEL_DEFAULTS,
 };
+
+function listedModel(id, name, output, context) {
+  return {
+    id,
+    name: name || id,
+    limit: { context: contextTokenLimit(context), output: outputTokenLimit(output) },
+  };
+}
+
+/**
+ * Catalog defaults, models already on the provider, and every assigned
+ * featherless model id. A rerun must not drop a model another seat still uses.
+ * Refs for a different provider are ignored.
+ */
+export function featherlessModels(assignedRefs = [], current = []) {
+  const byId = new Map(FEATHERLESS_MODEL_DEFAULTS.map((m) => [m.id, listedModel(m.id, m.name)]));
+  const add = (id, name, output, context) => {
+    const mid = String(id || "").trim();
+    if (!mid || byId.has(mid)) return;
+    byId.set(mid, listedModel(mid, name, output, context));
+  };
+  for (const item of current) {
+    if (!item) continue;
+    if (typeof item === "string") add(item);
+    else add(item.id || item.modelID, item.name, item.limit?.output ?? item.max_tokens, item.limit?.context);
+  }
+  for (const ref of assignedRefs) {
+    const raw = String(ref || "").trim();
+    if (!raw) continue;
+    if (raw.toLowerCase().startsWith("featherless/")) add(raw.slice("featherless/".length));
+  }
+  return [...byId.values()];
+}
+
+export function wikiModelId(ref) {
+  const raw = String(ref || "").trim();
+  if (!raw) return FEATHERLESS_CHAT_ID;
+  return raw.startsWith("featherless/") ? raw.slice("featherless/".length) : raw;
+}
 
 export function wikiSpecialists(model) {
   const m = `featherless/${model}`;
@@ -53,6 +99,15 @@ function client(base, token, fetchImpl) {
   };
 }
 
+async function readList(call, path) {
+  const res = await call(path);
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(`ROSTER_API_TOKEN rejected (${res.status}): ${res.data?.error || "check that it is live and has write scope"}`);
+  }
+  if (!res.ok || !Array.isArray(res.data)) return [];
+  return res.data;
+}
+
 function coreError(step, res) {
   const error = String(res.data?.error || "");
   const detail = String(res.data?.detail || "");
@@ -76,10 +131,22 @@ export async function setupWikiTeam({
   if (!token) throw new Error("ROSTER_API_TOKEN is required (create one in Settings → API tokens or with scripts/create-token.mjs)");
   const call = client(base, token, fetchImpl);
   const projectId = env.WIKI_PROJECT_ID || "wiki-flow-docs";
-  const model = env.WIKI_MODEL || FEATHERLESS.models[0].id;
+  const model = wikiModelId(env.WIKI_MODEL);
   if (!env.FEATHERLESS_API_KEY) log("warn: FEATHERLESS_API_KEY is not set; seats will be configured but cannot run until it is.");
 
-  const prov = await call("/api/v1/providers", { method: "PUT", body: JSON.stringify(FEATHERLESS) });
+  const specialists = wikiSpecialists(model);
+  const providers = await readList(call, "/api/v1/providers");
+  const seats = await readList(call, "/api/v1/seats");
+  const teams = await readList(call, "/api/v1/teams");
+  const current = providers.find((p) => p?.id === "featherless")?.models;
+  const inUse = [];
+  for (const seat of seats) inUse.push(seat?.model, seat?.fallbackModel);
+  for (const team of teams) inUse.push(team?.defaultModel, team?.fallbackModel, ...(team?.allowedModels || []));
+  const provider = {
+    ...FEATHERLESS,
+    models: featherlessModels([`featherless/${model}`, ...specialists.map((s) => s.model), ...inUse], Array.isArray(current) ? current : []),
+  };
+  const prov = await call("/api/v1/providers", { method: "PUT", body: JSON.stringify(provider) });
   if (prov.status === 401 || prov.status === 403) {
     throw new Error(`ROSTER_API_TOKEN rejected (${prov.status}): ${prov.data?.error || "check that it is live and has write scope"}`);
   }
@@ -93,7 +160,6 @@ export async function setupWikiTeam({
   if (!proj.ok && proj.status !== 409) throw coreError("project", proj);
   log(`project ${projectId}: ${proj.status === 409 ? "exists" : "created"}`);
 
-  const specialists = wikiSpecialists(model);
   const team = await call("/api/v1/teams", {
     method: "POST",
     body: JSON.stringify({

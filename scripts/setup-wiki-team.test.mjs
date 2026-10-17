@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setupWikiTeam } from "./setup-wiki-team.mjs";
 
-function fakeCore({ teamExists = false, seats = [] } = {}) {
+function fakeCore({ teamExists = false, seats = [], teams = [], providers = [] } = {}) {
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     const path = new URL(url).pathname;
@@ -10,8 +10,10 @@ function fakeCore({ teamExists = false, seats = [] } = {}) {
     calls.push({ path, method, body: init.body ? JSON.parse(init.body) : undefined, headers: init.headers });
     let status = 200;
     let data = {};
+    if (path === "/api/v1/providers" && method === "GET") data = providers;
     if (path === "/api/v1/projects") status = teamExists ? 409 : 201;
-    if (path === "/api/v1/teams") status = teamExists ? 409 : 201;
+    if (path === "/api/v1/teams" && method === "GET") data = teams;
+    if (path === "/api/v1/teams" && method === "POST") status = teamExists ? 409 : 201;
     if (path === "/api/v1/seats" && method === "GET") data = seats;
     if (path === "/api/v1/seats" && method === "POST") status = 201;
     return { ok: status < 300, status, text: async () => JSON.stringify(data) };
@@ -19,17 +21,97 @@ function fakeCore({ teamExists = false, seats = [] } = {}) {
   return { calls, fetchImpl };
 }
 
+const READS = ["GET /api/v1/providers", "GET /api/v1/seats", "GET /api/v1/teams"];
+
 test("setup-wiki-team registers Featherless by env ref, project, and @wiki team", async () => {
   const { calls, fetchImpl } = fakeCore();
   const out = await setupWikiTeam({ env: { FEATHERLESS_API_KEY: "secret", ROSTER_API_TOKEN: "rf_test" }, fetchImpl, log() {} });
-  assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), ["PUT /api/v1/providers", "POST /api/v1/projects", "POST /api/v1/teams"]);
-  assert.equal(calls[0].body.apiKeyEnv, "FEATHERLESS_API_KEY");
+  assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), [...READS, "PUT /api/v1/providers", "POST /api/v1/projects", "POST /api/v1/teams"]);
+  const put = calls.find((c) => c.method === "PUT");
+  const team = calls.find((c) => c.method === "POST" && c.path === "/api/v1/teams");
+  assert.equal(put.body.apiKeyEnv, "FEATHERLESS_API_KEY");
   assert.ok(!JSON.stringify(calls).includes("secret"), "API key must never be sent or written");
-  const ids = calls[2].body.specialists.map((s) => s.id);
+  const ids = team.body.specialists.map((s) => s.id);
   assert.deepEqual(ids, ["wiki-architect", "wiki-scribe", "wiki-diagrammer", "wiki-editor"]);
-  assert.ok(calls[2].body.specialists.every((s) => s.model.startsWith("featherless/")));
+  assert.ok(team.body.specialists.every((s) => s.model.startsWith("featherless/")));
+  assert.equal(team.body.defaultModel, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
+  const modelIds = put.body.models.map((m) => m.id);
+  assert.ok(modelIds.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.ok(modelIds.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+  assert.ok(put.body.models.every((m) => m.limit.context > 0 && m.limit.output >= 512));
+  for (const spec of team.body.specialists) {
+    assert.ok(modelIds.includes(spec.model.slice("featherless/".length)), spec.model);
+  }
+  assert.equal(out.model, "deepseek-ai/DeepSeek-V4.1-Flash");
   assert.equal(out.teamCreated, true);
   assert.ok(calls.every((c) => c.headers.authorization === "Bearer rf_test"));
+});
+
+test("setup-wiki-team adds a non-default WIKI_MODEL and accepts a featherless/ ref", async () => {
+  const custom = fakeCore();
+  await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test", WIKI_MODEL: "Qwen/Qwen2.5-Coder-32B-Instruct" }, fetchImpl: custom.fetchImpl, log() {} });
+  const put = custom.calls.find((c) => c.method === "PUT");
+  const team = custom.calls.find((c) => c.method === "POST" && c.path === "/api/v1/teams");
+  const ids = put.body.models.map((m) => m.id);
+  assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+  assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.equal(team.body.defaultModel, "featherless/Qwen/Qwen2.5-Coder-32B-Instruct");
+  assert.ok(team.body.specialists.every((s) => s.model === "featherless/Qwen/Qwen2.5-Coder-32B-Instruct"));
+
+  const prefixed = fakeCore();
+  const out = await setupWikiTeam({
+    env: { ROSTER_API_TOKEN: "rf_test", WIKI_MODEL: "featherless/org/custom-model" },
+    fetchImpl: prefixed.fetchImpl,
+    log() {},
+  });
+  assert.equal(out.model, "org/custom-model");
+  const prefixedTeam = prefixed.calls.find((c) => c.method === "POST" && c.path === "/api/v1/teams");
+  const prefixedPut = prefixed.calls.find((c) => c.method === "PUT");
+  assert.equal(prefixedTeam.body.defaultModel, "featherless/org/custom-model");
+  assert.ok(prefixedPut.body.models.some((m) => m.id === "org/custom-model"));
+});
+
+test("setup-wiki-team keeps featherless models used by seats outside the wiki", async () => {
+  const { calls, fetchImpl } = fakeCore({
+    providers: [
+      {
+        id: "featherless",
+        models: [
+          { id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen" },
+          { id: "kept-extra", name: "Kept extra" },
+        ],
+      },
+    ],
+    seats: [
+      {
+        id: "llama-seat",
+        model: "featherless/meta-llama/Llama-3.3-70B-Instruct",
+        fallbackModel: "featherless/org/fallback-model",
+      },
+      { id: "other", model: "openai/gpt-5" },
+    ],
+    teams: [
+      {
+        id: "eng",
+        defaultModel: "featherless/deepseek-ai/DeepSeek-V4.1-Flash",
+        allowedModels: ["featherless/team-allowed", "openai/gpt-5"],
+      },
+    ],
+  });
+  await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test" }, fetchImpl, log() {} });
+  const ids = calls.find((c) => c.method === "PUT").body.models.map((m) => m.id);
+  for (const id of [
+    "meta-llama/Llama-3.3-70B-Instruct",
+    "kept-extra",
+    "org/fallback-model",
+    "team-allowed",
+    "deepseek-ai/DeepSeek-V4.1-Flash",
+    "Qwen/Qwen2.5-Coder-32B-Instruct",
+  ]) {
+    assert.ok(ids.includes(id), id);
+  }
+  assert.ok(!ids.includes("openai/gpt-5"));
+  assert.ok(!ids.includes("gpt-5"));
 });
 
 test("setup-wiki-team is idempotent: on 409 it only hires missing specialists", async () => {

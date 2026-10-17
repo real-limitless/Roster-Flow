@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync, existsSync } from "node:fs";
-import { agentMarkdown, permissionFor, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
+import { agentMarkdown, modelForDisk, permissionFor, syncSeatAgent, teamAgentSeat } from "./agents.mjs";
 import { firstLoadedModel, hireSeat } from "./seats.mjs";
 import { emptyState } from "./seed.mjs";
 import { join, dirname } from "node:path";
@@ -15,6 +15,7 @@ test("hiring with model '' does not store the built-in opencode provider", () =>
   const seat = hireSeat(emptyState(), { name: "Blank Model", model: "", job: "Unset." });
   assert.notEqual(seat.model, "opencode/longcat-2.5-preview-free");
   assert.notEqual(seat.model, "xai/grok-4");
+  assert.notEqual(seat.model, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
   const connected = [
     { providerID: "opencode", modelID: "longcat-2.5-preview-free", connected: true },
     { providerID: "featherless", modelID: "stub-model", connected: true },
@@ -96,6 +97,59 @@ test("supervisor markdown is primary and denies writes", () => {
   assert.match(md, /mode: primary/);
   assert.match(md, /^permission:\n  edit: deny\n  bash: deny$/m);
   assert.doesNotMatch(md, /permissions:/);
+});
+
+test("syncSeatAgent does not rewrite an explicit model when the catalog drops it", async () => {
+  const { readFileSync, writeFileSync, unlinkSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { opencodeDir } = await import("./paths.mjs");
+  const { writeOpenCodeConfig } = await import("./providers.mjs");
+  const path = join(opencodeDir, "opencode.json");
+  const raw = readFileSync(path, "utf8");
+  const prev = process.env.FEATHERLESS_API_KEY;
+  process.env.FEATHERLESS_API_KEY = "test-key";
+  let file;
+  const llama = "featherless/meta-llama/Llama-3.3-70B-Instruct";
+  const seat = {
+    id: "llama-hold",
+    name: "Llama Hold",
+    role: "Chat",
+    kind: "bot",
+    seatType: "specialist",
+    model: llama,
+    job: "Stay on Llama.",
+    tools: ["read"],
+    deny: [],
+  };
+  try {
+    const before = JSON.parse(raw);
+    writeOpenCodeConfig({
+      ...before,
+      provider: {
+        ...(before.provider || {}),
+        featherless: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "Featherless",
+          options: { apiKey: "{env:FEATHERLESS_API_KEY}" },
+          models: { "Qwen/Qwen2.5-Coder-32B-Instruct": { name: "Qwen" } },
+        },
+      },
+    });
+    assert.equal(modelForDisk(seat), "");
+    assert.equal(seat.model, llama);
+    file = syncSeatAgent(seat);
+    const text = readFileSync(file, "utf8");
+    assert.doesNotMatch(text, /Qwen/);
+    assert.doesNotMatch(text, /^model:/m);
+    assert.equal(seat.model, llama);
+    const { readOpenCodeConfig } = await import("./providers.mjs");
+    assert.equal(readOpenCodeConfig().agent["llama-hold"].model, undefined);
+  } finally {
+    writeFileSync(path, raw);
+    if (prev === undefined) delete process.env.FEATHERLESS_API_KEY;
+    else process.env.FEATHERLESS_API_KEY = prev;
+    if (file && existsSync(file)) unlinkSync(file);
+  }
 });
 
 test("syncSeatAgent writes .opencode/agents/<id>.md", () => {
