@@ -22,10 +22,13 @@ function fakeCore({ teamExists = false, seats = [], teams = [], providers = [] }
 }
 
 const READS = ["GET /api/v1/providers", "GET /api/v1/seats", "GET /api/v1/teams"];
+const offlineCatalog = async () => {
+  throw new Error("offline");
+};
 
 test("setup-wiki-team registers Featherless by env ref, project, and @wiki team", async () => {
   const { calls, fetchImpl } = fakeCore();
-  const out = await setupWikiTeam({ env: { FEATHERLESS_API_KEY: "secret", ROSTER_API_TOKEN: "rf_test" }, fetchImpl, log() {} });
+  const out = await setupWikiTeam({ env: { FEATHERLESS_API_KEY: "secret", ROSTER_API_TOKEN: "rf_test" }, fetchImpl, catalogFetch: offlineCatalog, log() {} });
   assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), [...READS, "PUT /api/v1/providers", "POST /api/v1/projects", "POST /api/v1/teams"]);
   const put = calls.find((c) => c.method === "PUT");
   const team = calls.find((c) => c.method === "POST" && c.path === "/api/v1/teams");
@@ -50,7 +53,7 @@ test("setup-wiki-team registers Featherless by env ref, project, and @wiki team"
 
 test("setup-wiki-team adds a non-default WIKI_MODEL and accepts a featherless/ ref", async () => {
   const custom = fakeCore();
-  await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test", WIKI_MODEL: "Qwen/Qwen2.5-Coder-32B-Instruct" }, fetchImpl: custom.fetchImpl, log() {} });
+  await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test", WIKI_MODEL: "Qwen/Qwen2.5-Coder-32B-Instruct" }, fetchImpl: custom.fetchImpl, catalogFetch: offlineCatalog, log() {} });
   const put = custom.calls.find((c) => c.method === "PUT");
   const team = custom.calls.find((c) => c.method === "POST" && c.path === "/api/v1/teams");
   const ids = put.body.models.map((m) => m.id);
@@ -63,6 +66,7 @@ test("setup-wiki-team adds a non-default WIKI_MODEL and accepts a featherless/ r
   const out = await setupWikiTeam({
     env: { ROSTER_API_TOKEN: "rf_test", WIKI_MODEL: "featherless/org/custom-model" },
     fetchImpl: prefixed.fetchImpl,
+    catalogFetch: offlineCatalog,
     log() {},
   });
   assert.equal(out.model, "org/custom-model");
@@ -99,7 +103,16 @@ test("setup-wiki-team keeps featherless models used by seats outside the wiki", 
       },
     ],
   });
-  await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test" }, fetchImpl, log() {} });
+  const lines = [];
+  await setupWikiTeam({
+    env: { ROSTER_API_TOKEN: "rf_test" },
+    fetchImpl,
+    catalogFetch: offlineCatalog,
+    log(msg) {
+      lines.push(msg);
+    },
+  });
+  assert.ok(lines.some((line) => /catalog unreachable/.test(line)));
   const ids = calls.find((c) => c.method === "PUT").body.models.map((m) => m.id);
   for (const id of [
     "meta-llama/Llama-3.3-70B-Instruct",
@@ -115,18 +128,34 @@ test("setup-wiki-team keeps featherless models used by seats outside the wiki", 
   assert.ok(!ids.includes("gpt-5"));
 });
 
+test("setup-wiki-team omits an in-use featherless id the upstream catalog does not offer", async () => {
+  const { calls, fetchImpl } = fakeCore({
+    seats: [{ id: "llama-seat", model: "featherless/meta-llama/Llama-3.3-70B-Instruct" }],
+  });
+  await setupWikiTeam({
+    env: { ROSTER_API_TOKEN: "rf_test" },
+    fetchImpl,
+    catalogFetch: async () => new Set(["deepseek-ai/DeepSeek-V4.1-Flash"]),
+    log() {},
+  });
+  const ids = calls.find((c) => c.method === "PUT").body.models.map((m) => m.id);
+  assert.ok(!ids.includes("meta-llama/Llama-3.3-70B-Instruct"));
+  assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+});
+
 test("setup-wiki-team is idempotent: on 409 it only hires missing specialists", async () => {
   const { calls, fetchImpl } = fakeCore({ teamExists: true, seats: [{ id: "wiki-architect" }, { id: "wiki-scribe" }] });
-  const out = await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test" }, fetchImpl, log() {} });
+  const out = await setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_test" }, fetchImpl, catalogFetch: offlineCatalog, log() {} });
   assert.deepEqual(out.hired, ["wiki-diagrammer", "wiki-editor"]);
   const posts = calls.filter((c) => c.method === "POST" && c.path === "/api/v1/seats");
   assert.equal(posts.length, 2);
 });
 
 test("setup-wiki-team requires a token and reports a rejected one", async () => {
-  await assert.rejects(setupWikiTeam({ env: {}, fetchImpl: async () => ({}), log() {} }), /ROSTER_API_TOKEN is required/);
+  await assert.rejects(setupWikiTeam({ env: {}, fetchImpl: async () => ({}), catalogFetch: offlineCatalog, log() {} }), /ROSTER_API_TOKEN is required/);
   const revoked = async () => ({ ok: false, status: 401, text: async () => '{"error":"invalid, expired, or revoked API token"}' });
-  await assert.rejects(setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: revoked, log() {} }), /rejected \(401\)/);
+  await assert.rejects(setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: revoked, catalogFetch: offlineCatalog, log() {} }), /rejected \(401\)/);
 });
 
 test("setup-wiki-team explains a CORE that cannot write its data volume", async () => {
@@ -136,7 +165,7 @@ test("setup-wiki-team explains a CORE that cannot write its data volume", async 
     text: async () => JSON.stringify({ error: "EACCES: permission denied, open '/data/opencode/opencode.json'", detail: "EACCES" }),
   });
   await assert.rejects(
-    setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: eacces, log() {} }),
+    setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: eacces, catalogFetch: offlineCatalog, log() {} }),
     (err) => {
       assert.match(err.message, /^provider: 500 EACCES: permission denied, open '\/data\/opencode\/opencode\.json'/);
       assert.match(err.message, /CORE cannot write its data volume\. Start roster-flow as root/);
@@ -144,7 +173,7 @@ test("setup-wiki-team explains a CORE that cannot write its data volume", async 
     },
   );
   const other = async () => ({ ok: false, status: 500, text: async () => '{"error":"boom"}' });
-  await assert.rejects(setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: other, log() {} }), (err) => {
+  await assert.rejects(setupWikiTeam({ env: { ROSTER_API_TOKEN: "rf_x" }, fetchImpl: other, catalogFetch: offlineCatalog, log() {} }), (err) => {
     assert.equal(err.message, "provider: 500 boom");
     return true;
   });

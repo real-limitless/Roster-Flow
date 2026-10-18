@@ -16,7 +16,8 @@ import {
   describeOpenCodeError,
   restartForProviderChange,
 } from "./harness.mjs";
-import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey } from "./providers.mjs";
+import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey, canonicalProviderId } from "./providers.mjs";
+import { featherlessOfferedModelIds } from "./featherless-catalog.mjs";
 import { addFirstUser, changePassword, DEMO_TOKEN, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
@@ -255,7 +256,7 @@ try {
   process.exit(1);
 }
 try {
-  const provider = seedProviderFromEnv();
+  const provider = await seedProviderFromEnv();
   if (provider.seeded) console.log(`Provider ${provider.provider.id} seeded from env.`);
   else if (provider.reason) console.log(`Provider seed skipped: ${provider.reason}`);
 } catch (err) {
@@ -1613,7 +1614,15 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === "/api/v1/providers" && method === "PUT") {
-      const out = upsertProvider(await readBody(req));
+      const body = await readBody(req);
+      let offered;
+      if (canonicalProviderId(body.id) === "featherless") {
+        offered = await featherlessOfferedModelIds({
+          baseURL: body.baseURL || "https://api.featherless.ai/v1",
+          apiKey: process.env.FEATHERLESS_API_KEY || "",
+        });
+      }
+      const out = upsertProvider(body, getState(), offered);
       restartForProviderChange();
       syncBotAgents(getState().seats, getState().teams);
       json(res, 200, out);

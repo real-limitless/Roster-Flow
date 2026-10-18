@@ -18,6 +18,7 @@
  *       provider's current models, and every featherless model a seat or
  *       team already uses.
  */
+import { inUseModelAllowed, featherlessOfferedModelIds } from "../server/featherless-catalog.mjs";
 import { contextTokenLimit, FEATHERLESS_CHAT_ID, FEATHERLESS_CODER_ID, outputTokenLimit } from "../server/model-defaults.mjs";
 
 export const FEATHERLESS_MODEL_DEFAULTS = [
@@ -121,9 +122,22 @@ function coreError(step, res) {
   return new Error(msg);
 }
 
+async function offeredFeatherlessIds({ catalogFetch, log }) {
+  if (!catalogFetch) return featherlessOfferedModelIds({ log });
+  try {
+    const ids = await catalogFetch();
+    if (ids == null) return null;
+    return ids instanceof Set ? ids : new Set(ids);
+  } catch (err) {
+    log(`warn: featherless model catalog unreachable; keeping in-use models: ${err.message}`);
+    return null;
+  }
+}
+
 export async function setupWikiTeam({
   env = process.env,
   fetchImpl = fetch,
+  catalogFetch,
   log = console.log,
 } = {}) {
   const base = (env.ROSTER_API || "http://127.0.0.1:8790").replace(/\/+$/, "");
@@ -142,9 +156,18 @@ export async function setupWikiTeam({
   const inUse = [];
   for (const seat of seats) inUse.push(seat?.model, seat?.fallbackModel);
   for (const team of teams) inUse.push(team?.defaultModel, team?.fallbackModel, ...(team?.allowedModels || []));
+  const offered = await offeredFeatherlessIds({ catalogFetch, log });
+  const keptInUse = inUse.filter((ref) => {
+    const raw = String(ref || "").trim();
+    if (!raw.toLowerCase().startsWith("featherless/")) return true;
+    return inUseModelAllowed("featherless", raw.slice("featherless/".length), offered);
+  });
   const provider = {
     ...FEATHERLESS,
-    models: featherlessModels([`featherless/${model}`, ...specialists.map((s) => s.model), ...inUse], Array.isArray(current) ? current : []),
+    models: featherlessModels(
+      [`featherless/${model}`, ...specialists.map((s) => s.model), ...keptInUse],
+      Array.isArray(current) ? current : [],
+    ),
   };
   const prov = await call("/api/v1/providers", { method: "PUT", body: JSON.stringify(provider) });
   if (prov.status === 401 || prov.status === 403) {

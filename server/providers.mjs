@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { normalizeModelId } from "./seed.mjs";
 import { contextTokenLimit, outputTokenLimit } from "./model-defaults.mjs";
+import { inUseModelAllowed } from "./featherless-catalog.mjs";
 import { authPath, opencodeDir as ocDir } from "./paths.mjs";
 import { protectPrivateFile, writePrivateFile } from "./private-file.mjs";
 import { getState } from "./store.mjs";
@@ -113,6 +114,26 @@ export function listProviders() {
   });
 }
 
+export function canonicalProviderId(id) {
+  return String(id || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-");
+}
+
+/** Models already stored for this provider, including limits. Boot merges these back in. */
+export function configuredProviderModels(providerId) {
+  const id = canonicalProviderId(providerId);
+  if (!id) return [];
+  const block = providerBlocks(readOpenCodeConfig())[id];
+  const models = block?.models && typeof block.models === "object" ? block.models : {};
+  return Object.entries(models).map(([mid, m]) => ({
+    id: mid,
+    name: (m && m.name) || mid,
+    ...(m?.limit ? { limit: m.limit } : {}),
+  }));
+}
+
 /** Model ids on this provider that a seat or team already assigns. A short catalog write must not drop them. */
 export function providerModelIdsInUse(providerId, state) {
   const prefix = `${String(providerId || "").trim().toLowerCase()}/`;
@@ -143,11 +164,8 @@ function modelBlock(id, name, output, context) {
   };
 }
 
-export function upsertProvider(body, state = getState()) {
-  const id = String(body.id || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-");
+export function upsertProvider(body, state = getState(), offered) {
+  const id = canonicalProviderId(body.id);
   if (!id) throw Object.assign(new Error("provider id required"), { status: 400 });
   const cfg = readOpenCodeConfig();
   cfg.provider = cfg.provider || {};
@@ -163,6 +181,7 @@ export function upsertProvider(body, state = getState()) {
   }
   for (const mid of providerModelIdsInUse(id, state)) {
     if (models[mid]) continue;
+    if (!inUseModelAllowed(id, mid, offered)) continue;
     const prev = previous[mid];
     models[mid] = modelBlock(mid, prev?.name, prev?.limit?.output, prev?.limit?.context);
   }

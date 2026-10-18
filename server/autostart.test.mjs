@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 import { bootCore } from "./test-helpers.mjs";
-import { envHasProvider, providerFromEnv, shouldAutostartHarness, withSeatModels } from "./autostart.mjs";
+import { envHasProvider, providerFromEnv, seedProviderFromEnv, shouldAutostartHarness, withPersistedModels, withSeatModels } from "./autostart.mjs";
 
 const TOKEN = "rf_autostarttoken00000001";
 
@@ -54,6 +54,87 @@ test("withSeatModels unions assigned featherless models onto the env list", () =
     "Qwen/Qwen2.5-Coder-32B-Instruct",
     "extra-model",
   ]);
+});
+
+test("withPersistedModels keeps stored catalog models the env list omitted", () => {
+  const out = withPersistedModels(
+    { id: "featherless", models: [{ id: "demo-small", name: "demo-small" }] },
+    [
+      { id: "demo-small", name: "stored name" },
+      { id: "deepseek-ai/DeepSeek-V3-0324", name: "DeepSeek V3", limit: { context: 128000, output: 8192 } },
+      { id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen Coder" },
+      { id: "meta-llama/Meta-Llama-3.1-70B-Instruct", name: "Llama 3.1 70B" },
+    ],
+  );
+  assert.deepEqual(out.models.map((m) => m.id), [
+    "demo-small",
+    "deepseek-ai/DeepSeek-V3-0324",
+    "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "meta-llama/Meta-Llama-3.1-70B-Instruct",
+  ]);
+  assert.equal(out.models[0].name, "demo-small");
+  assert.equal(out.models[1].limit.context, 128000);
+});
+
+test("withSeatModels skips an in-use featherless id the catalog does not offer", () => {
+  const spec = { id: "featherless", models: [{ id: "demo-small", name: "demo-small" }] };
+  const state = {
+    seats: [{ model: "featherless/not-offered" }, { model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash" }],
+  };
+  const filtered = withSeatModels(spec, state, new Set(["deepseek-ai/DeepSeek-V4.1-Flash"]));
+  assert.deepEqual(filtered.models.map((m) => m.id), ["demo-small", "deepseek-ai/DeepSeek-V4.1-Flash"]);
+  const fallback = withSeatModels(spec, state, null);
+  assert.ok(fallback.models.some((m) => m.id === "not-offered"));
+});
+
+test("seedProviderFromEnv keeps persisted catalog models across a short env seed", async () => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { opencodeDir } = await import("./paths.mjs");
+  const path = join(opencodeDir, "opencode.json");
+  const raw = readFileSync(path, "utf8");
+  const cfg = JSON.parse(raw);
+  cfg.provider = cfg.provider || {};
+  cfg.provider.featherless = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "Featherless",
+    options: { baseURL: "https://api.featherless.ai/v1" },
+    models: {
+      "deepseek-ai/DeepSeek-V3-0324": { name: "DeepSeek V3", limit: { context: 128000, output: 8192 } },
+      "Qwen/Qwen2.5-Coder-32B-Instruct": { name: "Qwen Coder", limit: { context: 128000, output: 8192 } },
+      "meta-llama/Meta-Llama-3.1-70B-Instruct": { name: "Llama 3.1 70B", limit: { context: 128000, output: 8192 } },
+    },
+  };
+  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  const env = {
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_MODELS: "demo-small",
+    ROSTER_PROVIDER_BASE_URL: "https://api.featherless.ai/v1",
+  };
+  const state = {
+    seats: [{ model: "featherless/deepseek-ai/DeepSeek-V4.1-Flash" }, { model: "featherless/not-offered-model" }],
+    teams: [],
+  };
+  try {
+    const filtered = await seedProviderFromEnv(env, state, { offered: new Set(["deepseek-ai/DeepSeek-V4.1-Flash"]) });
+    const ids = filtered.provider.models.map((m) => m.id);
+    for (const id of [
+      "demo-small",
+      "deepseek-ai/DeepSeek-V3-0324",
+      "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "meta-llama/Meta-Llama-3.1-70B-Instruct",
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+    ]) {
+      assert.ok(ids.includes(id), id);
+    }
+    assert.ok(!ids.includes("not-offered-model"));
+
+    const kept = await seedProviderFromEnv(env, state, { offered: null });
+    assert.ok(kept.provider.models.some((m) => m.id === "not-offered-model"));
+    assert.ok(kept.provider.models.some((m) => m.id === "deepseek-ai/DeepSeek-V3-0324"));
+  } finally {
+    writeFileSync(path, raw);
+  }
 });
 
 test("shouldAutostartHarness needs an owner, a provider, and no kill switch", () => {

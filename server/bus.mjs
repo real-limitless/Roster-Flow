@@ -21,6 +21,7 @@ import { isBuiltinProvider, isLoadedModel, loadedProviderIds, resolveUsableModel
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
+import { CHANNEL_ROOM_REPLY } from "./seed.mjs";
 import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
@@ -354,7 +355,7 @@ export function roomReplyLines(meta = {}) {
   if (meta.kind === IMPLICIT) {
     return [
       `A human wrote in ${room} without mentioning anyone. You are the seat answering for ${room}.`,
-      `Reply in plain text, briefly, as yourself. Roster-flow posts your text to ${room}. Do not use roster_report for this reply.`,
+      `${CHANNEL_ROOM_REPLY} Roster-flow posts your text to ${room}. Do not use roster_report for this reply.`,
       mention,
     ];
   }

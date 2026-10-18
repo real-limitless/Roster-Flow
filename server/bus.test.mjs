@@ -11,6 +11,7 @@ import { delegationLines, deps, isPass, meterChildren, meterTurn, pendingWake, p
 import { meterWake } from "./budget.mjs";
 import { bootCore } from "./test-helpers.mjs";
 import { liveRoomSession } from "./room-sessions.mjs";
+import { CHANNEL_ROOM_REPLY, seats as seedSeats } from "./seed.mjs";
 import { getState, mutate } from "./store.mjs";
 
 test("promptBody tells the seat which job to finish", () => {
@@ -29,9 +30,23 @@ test("promptBody asks an un-mentioned responder for a plain-text reply in that r
   const seat = { name: "Channel", role: "Conductor", job: "Conduct", tools: ["bus"], deny: [] };
   const text = promptBody(seat, "channel", "Anyone here", { from: "you", kind: "implicit", channel: "general" }, null).parts[0].text;
   assert.match(text, /A human wrote in #general without mentioning anyone/);
-  assert.match(text, /Reply in plain text, briefly, as yourself\. Roster-flow posts your text to #general\./);
+  assert.match(text, /greet briefly, name the lead or the team seats who are here, and offer to route/);
+  assert.match(text, /Never output monitoring or status boilerplate/);
+  assert.match(text, /Roster-flow posts your text to #general/);
   assert.match(text, /Do not use roster_report for this reply/);
+  assert.doesNotMatch(text, /No active responses needed/);
+  assert.doesNotMatch(text, /Monitoring #general/);
   assert.doesNotMatch(text, /Use roster_send_message \/ roster_handoff \/ roster_report to talk/);
+  const seeded = promptBody(
+    seedSeats.find((s) => s.id === "channel"),
+    "channel",
+    "Anyone here",
+    { from: "you", kind: "implicit", channel: "general" },
+    null,
+  ).parts[0].text;
+  assert.ok(seeded.includes(CHANNEL_ROOM_REPLY));
+  assert.match(seeded, /greet briefly, name the lead or the team seats who are here, and offer to route/);
+  assert.match(seeded, /Never output monitoring or status boilerplate/);
   const mentioned = promptBody(seat, "channel", "@channel hi", { from: "you", kind: "mention-seat", channel: "ship" }, null).parts[0].text;
   assert.match(mentioned, /Reply in plain text\. Roster-flow posts your text to #ship\./);
   const mail = promptBody(seat, "channel", "hi", { from: "build", kind: "send_message" }, null).parts[0].text;

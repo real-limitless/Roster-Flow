@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emptyState, migrateState } from "./seed.mjs";
+import { CHANNEL_ROOM_REPLY, emptyState, migrateState } from "./seed.mjs";
 import {
   channelsForSeat,
   createChannel,
@@ -87,6 +87,24 @@ test("dropStaleLead clears a lead that is not a bot member", () => {
   const state = emptyState();
   const ch = { id: "x", seatIds: ["you"], teamIds: [], leadSeatId: "build" };
   assert.equal(dropStaleLead(ch, state).leadSeatId, null);
+});
+
+test("migrateState rewrites the channel room-reply clause and leaves other instructions", () => {
+  const previous = "When you answer for a room nobody else answers, reply to humans briefly in plain text.";
+  const state = emptyState();
+  const seat = state.seats.find((s) => s.id === "channel");
+  seat.instructions = `Keep this prefix. ${previous}`;
+  const next = migrateState(JSON.parse(JSON.stringify(state)));
+  const instructions = next.seats.find((s) => s.id === "channel").instructions;
+  assert.equal(instructions, `Keep this prefix. ${CHANNEL_ROOM_REPLY}`);
+  assert.match(instructions, /greet briefly, name the lead or the team seats who are here, and offer to route/);
+  assert.match(instructions, /Never output monitoring or status boilerplate/);
+  assert.doesNotMatch(instructions, /reply to humans briefly/);
+
+  const custom = emptyState();
+  custom.seats.find((s) => s.id === "channel").instructions = "Custom conductor text.";
+  const kept = migrateState(JSON.parse(JSON.stringify(custom)));
+  assert.equal(kept.seats.find((s) => s.id === "channel").instructions, "Custom conductor text.");
 });
 
 test("migrateState keeps a channel lead across a reload", () => {

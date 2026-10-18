@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { accessSync, constants } from "node:fs";
 import test from "node:test";
+import { resolve } from "node:path";
 import { authPath, companyWorkspace, dataDir, isDataWritable, opencodeDir, root, systemWorkspace } from "./paths.mjs";
 
 test("default data paths stay under the repo .roster-flow dir", () => {
@@ -8,7 +9,14 @@ test("default data paths stay under the repo .roster-flow dir", () => {
   assert.ok(authPath.startsWith(dataDir));
   assert.ok(companyWorkspace.startsWith(dataDir) || Boolean(process.env.ROSTER_WORKSPACE));
   assert.ok(systemWorkspace.startsWith(dataDir));
-  assert.ok(opencodeDir.startsWith(root));
+  if (process.env.ROSTER_OPENCODE_DIR) assert.notEqual(resolve(opencodeDir), resolve(root, ".opencode"));
+  else assert.ok(opencodeDir.startsWith(root));
+});
+
+test("ROSTER_OPENCODE_DIR points OpenCode writes away from the tracked tree", () => {
+  if (!process.env.ROSTER_OPENCODE_DIR) return;
+  assert.equal(resolve(opencodeDir), resolve(process.env.ROSTER_OPENCODE_DIR));
+  assert.notEqual(resolve(opencodeDir), resolve(root, ".opencode"));
 });
 
 test("data dir reports writable when the process can write it", () => {
