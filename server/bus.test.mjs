@@ -11,6 +11,7 @@ import {
   delegationLines,
   deps,
   IMPLICIT_ROOM_TOOLS_OFF,
+  DROPPED_REASONING,
   isPass,
   meterChildren,
   meterTurn,
@@ -865,6 +866,90 @@ test("team-mode wakes are told to reply PASS when they have nothing to add", () 
   const lines = roomReplyLines({ channel: "ship", kind: "implicit", teamMode: true });
   assert.ok(lines.some((l) => l.includes("otherwise reply with exactly PASS")));
   assert.ok(isPass("PASS") && isPass(" pass. ") && !isPass("PASS: I disagree"));
+});
+
+test("an implicit turn with only reasoning_content posts nothing and records the drop", async () => {
+  const prev = { ...deps };
+  const channel = `reason-only-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.createSession = async () => ({ id: "ses_reason" });
+  deps.promptSession = async () => undefined;
+  deps.sessionMessages = async () => [
+    {
+      id: "reason-1",
+      info: { role: "assistant", time: { created: Date.now() + 60_000 } },
+      parts: [{ type: "reasoning_content", text: "The room might be empty. I should keep looking." }],
+    },
+  ];
+  deps.watchProviderTurn = () =>
+    Object.assign(Promise.resolve({ reached: true, done: true, empty: true, text: "" }), { cancel() {} });
+  try {
+    const woke = await wakeSeat("channel", "Anyone here?", { from: "you", kind: "implicit", channel, announce: false });
+    assert.equal(getState().messages.filter((m) => m.channel === channel).length, 0);
+    const run = (getState().runs || []).find((item) => item.id === woke.runId);
+    assert.equal(run.status, "done");
+    assert.equal(run.reason, DROPPED_REASONING);
+    assert.equal(woke.started, true);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("an implicit turn with only think tags posts nothing and records the drop", async () => {
+  const prev = { ...deps };
+  const channel = `think-only-wake-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.createSession = async () => ({ id: "ses_think" });
+  deps.promptSession = async () => undefined;
+  deps.sessionMessages = async () => [];
+  deps.watchProviderTurn = () =>
+    Object.assign(Promise.resolve({ reached: true, done: true, text: "<think>still deciding who is here</think>", messageId: "think-1" }), {
+      cancel() {},
+    });
+  try {
+    const woke = await wakeSeat("channel", "Anyone here?", { from: "you", kind: "implicit", channel, announce: false });
+    assert.equal(getState().messages.filter((m) => m.channel === channel).length, 0);
+    const run = (getState().runs || []).find((item) => item.id === woke.runId);
+    assert.equal(run.status, "done");
+    assert.equal(run.reason, DROPPED_REASONING);
+    assert.equal(woke.started, true);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("an implicit turn with think tags plus a sentence posts that sentence once", async () => {
+  const prev = { ...deps };
+  const channel = `think-mix-${Date.now()}`;
+  const messageId = `mix-${Date.now()}`;
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.loadedModels = async () => null;
+  deps.createSession = async () => ({ id: "ses_mix" });
+  deps.promptSession = async () => undefined;
+  deps.sessionMessages = async () => [
+    {
+      id: messageId,
+      info: { role: "assistant", time: { created: Date.now() + 60_000 } },
+      parts: [{ type: "text", text: "<think>who is in the room</think>\nHi, I'm here." }],
+    },
+  ];
+  deps.watchProviderTurn = () =>
+    Object.assign(
+      Promise.resolve({ reached: true, done: true, text: "<think>who is in the room</think>\nHi, I'm here.", messageId }),
+      { cancel() {} },
+    );
+  try {
+    const woke = await wakeSeat("channel", "hello?", { from: "you", kind: "implicit", channel, announce: false });
+    const posted = getState().messages.filter((m) => m.channel === channel && !m.system);
+    assert.deepEqual(posted.map((m) => m.text), ["Hi, I'm here."]);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].runId, woke.runId);
+    assert.equal((getState().runs || []).find((item) => item.id === woke.runId)?.reason, null);
+  } finally {
+    Object.assign(deps, prev);
+  }
 });
 
 test("a PASS reply finishes the run without posting in the room", async () => {

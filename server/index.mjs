@@ -256,9 +256,16 @@ try {
   process.exit(1);
 }
 try {
-  const provider = await seedProviderFromEnv();
+  const provider = await seedProviderFromEnv(process.env, getState(), { backgroundCatalog: true });
   if (provider.seeded) console.log(`Provider ${provider.provider.id} seeded from env.`);
   else if (provider.reason) console.log(`Provider seed skipped: ${provider.reason}`);
+  if (provider.pending) {
+    provider.pending
+      .then((result) => {
+        if (result?.pruned) console.log("Featherless catalog prune finished.");
+      })
+      .catch((err) => console.error(`Featherless catalog prune failed: ${err.message}`));
+  }
 } catch (err) {
   console.error(`Provider seed from env failed: ${err.message}`);
 }

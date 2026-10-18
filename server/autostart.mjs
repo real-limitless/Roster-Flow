@@ -139,12 +139,40 @@ export function withPersistedModels(spec, persisted = []) {
  * When the Featherless catalog is readable, stored ids it does not offer are pruned.
  * When it is not, stored and in-use ids stay.
  */
+function commitProviderSeed(env, state, offered) {
+  const spec = providerFromEnv(env);
+  const current = state ?? getState();
+  const persisted = pruneUnlistedModels(configuredProviderModels(spec.id), offered);
+  const merged = withSeatModels(withPersistedModels(spec, persisted), current, offered);
+  const provider = upsertProvider(merged, current, offered);
+  return { seeded: true, provider };
+}
+
+/** Fetch the catalog after boot has already served the permissive model list. */
+function pruneFeatherlessWhenCatalogArrives(env, opts = {}) {
+  const spec = providerFromEnv(env);
+  return featherlessOfferedModelIds({
+    fetchImpl: opts.fetchImpl,
+    baseURL: spec?.baseURL || "https://api.featherless.ai/v1",
+    apiKey: String(env.FEATHERLESS_API_KEY || ""),
+    log: opts.log,
+  }).then((offered) => {
+    if (!offered) return { pruned: false };
+    return { pruned: true, ...commitProviderSeed(env, getState(), offered) };
+  });
+}
+
 export async function seedProviderFromEnv(env = process.env, state, opts = {}) {
   const id = String(env.ROSTER_PROVIDER_ID || "").trim();
   if (!id) return { seeded: false };
   const spec = providerFromEnv(env);
   if (!spec) return { seeded: false, reason: "ROSTER_PROVIDER_MODELS is required to seed a provider" };
   const current = state ?? getState();
+  const deferCatalog = opts.backgroundCatalog === true && !("offered" in opts) && canonicalProviderId(spec.id) === "featherless";
+  if (deferCatalog) {
+    const seeded = commitProviderSeed(env, current, null);
+    return { ...seeded, catalog: "pending", pending: pruneFeatherlessWhenCatalogArrives(env, opts) };
+  }
   let offered;
   if ("offered" in opts) offered = opts.offered;
   else if (canonicalProviderId(spec.id) === "featherless") {
@@ -155,10 +183,7 @@ export async function seedProviderFromEnv(env = process.env, state, opts = {}) {
       log: opts.log,
     });
   }
-  const persisted = pruneUnlistedModels(configuredProviderModels(spec.id), offered);
-  const merged = withSeatModels(withPersistedModels(spec, persisted), current, offered);
-  const provider = upsertProvider(merged, current, offered);
-  return { seeded: true, provider };
+  return commitProviderSeed(env, current, offered);
 }
 
 export async function autostartHarness({ ensureFn = ensure, state = getState(), env = process.env } = {}) {

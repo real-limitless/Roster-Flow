@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { bootCore } from "./test-helpers.mjs";
 import { envHasProvider, providerFromEnv, seedProviderFromEnv, shouldAutostartHarness, withPersistedModels, withSeatModels } from "./autostart.mjs";
+import { resetFeatherlessCatalogCache } from "./featherless-catalog.mjs";
 
 const TOKEN = "rf_autostarttoken00000001";
 
@@ -146,6 +147,68 @@ test("seedProviderFromEnv prunes unlisted featherless ids only when the catalog 
     assert.ok(!ids.includes("not-offered-model"));
   } finally {
     writeFileSync(path, raw);
+  }
+});
+
+test("seedProviderFromEnv keeps serving while the Featherless catalog is still in flight", async () => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { opencodeDir } = await import("./paths.mjs");
+  const path = join(opencodeDir, "opencode.json");
+  const raw = readFileSync(path, "utf8");
+  const cfg = JSON.parse(raw);
+  const featherless = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "Featherless",
+    options: { baseURL: "https://api.featherless.ai/v1" },
+    models: {
+      "deepseek-ai/DeepSeek-V4.1-Flash": { name: "V4.1", limit: { context: 262144, output: 8192 } },
+      "bogus-87": { name: "Bogus", limit: { context: 128000, output: 8192 } },
+    },
+  };
+  cfg.provider = cfg.provider || {};
+  cfg.provider.featherless = featherless;
+  if (cfg.providers && typeof cfg.providers === "object") cfg.providers.featherless = structuredClone(featherless);
+  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const env = {
+    ROSTER_PROVIDER_ID: "featherless",
+    ROSTER_PROVIDER_MODELS: "demo-small",
+    ROSTER_PROVIDER_BASE_URL: "https://api.featherless.ai/v1",
+  };
+  resetFeatherlessCatalogCache();
+  let seeded = null;
+  try {
+    seeded = seedProviderFromEnv(env, { seats: [], teams: [] }, {
+      backgroundCatalog: true,
+      fetchImpl: () => gate,
+    });
+    const raced = await Promise.race([
+      seeded.then((result) => ({ ready: true, result })),
+      new Promise((resolve) => setTimeout(() => resolve({ ready: false }), 50)),
+    ]);
+    assert.equal(raced.ready, true);
+    assert.ok(raced.result.provider.models.some((m) => m.id === "bogus-87"));
+    assert.equal(raced.result.catalog, "pending");
+    release({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: "deepseek-ai/DeepSeek-V4.1-Flash" }] }),
+    });
+    const pruned = await raced.result.pending;
+    assert.equal(pruned.pruned, true);
+    const ids = pruned.provider.models.map((m) => m.id);
+    assert.ok(ids.includes("demo-small"));
+    assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+    assert.ok(!ids.includes("bogus-87"));
+  } finally {
+    release?.({ ok: false, status: 500, json: async () => ({}) });
+    if (seeded) await seeded.then((result) => result.pending).catch(() => undefined);
+    writeFileSync(path, raw);
+    resetFeatherlessCatalogCache();
   }
 });
 

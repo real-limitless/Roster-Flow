@@ -8,8 +8,10 @@ import {
   wakeSeat,
   pullAssistant,
   pullFailure,
+  recordDroppedReasoning,
   selectImplicitReply,
   suppressedRoomReason,
+  visibleRoomText,
 } from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
 import { effectiveRespond, resolveMembers, responderCandidates, roomBudget, roomLimits } from "./channels.mjs";
@@ -1028,18 +1030,38 @@ function runById(runId) {
   return (getState().runs || []).find((r) => r.id === runId) || null;
 }
 
+function reasoningPart(part) {
+  return /reason|think|thought/i.test(String(part?.type || ""));
+}
+
 export function mirrorTranscript(channelId, seatId, parts) {
   const seat = getState().seats.find((s) => s.id === seatId);
   const posted = [];
+  let droppedReasoning = false;
   for (const p of parts || []) {
-    if (!p?.id || !p.text) continue;
+    if (!p?.id) continue;
     if (looksLikeWakePrompt(p.text)) continue;
-    if (p.role !== "user" && isPass(p.text)) continue;
-    if (alreadyMirrored(channelId, seatId, p)) continue;
-    if (p.role === "user" && getState().messages.some((m) => m.text === p.text && m.channel === channelId)) continue;
-    const role = p.role === "user" ? "human" : "bot";
+    const bot = p.role !== "user";
+    let text = String(p.text || "");
+    if (bot) {
+      if (reasoningPart(p)) {
+        droppedReasoning = true;
+        continue;
+      }
+      const visible = visibleRoomText(text);
+      if (!visible) {
+        if (/<think/i.test(text) || suppressedRoomReason(text) === "reasoning") droppedReasoning = true;
+        continue;
+      }
+      text = visible;
+      if (isPass(text)) continue;
+    } else if (!text.trim()) continue;
+    const part = { ...p, text };
+    if (alreadyMirrored(channelId, seatId, part)) continue;
+    if (!bot && getState().messages.some((m) => m.text === text && m.channel === channelId)) continue;
+    const role = bot ? "bot" : "human";
     const who = role === "human" ? "You" : seat?.name || seatId;
-    const msg = postMessage(channelId, who, role, p.text, {
+    const msg = postMessage(channelId, who, role, text, {
       seatId: role === "human" ? "you" : seatId,
       mirrored: true,
       sessionId: p.id,
@@ -1048,6 +1070,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
     posted.push(msg);
     if (role === "bot") routeOnce(channelId, seatId, msg);
   }
+  if (droppedReasoning && !posted.length) recordDroppedReasoning(seatId, channelId);
   if (posted.length) {
     emit({
       scope: "harness",
