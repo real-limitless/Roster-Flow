@@ -139,7 +139,7 @@ export function providerModelIdsInUse(providerId, state) {
 function modelBlock(id, name, output, context) {
   return {
     name: String(name || id),
-    limit: { context: contextTokenLimit(context), output: outputTokenLimit(output) },
+    limit: { context: contextTokenLimit(context, id), output: outputTokenLimit(output) },
   };
 }
 

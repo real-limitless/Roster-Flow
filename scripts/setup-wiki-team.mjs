@@ -39,7 +39,7 @@ function listedModel(id, name, output, context) {
   return {
     id,
     name: name || id,
-    limit: { context: contextTokenLimit(context), output: outputTokenLimit(output) },
+    limit: { context: contextTokenLimit(context, id), output: outputTokenLimit(output) },
   };
 }
 
