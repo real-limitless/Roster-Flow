@@ -112,6 +112,15 @@ export function withSeatModels(spec, state, offered) {
   return { ...spec, models };
 }
 
+/**
+ * Drop stored Featherless ids the upstream catalog does not offer.
+ * A null catalog means the read failed: keep every stored id.
+ */
+export function pruneUnlistedModels(models, offered) {
+  if (!offered) return models || [];
+  return (models || []).filter((m) => offered.has(String(m?.id || "").trim()));
+}
+
 /** Env and in-use models plus every model already stored for this provider. */
 export function withPersistedModels(spec, persisted = []) {
   const models = [...(spec?.models || [])];
@@ -127,8 +136,8 @@ export function withPersistedModels(spec, persisted = []) {
 
 /**
  * Idempotent. No-op when ROSTER_PROVIDER_ID is unset. Does not throw on a missing model list.
- * Persisted catalog models stay. In-use Featherless ids are added only when the upstream
- * catalog offers them, or when that catalog cannot be read.
+ * When the Featherless catalog is readable, stored ids it does not offer are pruned.
+ * When it is not, stored and in-use ids stay.
  */
 export async function seedProviderFromEnv(env = process.env, state, opts = {}) {
   const id = String(env.ROSTER_PROVIDER_ID || "").trim();
@@ -146,7 +155,8 @@ export async function seedProviderFromEnv(env = process.env, state, opts = {}) {
       log: opts.log,
     });
   }
-  const merged = withSeatModels(withPersistedModels(spec, configuredProviderModels(spec.id)), current, offered);
+  const persisted = pruneUnlistedModels(configuredProviderModels(spec.id), offered);
+  const merged = withSeatModels(withPersistedModels(spec, persisted), current, offered);
   const provider = upsertProvider(merged, current, offered);
   return { seeded: true, provider };
 }

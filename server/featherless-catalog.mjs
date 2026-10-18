@@ -1,12 +1,34 @@
 /**
- * Featherless GET /v1/models, cached briefly.
- * A failed read returns null so callers keep the current in-use set.
- * This module stays dependency-free so the roster-setup image can copy it.
+ * Featherless GET /v1/models.
+ * A failed read returns null so callers keep stored and in-use ids.
+ * This module stays free of other server imports so the roster-setup image can copy it.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const TTL_MS = 60_000;
-const TIMEOUT_MS = 1500;
+function rosterVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8"));
+    if (pkg.version) return String(pkg.version);
+  } catch {
+    /* setup image may not include package.json */
+  }
+  return "0.1.0";
+}
+
+/** Featherless rejects Node's default undici User-Agent with 404 Gone. */
+export const ROSTER_USER_AGENT = `roster-flow/${rosterVersion()}`;
+/** The catalog payload is several megabytes; keep a successful read for at least an hour. */
+export const CATALOG_TTL_MS = 60 * 60 * 1000;
+export const CATALOG_TIMEOUT_MS = 20_000;
 const moduleCache = { at: 0, baseURL: "", ids: null };
+
+export function resetFeatherlessCatalogCache() {
+  moduleCache.at = 0;
+  moduleCache.baseURL = "";
+  moduleCache.ids = null;
+}
 
 export function inUseModelAllowed(providerId, modelId, offered) {
   if (String(providerId || "").trim().toLowerCase() !== "featherless") return true;
@@ -24,14 +46,14 @@ export async function featherlessOfferedModelIds({
   apiKey = "",
   now = Date.now(),
   log = console.warn,
-  ttl = TTL_MS,
-  timeoutMs = TIMEOUT_MS,
+  ttl = CATALOG_TTL_MS,
+  timeoutMs = CATALOG_TIMEOUT_MS,
   cacheStore,
 } = {}) {
   const cache = cacheStore || moduleCache;
   const base = String(baseURL || "https://api.featherless.ai/v1").replace(/\/+$/, "");
   if (cache.ids && cache.baseURL === base && now - cache.at < ttl) return cache.ids;
-  const headers = { accept: "application/json" };
+  const headers = { accept: "application/json", "user-agent": ROSTER_USER_AGENT };
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
   try {
     const res = await fetchImpl(`${base}/models`, {
@@ -48,7 +70,7 @@ export async function featherlessOfferedModelIds({
     cache.baseURL = base;
     return ids;
   } catch (err) {
-    log(`featherless model catalog unreachable; keeping in-use models: ${err?.message || err}`);
+    log(`featherless model catalog unreachable; keeping stored and in-use models: ${err?.message || err}`);
     return null;
   }
 }

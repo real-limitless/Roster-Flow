@@ -84,6 +84,7 @@ test("setup-wiki-team keeps featherless models used by seats outside the wiki", 
         models: [
           { id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen" },
           { id: "kept-extra", name: "Kept extra" },
+          { id: "bogus-87", name: "Bogus" },
         ],
       },
     ],
@@ -121,6 +122,7 @@ test("setup-wiki-team keeps featherless models used by seats outside the wiki", 
     "team-allowed",
     "deepseek-ai/DeepSeek-V4.1-Flash",
     "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "bogus-87",
   ]) {
     assert.ok(ids.includes(id), id);
   }
@@ -142,6 +144,32 @@ test("setup-wiki-team omits an in-use featherless id the upstream catalog does n
   assert.ok(!ids.includes("meta-llama/Llama-3.3-70B-Instruct"));
   assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
   assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+});
+
+test("setup-wiki-team prunes stored featherless ids the catalog does not offer", async () => {
+  const { calls, fetchImpl } = fakeCore({
+    providers: [
+      {
+        id: "featherless",
+        models: [
+          { id: "bogus-87", name: "Bogus" },
+          { id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen" },
+        ],
+      },
+    ],
+    seats: [{ id: "llama-seat", model: "featherless/meta-llama/Llama-3.3-70B-Instruct" }],
+  });
+  await setupWikiTeam({
+    env: { ROSTER_API_TOKEN: "rf_test" },
+    fetchImpl,
+    catalogFetch: async () => new Set(["deepseek-ai/DeepSeek-V4.1-Flash", "Qwen/Qwen2.5-Coder-32B-Instruct"]),
+    log() {},
+  });
+  const ids = calls.find((c) => c.method === "PUT").body.models.map((m) => m.id);
+  assert.ok(!ids.includes("bogus-87"));
+  assert.ok(!ids.includes("meta-llama/Llama-3.3-70B-Instruct"));
+  assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+  assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
 });
 
 test("setup-wiki-team is idempotent: on 409 it only hires missing specialists", async () => {

@@ -291,6 +291,61 @@ test("followChannel posts a provider 401 instead of waiting for a reply that nev
   }
 });
 
+test("an implicit room follow posts one clean sentence and records reasoning and max-steps", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  const channel = `implicit-${Date.now()}`;
+  const now = Date.now();
+  mutate((s) => {
+    s.runs = [...(s.runs || []), { id: "run-implicit", seatId: "channel", kind: "implicit", status: "running", at: new Date().toISOString() }];
+  });
+  deps.pullAssistant = async () => [
+    { id: "reason", text: "<think>who is in this room</think>", created: now },
+    { id: "answer", text: "Hi, I'm Channel. Maya and Jules are here.", created: now },
+    { id: "steps", text: "Maximum steps reached", created: now },
+  ];
+  deps.pullFailure = async () => ({ id: "fail", code: "MAX_STEPS", text: "Maximum steps reached" });
+  deps.knownLoadedModels = () => null;
+  deps.followDelayMs = 0;
+  try {
+    const replies = await followChannel(channel, ["channel"], 3, { since: now - 1, runs: { channel: "run-implicit" } });
+    assert.equal(replies, 1);
+    const added = getState().messages.filter((m) => m.channel === channel);
+    assert.equal(added.length, 1);
+    assert.equal(added[0].system, undefined);
+    assert.equal(added[0].text, "Hi, I'm Channel. Maya and Jules are here.");
+    assert.equal(added.filter((m) => !m.system).length, 1);
+    const dropped = listTrace({ scope: "chat" }).filter((e) => e.step === "seat.unposted");
+    assert.ok(dropped.some((e) => e.detail.reason === "reasoning"));
+    assert.ok(dropped.some((e) => e.detail.reason === "max-steps"));
+    assert.ok(!added.some((m) => /Maximum steps|Monitoring|<think/i.test(m.text)));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("an implicit room follow posts nothing when only reasoning comes back", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  const channel = `implicit-empty-${Date.now()}`;
+  const now = Date.now();
+  mutate((s) => {
+    s.runs = [...(s.runs || []), { id: "run-empty", seatId: "channel", kind: "implicit", status: "running", at: new Date().toISOString() }];
+  });
+  deps.pullAssistant = async () => [{ id: "reason", text: "<thinking>still looking</thinking>", created: now }];
+  deps.pullFailure = async () => ({ id: "fail", code: "MAX_STEPS", text: "Maximum steps reached" });
+  deps.knownLoadedModels = () => null;
+  deps.followDelayMs = 0;
+  try {
+    const replies = await followChannel(channel, ["channel"], 2, { since: now - 1, runs: { channel: "run-empty" } });
+    assert.equal(replies, 0);
+    assert.equal(getState().messages.filter((m) => m.channel === channel).length, 0);
+    assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.unposted"));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
 test("mirrorTranscript skips wake prompts and does not duplicate", () => {
   const channel = `test-mirror-${Date.now()}`;
   const a1 = `a1-${Date.now()}`;

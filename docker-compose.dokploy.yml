@@ -86,6 +86,7 @@ services:
         COPY scripts/setup-wiki-team.mjs scripts/setup-wiki-team.mjs
         COPY server/model-defaults.mjs server/model-defaults.mjs
         COPY server/featherless-catalog.mjs server/featherless-catalog.mjs
+        COPY package.json package.json
     command:
       - sh
       - -c

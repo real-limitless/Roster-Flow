@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { featherlessOfferedModelIds, inUseModelAllowed } from "./featherless-catalog.mjs";
+import {
+  CATALOG_TIMEOUT_MS,
+  CATALOG_TTL_MS,
+  featherlessOfferedModelIds,
+  inUseModelAllowed,
+  resetFeatherlessCatalogCache,
+  ROSTER_USER_AGENT,
+} from "./featherless-catalog.mjs";
 
 test("inUseModelAllowed filters only featherless ids against a live catalog", () => {
   const offered = new Set(["deepseek-ai/DeepSeek-V4.1-Flash"]);
@@ -23,6 +30,8 @@ test("featherlessOfferedModelIds caches a successful catalog and warns when it c
   assert.equal(first.has("deepseek-ai/DeepSeek-V4.1-Flash"), true);
   assert.equal(second, first);
   await featherlessOfferedModelIds({ fetchImpl, cacheStore: cache, now: 1_000 + 70_000 });
+  assert.equal(calls, 1);
+  await featherlessOfferedModelIds({ fetchImpl, cacheStore: cache, now: 1_000 + CATALOG_TTL_MS });
   assert.equal(calls, 2);
 
   const warnings = [];
@@ -43,4 +52,32 @@ test("featherlessOfferedModelIds caches a successful catalog and warns when it c
   });
   assert.equal(malformed, null);
   assert.match(warnings.at(-1), /missing data/);
+});
+
+test("featherless catalog requests send roster-flow User-Agent and share a cache for at least an hour", async () => {
+  assert.match(ROSTER_USER_AGENT, /^roster-flow\/\d+\.\d+\.\d+$/);
+  assert.ok(CATALOG_TIMEOUT_MS >= 10_000);
+  assert.ok(CATALOG_TTL_MS >= 60 * 60 * 1000);
+  let headers;
+  const fetchImpl = async (_url, init) => {
+    headers = init.headers;
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: "deepseek-ai/DeepSeek-V4.1-Flash" }] }) };
+  };
+  await featherlessOfferedModelIds({ fetchImpl, cacheStore: {}, now: 5_000 });
+  assert.equal(headers["user-agent"], ROSTER_USER_AGENT);
+  assert.equal(headers.accept, "application/json");
+
+  resetFeatherlessCatalogCache();
+  let calls = 0;
+  const shared = async () => {
+    calls += 1;
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: "shared" }] }) };
+  };
+  const first = await featherlessOfferedModelIds({ fetchImpl: shared, now: 0 });
+  const second = await featherlessOfferedModelIds({ fetchImpl: shared, now: 30 * 60 * 1000 });
+  assert.equal(calls, 1);
+  assert.equal(second, first);
+  await featherlessOfferedModelIds({ fetchImpl: shared, now: CATALOG_TTL_MS + 1 });
+  assert.equal(calls, 2);
+  resetFeatherlessCatalogCache();
 });

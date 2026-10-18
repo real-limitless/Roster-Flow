@@ -829,6 +829,12 @@ function withMessageId(state, verdict) {
   return messageId ? { ...verdict, messageId } : verdict;
 }
 
+/** Reasoning and step markers are not the reply a room should post. */
+function visibleProviderPart(part) {
+  const type = String(part?.type || "");
+  return !type || type === "text" || type === "output_text";
+}
+
 export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() }) {
   const props = ev?.properties || {};
   if (!props.sessionID || props.sessionID !== sessionId) return null;
@@ -871,7 +877,7 @@ export function providerTurnVerdict(ev, sessionId, state = { userIds: new Set() 
   if (ev?.type === "message.part.updated") {
     const part = props.part || {};
     if (part.messageID && (state.userIds?.has(part.messageID) || state.oldIds?.has(part.messageID))) return null;
-    if (part.messageID && part.text && part.type !== "step-start" && part.type !== "step-finish") {
+    if (part.messageID && part.text && visibleProviderPart(part)) {
       state.parts = state.parts || new Map();
       const prev = state.parts.get(part.messageID) || "";
       const next = String(part.text);

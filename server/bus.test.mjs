@@ -7,7 +7,23 @@ import { syncSeatAgent } from "./agents.mjs";
 import { readOpenCodeConfig } from "./providers.mjs";
 import { providerTurnVerdict } from "./harness.mjs";
 import { blockLatestRun, roomForApiCall, SHIP_FALLBACK_NOTE, waitForIdleServe } from "./bus.mjs";
-import { delegationLines, deps, isPass, meterChildren, meterTurn, pendingWake, postBus, promptBody, roomReplyLines, taskTitle, wakeSeat } from "./bus.mjs";
+import {
+  delegationLines,
+  deps,
+  IMPLICIT_ROOM_TOOLS_OFF,
+  isPass,
+  meterChildren,
+  meterTurn,
+  pendingWake,
+  postBus,
+  promptBody,
+  roomReplyLines,
+  selectImplicitReply,
+  suppressedRoomReason,
+  taskTitle,
+  visibleRoomText,
+  wakeSeat,
+} from "./bus.mjs";
 import { meterWake } from "./budget.mjs";
 import { bootCore } from "./test-helpers.mjs";
 import { liveRoomSession } from "./room-sessions.mjs";
@@ -28,29 +44,76 @@ test("promptBody tells the seat which job to finish", () => {
 
 test("promptBody asks an un-mentioned responder for a plain-text reply in that room", () => {
   const seat = { name: "Channel", role: "Conductor", job: "Conduct", tools: ["bus"], deny: [] };
-  const text = promptBody(seat, "channel", "Anyone here", { from: "you", kind: "implicit", channel: "general" }, null).parts[0].text;
+  const room = {
+    channels: [{ id: "general", leadSeatId: "channel", seatIds: ["channel", "you", "maya", "jules", "priya"] }],
+    seats: [
+      { id: "channel", name: "Channel", role: "Conductor" },
+      { id: "you", name: "You", role: "Board" },
+      { id: "maya", name: "Maya", role: "VP Eng" },
+      { id: "jules", name: "Jules", role: "Eng lead" },
+      { id: "priya", name: "Priya", role: "QA lead" },
+    ],
+  };
+  const body = promptBody(seat, "channel", "Anyone here", { from: "you", kind: "implicit", channel: "general", state: room }, null);
+  const text = body.parts[0].text;
   assert.match(text, /A human wrote in #general without mentioning anyone/);
-  assert.match(text, /greet briefly, name the lead or the team seats who are here, and offer to route/);
-  assert.match(text, /Never output monitoring or status boilerplate/);
+  assert.match(text, /Lead: @channel \(Channel, Conductor\)\. Members: @channel \(Channel, Conductor\), @you \(You, Board\), @maya \(Maya, VP Eng\), @jules \(Jules, Eng lead\), @priya \(Priya, QA lead\)\./);
+  assert.match(text, /Reply in plain text, briefly, as yourself\. One or two sentences only\. Do not use tools\./);
+  assert.match(text, /Answer in one or two sentences of plain text\. Do not call tools\./);
   assert.match(text, /Roster-flow posts your text to #general/);
   assert.match(text, /Do not use roster_report for this reply/);
   assert.doesNotMatch(text, /No active responses needed/);
   assert.doesNotMatch(text, /Monitoring #general/);
   assert.doesNotMatch(text, /Use roster_send_message \/ roster_handoff \/ roster_report to talk/);
+  assert.equal(body.tools.bash, false);
+  assert.equal(body.tools.read, false);
+  assert.equal(body.tools.roster_list_seats, false);
+  assert.equal(body.tools.roster_send_message, false);
+  assert.deepEqual(body.tools, IMPLICIT_ROOM_TOOLS_OFF);
   const seeded = promptBody(
     seedSeats.find((s) => s.id === "channel"),
     "channel",
     "Anyone here",
-    { from: "you", kind: "implicit", channel: "general" },
+    { from: "you", kind: "implicit", channel: "general", state: room },
     null,
   ).parts[0].text;
   assert.ok(seeded.includes(CHANNEL_ROOM_REPLY));
   assert.match(seeded, /greet briefly, name the lead or the team seats who are here, and offer to route/);
   assert.match(seeded, /Never output monitoring or status boilerplate/);
-  const mentioned = promptBody(seat, "channel", "@channel hi", { from: "you", kind: "mention-seat", channel: "ship" }, null).parts[0].text;
-  assert.match(mentioned, /Reply in plain text\. Roster-flow posts your text to #ship\./);
+  assert.match(seeded, /Reply in plain text, briefly, as yourself/);
+  const mentionedBody = promptBody(seat, "channel", "@channel hi", { from: "you", kind: "mention-seat", channel: "ship" }, null);
+  assert.match(mentionedBody.parts[0].text, /Reply in plain text\. Roster-flow posts your text to #ship\./);
+  assert.equal(mentionedBody.tools, undefined);
+  const team = promptBody(seat, "channel", "Anyone here", { from: "you", kind: "implicit", channel: "general", teamMode: true }, null);
+  assert.equal(team.tools, undefined);
+  assert.match(team.parts[0].text, /exactly PASS/);
   const mail = promptBody(seat, "channel", "hi", { from: "build", kind: "send_message" }, null).parts[0].text;
   assert.doesNotMatch(mail, /Reply in plain text/);
+});
+
+test("visible room text drops reasoning and max-steps, and an implicit turn posts one sentence", () => {
+  assert.equal(visibleRoomText("<think>who is in the room</think>\nHi, I'm here."), "Hi, I'm here.");
+  assert.equal(visibleRoomText("<thinking>chain</thinking>"), "");
+  assert.equal(visibleRoomText("Maximum steps reached"), "");
+  assert.equal(suppressedRoomReason("Maximum steps reached"), "max-steps");
+  assert.equal(suppressedRoomReason("<thinking>only</thinking>"), "reasoning");
+  assert.equal(suppressedRoomReason(""), "empty");
+  assert.equal(suppressedRoomReason("Hi."), "");
+  const picked = selectImplicitReply([
+    { id: "reason", text: "<think>looking up seats</think>" },
+    { id: "answer", text: "Hi. Maya and Jules are here if you need them." },
+    { id: "again", text: "Here is a second reply that must not post." },
+    { id: "steps", text: "Maximum steps reached" },
+  ]);
+  assert.equal(picked.post.id, "answer");
+  assert.equal(picked.post.text, "Hi. Maya and Jules are here if you need them.");
+  assert.deepEqual(
+    picked.dropped.map((d) => d.reason),
+    ["reasoning", "extra", "max-steps"],
+  );
+  const onlyReason = selectImplicitReply([{ id: "reason", text: "Maximum steps reached" }]);
+  assert.equal(onlyReason.post, null);
+  assert.equal(onlyReason.dropped[0].reason, "max-steps");
 });
 
 test("a seat with no model prompts the loaded fallback and writes it onto the agent", async () => {
@@ -150,6 +213,31 @@ test("providerTurnVerdict waits for a completed assistant turn and blockLatestRu
   assert.equal(done.reached, true);
   assert.equal(done.done, true);
   assert.equal(done.text, "stub-reply-ok");
+  const reasonState = { userIds: new Set(), assistantIds: new Set() };
+  providerTurnVerdict(
+    { type: "message.updated", properties: { sessionID: "s-reason", info: { id: "ar", role: "assistant", time: { created: 1 } } } },
+    "s-reason",
+    reasonState,
+  );
+  const leaked = providerTurnVerdict(
+    {
+      type: "message.part.updated",
+      properties: { sessionID: "s-reason", part: { type: "reasoning", text: "I should list every seat with a tool.", messageID: "ar" } },
+    },
+    "s-reason",
+    reasonState,
+  );
+  assert.equal(leaked, null);
+  assert.equal(reasonState.text, undefined);
+  const answer = providerTurnVerdict(
+    {
+      type: "message.part.updated",
+      properties: { sessionID: "s-reason", part: { type: "text", text: "Hi, I'm here.", messageID: "ar" } },
+    },
+    "s-reason",
+    reasonState,
+  );
+  assert.equal(answer.text, "Hi, I'm here.");
   const failed = providerTurnVerdict(
     {
       type: "message.updated",

@@ -87,15 +87,14 @@ test("withSeatModels skips an in-use featherless id the catalog does not offer",
   assert.ok(fallback.models.some((m) => m.id === "not-offered"));
 });
 
-test("seedProviderFromEnv keeps persisted catalog models across a short env seed", async () => {
+test("seedProviderFromEnv prunes unlisted featherless ids only when the catalog is readable", async () => {
   const { readFileSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { opencodeDir } = await import("./paths.mjs");
   const path = join(opencodeDir, "opencode.json");
   const raw = readFileSync(path, "utf8");
   const cfg = JSON.parse(raw);
-  cfg.provider = cfg.provider || {};
-  cfg.provider.featherless = {
+  const featherless = {
     npm: "@ai-sdk/openai-compatible",
     name: "Featherless",
     options: { baseURL: "https://api.featherless.ai/v1" },
@@ -103,8 +102,13 @@ test("seedProviderFromEnv keeps persisted catalog models across a short env seed
       "deepseek-ai/DeepSeek-V3-0324": { name: "DeepSeek V3", limit: { context: 128000, output: 8192 } },
       "Qwen/Qwen2.5-Coder-32B-Instruct": { name: "Qwen Coder", limit: { context: 128000, output: 8192 } },
       "meta-llama/Meta-Llama-3.1-70B-Instruct": { name: "Llama 3.1 70B", limit: { context: 128000, output: 8192 } },
+      "bogus-87": { name: "Bogus", limit: { context: 128000, output: 8192 } },
     },
   };
+  cfg.provider = cfg.provider || {};
+  cfg.provider.featherless = featherless;
+  // Older files also keep a plural `providers` block, and readers prefer it.
+  if (cfg.providers && typeof cfg.providers === "object") cfg.providers.featherless = structuredClone(featherless);
   writeFileSync(path, JSON.stringify(cfg, null, 2));
   const env = {
     ROSTER_PROVIDER_ID: "featherless",
@@ -116,7 +120,18 @@ test("seedProviderFromEnv keeps persisted catalog models across a short env seed
     teams: [],
   };
   try {
-    const filtered = await seedProviderFromEnv(env, state, { offered: new Set(["deepseek-ai/DeepSeek-V4.1-Flash"]) });
+    const kept = await seedProviderFromEnv(env, state, { offered: null });
+    for (const id of ["bogus-87", "not-offered-model", "deepseek-ai/DeepSeek-V3-0324", "demo-small"]) {
+      assert.ok(kept.provider.models.some((m) => m.id === id), id);
+    }
+
+    const offered = new Set([
+      "deepseek-ai/DeepSeek-V3-0324",
+      "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "meta-llama/Meta-Llama-3.1-70B-Instruct",
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+    ]);
+    const filtered = await seedProviderFromEnv(env, state, { offered });
     const ids = filtered.provider.models.map((m) => m.id);
     for (const id of [
       "demo-small",
@@ -127,11 +142,8 @@ test("seedProviderFromEnv keeps persisted catalog models across a short env seed
     ]) {
       assert.ok(ids.includes(id), id);
     }
+    assert.ok(!ids.includes("bogus-87"));
     assert.ok(!ids.includes("not-offered-model"));
-
-    const kept = await seedProviderFromEnv(env, state, { offered: null });
-    assert.ok(kept.provider.models.some((m) => m.id === "not-offered-model"));
-    assert.ok(kept.provider.models.some((m) => m.id === "deepseek-ai/DeepSeek-V3-0324"));
   } finally {
     writeFileSync(path, raw);
   }

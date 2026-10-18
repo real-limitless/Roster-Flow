@@ -156,6 +156,18 @@ export function copySources(dockerfile) {
   return sources;
 }
 
+/** Repo-relative files a Dockerfile COPY lands, expanding a directory source such as `server/`. */
+export function copiedFiles(dockerfile, repoRoot = root) {
+  const files = [];
+  for (const source of copySources(dockerfile)) {
+    const src = source.replace(/^\.\//, "");
+    if (sourceIsDirectory(repoRoot, src)) {
+      for (const file of filesInDirectory(repoRoot, src)) files.push(file.source);
+    } else files.push(src);
+  }
+  return files;
+}
+
 function dedent(lines) {
   const indents = lines.filter((line) => line.trim()).map((line) => line.match(/^ */)[0].length);
   const min = indents.length ? Math.min(...indents) : 0;
@@ -214,10 +226,23 @@ test("the roster-setup image copies every module setup-wiki-team.mjs imports", (
   const images = setupImageFiles();
   assert.ok(images.length > 0, "no setup image copies setup-wiki-team.mjs");
   for (const image of images) {
-    const copied = new Set(copySources(image.dockerfile));
+    const copied = new Set(copiedFiles(image.dockerfile));
     const missing = needed.filter((file) => !copied.has(file));
     assert.deepEqual(missing, [], `${image.file} does not copy ${missing.join(", ")}`);
   }
+});
+
+test("COPY server/ server/ covers every module the setup script imports", () => {
+  const dockerfile = `
+    FROM node:22-alpine
+    WORKDIR /s
+    COPY scripts/setup-wiki-team.mjs scripts/setup-wiki-team.mjs
+    COPY server/ server/
+  `;
+  const copied = new Set(copiedFiles(dockerfile));
+  const missing = localImportGraph(entry).filter((file) => !copied.has(file));
+  assert.deepEqual(missing, []);
+  assert.equal(copySources(dockerfile).includes("server/model-defaults.mjs"), false);
 });
 
 test("a flattened COPY fails when the import resolves outside the image", () => {
