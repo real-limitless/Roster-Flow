@@ -18,7 +18,7 @@ import {
   seatModelPlan,
   deps,
 } from "./chat.mjs";
-import { DROPPED_REASONING, deps as busDeps, wakeSeat } from "./bus.mjs";
+import { DROPPED_REASONING, deps as busDeps, resetDroppedReasoning, wakeSeat } from "./bus.mjs";
 import { emit, listTrace, resetTrace } from "./trace.mjs";
 
 // A fresh data dir boots without a company until onboarding; these tests need the starter seats.
@@ -368,6 +368,56 @@ test("session sync drops a think-only transcript and records it on the run", asy
     const run = (getState().runs || []).find((item) => item.id === runId);
     assert.equal(run.status, "done");
     assert.equal(run.reason, DROPPED_REASONING);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("a think-only message drops its own run once and leaves a later slow run open", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  resetDroppedReasoning();
+  const thinkAt = Date.now() - 30_000;
+  const slowAt = thinkAt + 10_000;
+  const channel = `think-slow-${slowAt}`;
+  const thinkRun = `run-think-src-${slowAt}`;
+  const slowRun = `run-slow-${slowAt}`;
+  const messageId = `think-then-slow-${slowAt}`;
+  mutate((s) => {
+    s.runs = [
+      ...(s.runs || []),
+      { id: thinkRun, seatId: "channel", kind: "implicit", status: "running", at: new Date(thinkAt - 1_000).toISOString() },
+      { id: slowRun, seatId: "channel", kind: "implicit", status: "running", at: new Date(slowAt).toISOString() },
+    ];
+    s.roomSessions = {
+      ...(s.roomSessions || {}),
+      channel: { ...(s.roomSessions?.channel || {}), [channel]: { sessionId: "ses-think-slow" } },
+    };
+  });
+  let ticks = 0;
+  deps.pullAssistant = async (_seatId, opts) => {
+    if (opts?.sessionId !== "ses-think-slow") return [];
+    ticks += 1;
+    if (ticks > 1) await new Promise((resolve) => setTimeout(resolve, 40));
+    return [{ id: messageId, role: "assistant", text: "<think>still deciding who is here</think>", created: thinkAt }];
+  };
+  try {
+    await syncBoundSessions();
+    await syncBoundSessions();
+    await syncBoundSessions();
+    assert.equal(getState().messages.filter((m) => m.channel === channel).length, 0);
+    const think = (getState().runs || []).find((item) => item.id === thinkRun);
+    const slow = (getState().runs || []).find((item) => item.id === slowRun);
+    assert.equal(think.status, "done");
+    assert.equal(think.reason, DROPPED_REASONING);
+    assert.equal(slow.status, "running");
+    assert.equal(slow.reason ?? null, null);
+    const warnings = listTrace({ scope: "chat" }).filter(
+      (event) => event.step === "seat.unposted" && event.detail?.messageId === messageId,
+    );
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].detail.runId, thinkRun);
+    assert.equal(warnings[0].detail.reason, DROPPED_REASONING);
   } finally {
     Object.assign(deps, prev);
   }

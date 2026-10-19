@@ -186,14 +186,23 @@ export async function seedProviderFromEnv(env = process.env, state, opts = {}) {
   return commitProviderSeed(env, current, offered);
 }
 
-export async function autostartHarness({ ensureFn = ensure, state = getState(), env = process.env } = {}) {
+export async function autostartHarness({ ensureFn = ensure, state = getState(), env = process.env, fetchImpl, log } = {}) {
   // Seed before the auto check so a provider written on this boot counts.
+  // A hung Featherless catalog must not keep the harness offline: commit the
+  // permissive list now and prune when the catalog arrives.
+  let pending = null;
   try {
-    await seedProviderFromEnv(env, getState() || state);
+    const seeded = await seedProviderFromEnv(env, getState() || state, { backgroundCatalog: true, fetchImpl, log });
+    pending = seeded?.pending || null;
+    if (pending) {
+      pending.catch((err) => console.error(`Featherless catalog prune failed: ${err.message}`));
+    }
   } catch (err) {
     console.error(`Provider seed from env failed: ${err.message}`);
   }
-  if (!shouldAutostartHarness(getState() || state, env)) return { started: false, reason: "autostart off, no owner, or no provider" };
+  if (!shouldAutostartHarness(getState() || state, env)) {
+    return { started: false, reason: "autostart off, no owner, or no provider", pending };
+  }
   const results = {};
   for (const kind of ["company", "system"]) {
     try {
@@ -203,5 +212,5 @@ export async function autostartHarness({ ensureFn = ensure, state = getState(), 
       console.error(`harness autostart (${kind}): ${err.message}`);
     }
   }
-  return { started: true, results };
+  return { started: true, results, pending };
 }

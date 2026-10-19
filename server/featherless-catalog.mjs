@@ -22,6 +22,8 @@ export const ROSTER_USER_AGENT = `roster-flow/${rosterVersion()}`;
 /** The catalog payload is several megabytes; keep a successful read for at least an hour. */
 export const CATALOG_TTL_MS = 60 * 60 * 1000;
 export const CATALOG_TIMEOUT_MS = 20_000;
+/** Provider writes use a warm cache, or this short wait, then the permissive list. */
+export const PROVIDER_WRITE_CATALOG_TIMEOUT_MS = 3_000;
 const moduleCache = { at: 0, baseURL: "", ids: null };
 
 export function resetFeatherlessCatalogCache() {

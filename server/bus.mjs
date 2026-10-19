@@ -436,20 +436,58 @@ export function droppedReasoningReason(messages, askedAt = 0) {
   return saw ? DROPPED_REASONING : "";
 }
 
-/** Stamp the seat's open run when a room sync drops a reasoning-only transcript. */
-export function recordDroppedReasoning(seatId, channelId = null) {
-  const run = [...(getState().runs || [])].reverse().find(
-    (item) => item.seatId === seatId && (item.status === "running" || item.status === "starting"),
-  );
-  emit({
-    level: "warn",
-    scope: "chat",
-    step: "seat.unposted",
-    seat: seatId,
-    channel: channelId,
-    detail: { reason: DROPPED_REASONING, runId: run?.id || null },
-  });
-  if (run) noteRun(run.id, seatId, "done", DROPPED_REASONING);
+const decidedDropIds = new Set();
+
+/** Test isolation. A message id is decided once for the life of the process. */
+export function resetDroppedReasoning() {
+  decidedDropIds.clear();
+}
+
+function runStartMs(run) {
+  const start = Date.parse(run?.at || "");
+  return Number.isFinite(start) ? start : 0;
+}
+
+/** The run that was open for this seat when the message was created, else the latest open run. */
+function runThatProduced(seatId, created) {
+  const runs = (getState().runs || []).filter((item) => item?.seatId === seatId);
+  const stamp = Number(created || 0);
+  if (stamp) {
+    const eligible = runs.filter((item) => runStartMs(item) && runStartMs(item) <= stamp);
+    eligible.sort((a, b) => runStartMs(a) - runStartMs(b));
+    return eligible.at(-1) || null;
+  }
+  const open = runs.filter((item) => item.status === "running" || item.status === "starting");
+  return open.at(-1) || null;
+}
+
+/**
+ * Stamp the run that produced a reasoning-only message.
+ * Each message id is decided once: a later sync does not re-stamp or log again,
+ * and a newer open run is left alone.
+ */
+export function recordDroppedReasoning(seatId, channelId = null, messages = []) {
+  const fresh = [];
+  for (const msg of messages || []) {
+    const id = String(msg?.id || "");
+    if (!id || decidedDropIds.has(id)) continue;
+    decidedDropIds.add(id);
+    fresh.push({ id, created: Number(msg.created || 0) });
+  }
+  if (!fresh.length) return;
+  for (const msg of fresh) {
+    const run = runThatProduced(seatId, msg.created);
+    const open = run && (run.status === "running" || run.status === "starting");
+    emit({
+      level: "warn",
+      scope: "chat",
+      step: "seat.unposted",
+      seat: seatId,
+      channel: channelId,
+      detail: { reason: DROPPED_REASONING, runId: run?.id || null, messageId: msg.id },
+    });
+    if (open) noteRun(run.id, seatId, "done", DROPPED_REASONING);
+  }
 }
 
 /** Drop reasoning markup and max-steps reports. Empty means there is nothing to post. */

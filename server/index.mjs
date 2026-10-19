@@ -17,7 +17,7 @@ import {
   restartForProviderChange,
 } from "./harness.mjs";
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey, canonicalProviderId } from "./providers.mjs";
-import { featherlessOfferedModelIds } from "./featherless-catalog.mjs";
+import { featherlessOfferedModelIds, PROVIDER_WRITE_CATALOG_TIMEOUT_MS } from "./featherless-catalog.mjs";
 import { addFirstUser, changePassword, DEMO_TOKEN, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
 import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
@@ -1627,6 +1627,7 @@ const server = createServer(async (req, res) => {
         offered = await featherlessOfferedModelIds({
           baseURL: body.baseURL || "https://api.featherless.ai/v1",
           apiKey: process.env.FEATHERLESS_API_KEY || "",
+          timeoutMs: PROVIDER_WRITE_CATALOG_TIMEOUT_MS,
         });
       }
       const out = upsertProvider(body, getState(), offered);
