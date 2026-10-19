@@ -21,6 +21,7 @@ import { isBuiltinProvider, isLoadedModel, loadedProviderIds, resolveUsableModel
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
+import { resolveMembers } from "./channels.mjs";
 import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
@@ -93,18 +94,31 @@ function wakeFailureLine(seat, runMeta, err) {
   return `${seat.name} did not start run ${runMeta.runId}: ${err?.message || err}`;
 }
 
-async function freshAssistantText(sid, kind, askedAt) {
-  if (!sid) return { text: "", messageId: null };
+async function freshAssistantText(sid, kind, askedAt, { implicit = false } = {}) {
+  if (!sid) return { text: "", messageId: null, dropped: [], reasoningOnly: false };
   try {
-    const replies = assistantText(await deps.sessionMessages(sid, kind)).filter((m) => m.text);
+    const raw = await deps.sessionMessages(sid, kind);
+    const reasoningOnly = droppedReasoningReason(raw, askedAt) === DROPPED_REASONING;
+    const replies = assistantText(raw).filter((m) => m.text);
     const dated = replies.some((m) => m.created);
     const fresh = dated ? replies.filter((m) => m.created && m.created >= askedAt) : replies.slice(-1);
+    if (implicit) {
+      const picked = selectImplicitReply(fresh);
+      return {
+        text: picked.post?.text || "",
+        messageId: picked.post?.id || null,
+        dropped: picked.dropped,
+        reasoningOnly: reasoningOnly || (!picked.post && picked.dropped.some((item) => item.reason === "reasoning")),
+      };
+    }
     return {
       text: fresh.map((m) => m.text).join("\n"),
       messageId: fresh.length ? fresh[fresh.length - 1].id || null : null,
+      dropped: [],
+      reasoningOnly,
     };
   } catch {
-    return { text: "", messageId: null };
+    return { text: "", messageId: null, dropped: [], reasoningOnly: false };
   }
 }
 
@@ -337,6 +351,141 @@ export function isPass(text) {
   return /^\s*PASS\.?\s*$/i.test(String(text || ""));
 }
 
+/** Tools an implicit room reply must not call. OpenCode disables each named tool for that prompt. */
+export const IMPLICIT_ROOM_TOOLS_OFF = Object.fromEntries(
+  [
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "list",
+    "webfetch",
+    "websearch",
+    "task",
+    "todowrite",
+    "todoread",
+    "skill",
+    "question",
+    "batch",
+    "codesearch",
+    "lsp",
+    "apply_patch",
+    "multiedit",
+    "roster_list_seats",
+    "roster_send_message",
+    "roster_handoff",
+    "roster_report",
+    "roster_ask_human",
+    "roster_knowledge",
+    "roster_inbox",
+    "roster_task_create",
+    "roster_task_claim",
+    "roster_task_complete",
+    "roster_propose_org",
+  ].map((name) => [name, false]),
+);
+
+export function implicitRoomReply(meta = {}) {
+  return meta.kind === IMPLICIT && !meta.teamMode;
+}
+
+/** Lead and members already in the room, so the reply does not look them up. */
+export function roomRosterLine(channelId, state = getState()) {
+  const channel = (state?.channels || []).find((c) => c.id === channelId);
+  const members = channel ? resolveMembers(channel, state) : [];
+  const lead = members.find((s) => s.id === channel?.leadSeatId) || null;
+  const fmt = (s) => `@${s.id} (${s.name || s.id}${s.role ? `, ${s.role}` : ""})`;
+  const names = members.map(fmt);
+  return `Lead: ${lead ? fmt(lead) : "none"}. Members: ${names.length ? names.join(", ") : "none"}.`;
+}
+
+/** A reasoning-only turn is finished, with nothing posted to the room. */
+export const DROPPED_REASONING = "dropped_reasoning_only";
+
+function partBody(part) {
+  if (!part) return "";
+  if (typeof part === "string") return part;
+  if (typeof part.text === "string") return part.text;
+  if (typeof part.content === "string") return part.content;
+  return "";
+}
+
+function messagePartList(msg) {
+  const raw = msg?.parts || msg?.info?.parts || msg?.content || [];
+  return Array.isArray(raw) ? raw : [raw];
+}
+
+/** `dropped_reasoning_only` when fresh assistant parts are reasoning or think-blocks and nothing else. */
+export function droppedReasoningReason(messages, askedAt = 0) {
+  let saw = false;
+  for (const msg of messages || []) {
+    const role = msg.role || msg.info?.role;
+    if (role && role !== "assistant") continue;
+    const created = Number(msg.info?.time?.created || msg.time?.created || 0);
+    if (askedAt && created && created < askedAt) continue;
+    for (const part of messagePartList(msg)) {
+      const type = String(part?.type || "");
+      const body = partBody(part);
+      const visible = !type || type === "text" || type === "output_text" ? visibleRoomText(body) : "";
+      if (visible) return "";
+      if (/reason|think|thought/i.test(type) || (/<think/i.test(body) && !visibleRoomText(body))) saw = true;
+    }
+  }
+  return saw ? DROPPED_REASONING : "";
+}
+
+/** Stamp the seat's open run when a room sync drops a reasoning-only transcript. */
+export function recordDroppedReasoning(seatId, channelId = null) {
+  const run = [...(getState().runs || [])].reverse().find(
+    (item) => item.seatId === seatId && (item.status === "running" || item.status === "starting"),
+  );
+  emit({
+    level: "warn",
+    scope: "chat",
+    step: "seat.unposted",
+    seat: seatId,
+    channel: channelId,
+    detail: { reason: DROPPED_REASONING, runId: run?.id || null },
+  });
+  if (run) noteRun(run.id, seatId, "done", DROPPED_REASONING);
+}
+
+/** Drop reasoning markup and max-steps reports. Empty means there is nothing to post. */
+export function visibleRoomText(text) {
+  const raw = String(text || "").replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "");
+  return raw
+    .split("\n")
+    .filter((line) => !/max(?:imum)?\s+steps/i.test(line))
+    .join("\n")
+    .trim();
+}
+
+/** Why a chunk must not be posted, or "" when it still has a reply. */
+export function suppressedRoomReason(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "empty";
+  if (/max(?:imum)?\s+steps/i.test(raw) && !visibleRoomText(raw)) return "max-steps";
+  if (!visibleRoomText(raw)) return "reasoning";
+  return "";
+}
+
+/** The one implicit reply to post, plus every other chunk and why it was dropped. */
+export function selectImplicitReply(parts) {
+  const dropped = [];
+  let post = null;
+  for (const part of parts || []) {
+    const text = visibleRoomText(part?.text);
+    if (!text || post) {
+      dropped.push({ id: part?.id || null, reason: !text ? suppressedRoomReason(part?.text) || "empty" : "extra" });
+      continue;
+    }
+    post = { ...part, text };
+  }
+  return { post, dropped };
+}
+
 export function roomReplyLines(meta = {}) {
   if (!meta.channel || !ROOM_KINDS.has(meta.kind)) return [];
   const room = `#${meta.channel}`;
@@ -354,7 +503,8 @@ export function roomReplyLines(meta = {}) {
   if (meta.kind === IMPLICIT) {
     return [
       `A human wrote in ${room} without mentioning anyone. You are the seat answering for ${room}.`,
-      `Reply in plain text, briefly, as yourself. Roster-flow posts your text to ${room}. Do not use roster_report for this reply.`,
+      roomRosterLine(meta.channel, meta.state),
+      `Reply in plain text, briefly, as yourself. One or two sentences only. Do not use tools. Roster-flow posts your text to ${room}. Do not use roster_report for this reply.`,
       mention,
     ];
   }
@@ -383,9 +533,11 @@ export function delegationLines(seat, state = getState()) {
 
 export function promptBody(seat, to, text, meta, model) {
   const pack = goalPackLines(getState(), { seat, runId: meta.runId });
+  const implicit = implicitRoomReply(meta);
   return {
     agent: to,
     model,
+    ...(implicit ? { tools: IMPLICIT_ROOM_TOOLS_OFF } : {}),
     parts: [
       {
         type: "text",
@@ -411,9 +563,11 @@ export function promptBody(seat, to, text, meta, model) {
             : []),
           `Message from ${meta.from || "bus"} (${meta.kind || "send_message"}):`,
           text,
-          meta.kind === IMPLICIT
-            ? "Answer that message in plain text. Use roster_send_message / roster_handoff only if they asked for work another seat owns."
-            : "Use roster_send_message / roster_handoff / roster_report to talk to peers. Do not impersonate them.",
+          implicit
+            ? "Answer in one or two sentences of plain text. Do not call tools."
+            : meta.kind === IMPLICIT
+              ? "Answer that message in plain text. Use roster_send_message / roster_handoff only if they asked for work another seat owns."
+              : "Use roster_send_message / roster_handoff / roster_report to talk to peers. Do not impersonate them.",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -487,6 +641,17 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
     }
   }
   let lastErr = null;
+  const implicit = implicitRoomReply(meta);
+  const unpostedReasoning = (sid, model, messageId = null) => ({
+    sessionId: sid,
+    seat: to,
+    model,
+    harness: kind,
+    providerText: "",
+    messageId,
+    unposted: true,
+    dropReason: DROPPED_REASONING,
+  });
   for (const model of refs) {
     const body = promptBody(seat, to, text, meta, {
       providerID: model.providerID,
@@ -511,8 +676,9 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
         ]);
       }
       if (isEmptyTurn(outcome)) {
-        const polled = await freshAssistantText(sid, kind, askedAt);
+        const polled = await freshAssistantText(sid, kind, askedAt, { implicit });
         if (polled.text) outcome = { ...outcome, reached: true, text: polled.text, messageId: polled.messageId || outcome.messageId, empty: false };
+        else if (implicit && polled.reasoningOnly) return unpostedReasoning(sid, model);
         else throw terminalTurnError("finished without a reply", "NO_REPLY");
       }
       if (!outcome?.reached || outcome.error) {
@@ -532,8 +698,9 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
       let final = outcome;
       if (!outcome.done && watch.rest) final = await awaitTurnRest(watch);
       if (final?.timedOut && !String(final.text || outcome.text || "").trim()) {
-        const polled = await freshAssistantText(sid, kind, askedAt);
+        const polled = await freshAssistantText(sid, kind, askedAt, { implicit });
         if (polled.text) final = { ...final, text: polled.text, messageId: polled.messageId, timedOut: false };
+        else if (implicit && polled.reasoningOnly) return unpostedReasoning(sid, model);
         else throw terminalTurnError("the provider timed out", "PROVIDER_DEADLINE");
       }
       if (final?.error && !final?.text && !outcome.text) {
@@ -543,16 +710,40 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
         throw err;
       }
       if (isEmptyTurn(final)) {
-        const polled = await freshAssistantText(sid, kind, askedAt);
+        const polled = await freshAssistantText(sid, kind, askedAt, { implicit });
         if (polled.text) final = { ...final, text: polled.text, messageId: polled.messageId || final.messageId, empty: false };
+        else if (implicit && polled.reasoningOnly) return unpostedReasoning(sid, model);
         else throw terminalTurnError("finished without a reply", "NO_REPLY");
       }
       let providerText = final?.text || outcome.text || "";
       let messageId = final?.messageId || outcome.messageId || null;
-      const polled = await freshAssistantText(sid, kind, askedAt);
+      const polled = await freshAssistantText(sid, kind, askedAt, { implicit });
       if (polled.text) {
         providerText = polled.text;
         messageId = polled.messageId || messageId;
+      }
+      if (implicit) {
+        const rawReply = String(providerText || "");
+        providerText = visibleRoomText(providerText);
+        for (const drop of polled.dropped || []) {
+          emit({ level: "warn", scope: "chat", step: "seat.unposted", seat: to, channel: meta.channel || null, detail: drop });
+        }
+        if (!String(providerText || "").trim()) {
+          const why = polled.reasoningOnly ? DROPPED_REASONING : suppressedRoomReason(rawReply);
+          if (why === DROPPED_REASONING || why === "reasoning" || why === "max-steps") {
+            const dropReason = why === "max-steps" ? "max-steps" : DROPPED_REASONING;
+            emit({
+              level: "warn",
+              scope: "chat",
+              step: "seat.unposted",
+              seat: to,
+              channel: meta.channel || null,
+              detail: { reason: dropReason, runId: meta.runId || null },
+            });
+            return { ...unpostedReasoning(sid, model, messageId), dropReason };
+          }
+          throw terminalTurnError("finished without a reply", "NO_REPLY");
+        }
       }
       if (!String(providerText || "").trim() && !outcome.unwatched) {
         throw terminalTurnError("finished without a reply", "NO_REPLY");
@@ -605,8 +796,38 @@ function meterPromptedWake(to, text, meta, result, started) {
 }
 
 async function postSeatReply(to, seat, runMeta, reply, messageId) {
-  if (!reply || !runMeta?.channel || !runMeta.runId) return;
+  const clean = implicitRoomReply(runMeta) ? visibleRoomText(reply) : String(reply || "").trim();
+  if (!clean || !runMeta?.channel || !runMeta.runId) {
+    if (implicitRoomReply(runMeta) && String(reply || "").trim() && !clean) {
+      emit({
+        level: "warn",
+        scope: "chat",
+        step: "seat.unposted",
+        seat: to,
+        channel: runMeta?.channel || null,
+        detail: { reason: suppressedRoomReason(reply) || "empty", runId: runMeta?.runId || null },
+      });
+    }
+    return;
+  }
+  reply = clean;
   if (isPass(reply)) return;
+  if (implicitRoomReply(runMeta)) {
+    const prior = (getState().messages || []).find(
+      (m) => m.channel === runMeta.channel && m.seatId === to && !m.system && m.runId === runMeta.runId,
+    );
+    if (prior) {
+      emit({
+        level: "warn",
+        scope: "chat",
+        step: "seat.unposted",
+        seat: to,
+        channel: runMeta.channel,
+        detail: { reason: "extra", runId: runMeta.runId },
+      });
+      return;
+    }
+  }
   const { postMessage, threadCaption } = await import("./chat.mjs");
   const existing = (getState().messages || []).find(
     (m) =>
@@ -644,7 +865,23 @@ async function postSeatReply(to, seat, runMeta, reply, messageId) {
  */
 async function settleWake(to, seat, runMeta, { reply = "", messageId = null, failure = "", reason = null } = {}) {
   const slot = wakeSlot(runMeta?.runId);
-  const text = String(reply || "").trim();
+  const text = implicitRoomReply(runMeta) ? visibleRoomText(reply) : String(reply || "").trim();
+  if (String(reply || "").trim() && !text && implicitRoomReply(runMeta)) {
+    if (!slot.replyPosted) {
+      slot.replyPosted = true;
+      noteRun(runMeta?.runId, to, "done", suppressedRoomReason(reply) || "unposted");
+      emit({
+        level: "warn",
+        scope: "chat",
+        step: "seat.unposted",
+        seat: to,
+        channel: runMeta?.channel || null,
+        detail: { reason: suppressedRoomReason(reply) || "empty", runId: runMeta?.runId || null },
+      });
+    }
+    stopThinking(runMeta?.channel, to);
+    return { reported: true, replied: false, unposted: true };
+  }
   if (text && !isPass(text)) {
     if (slot.replyPosted) {
       stopThinking(runMeta?.channel, to);
@@ -666,6 +903,20 @@ async function settleWake(to, seat, runMeta, { reply = "", messageId = null, fai
     stopThinking(runMeta?.channel, to);
     return { reported: true };
   }
+  if (implicitRoomReply(runMeta) && failure && suppressedRoomReason(failure)) {
+    slot.failurePosted = true;
+    noteRun(runMeta?.runId, to, "done", suppressedRoomReason(failure));
+    emit({
+      level: "warn",
+      scope: "chat",
+      step: "seat.unposted",
+      seat: to,
+      channel: runMeta?.channel || null,
+      detail: { reason: suppressedRoomReason(failure), runId: runMeta?.runId || null },
+    });
+    stopThinking(runMeta?.channel, to);
+    return { reported: true, unposted: true };
+  }
   slot.failurePosted = true;
   noteRun(runMeta?.runId, to, "blocked", reason || failure || "failed");
   stopThinking(runMeta?.channel, to);
@@ -683,7 +934,9 @@ function armPendingSettle(to, seat, runMeta, err) {
   let failureClaimed = false;
   const timer = setTimeout(() => {
     void (async () => {
-      const polled = err.sid ? await freshAssistantText(err.sid, err.kind, err.askedAt) : { text: "", messageId: null };
+      const polled = err.sid
+        ? await freshAssistantText(err.sid, err.kind, err.askedAt, { implicit: implicitRoomReply(runMeta) })
+        : { text: "", messageId: null };
       if (String(polled.text || "").trim()) {
         try {
           err.cancelWatch?.();
@@ -713,7 +966,7 @@ function armPendingSettle(to, seat, runMeta, err) {
       let text = String(final?.text || "").trim();
       let messageId = final?.messageId || null;
       if (!text && err.sid) {
-        const polled = await freshAssistantText(err.sid, err.kind, err.askedAt);
+        const polled = await freshAssistantText(err.sid, err.kind, err.askedAt, { implicit: implicitRoomReply(runMeta) });
         text = String(polled.text || "").trim();
         messageId = polled.messageId || messageId;
       }
@@ -741,6 +994,12 @@ function armPendingSettle(to, seat, runMeta, err) {
 
 async function finishPrompted(to, seat, text, runMeta, result, started) {
   const metered = meterPromptedWake(to, text, runMeta, result, started);
+  if (result?.unposted) {
+    noteRun(runMeta.runId, to, "done", result.dropReason || DROPPED_REASONING);
+    wakeSlot(runMeta.runId).replyPosted = true;
+    stopThinking(runMeta.channel, to);
+    return { ...metered, runId: runMeta.runId, started: true, unposted: true };
+  }
   if (metered.paused) {
     noteRun(runMeta.runId, to, "blocked", "budget");
     await announceWake(runMeta, `${seat.name} did not keep run ${runMeta.runId}: the seat is paused (budget).`);
@@ -763,6 +1022,14 @@ async function finishPrompted(to, seat, text, runMeta, result, started) {
 function bindRun(meta, seatId) {
   const runId = meta.runId || uid("run");
   noteRun(runId, seatId, "starting", null);
+  if (meta.kind || meta.teamMode) {
+    mutate((s) => {
+      const run = (s.runs || []).find((r) => r.id === runId);
+      if (!run) return;
+      if (meta.kind) run.kind = meta.kind;
+      if (meta.teamMode) run.teamMode = true;
+    });
+  }
   return { ...meta, runId };
 }
 

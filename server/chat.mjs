@@ -1,5 +1,18 @@
 import { getState, mutate, uid } from "./store.mjs";
-import { blockLatestRun, isPass, meterChildren, meterTurn, postBus, wakeSeat, pullAssistant, pullFailure } from "./bus.mjs";
+import {
+  blockLatestRun,
+  isPass,
+  meterChildren,
+  meterTurn,
+  postBus,
+  wakeSeat,
+  pullAssistant,
+  pullFailure,
+  recordDroppedReasoning,
+  selectImplicitReply,
+  suppressedRoomReason,
+  visibleRoomText,
+} from "./bus.mjs";
 import { parseMentions, CONDUCTOR_ID } from "./mentions.mjs";
 import { effectiveRespond, resolveMembers, responderCandidates, roomBudget, roomLimits } from "./channels.mjs";
 import { isOpenCodeAdapter } from "./adapters.mjs";
@@ -642,6 +655,113 @@ function postDelegations(channelId, parentSeatId, children) {
   }
 }
 
+/** One visible sentence for an implicit room turn. Reasoning and max-steps reports are recorded, not posted. */
+async function mirrorImplicitReply(channelId, seatId, parts, { since = 0, seen, runId, sessionId }) {
+  const fresh = [];
+  for (const p of parts || []) {
+    if (!p.id || seen.has(p.id)) continue;
+    seen.add(p.id);
+    if (since && p.created && p.created < since) continue;
+    fresh.push(p);
+  }
+  const picked = selectImplicitReply(fresh);
+  for (const drop of picked.dropped) {
+    emit({
+      level: "warn",
+      scope: "chat",
+      step: "seat.unposted",
+      channel: channelId,
+      seat: seatId,
+      detail: { reason: drop.reason, messageId: drop.id, runId },
+    });
+  }
+  const already = (getState().messages || []).some(
+    (m) => !m.system && m.channel === channelId && m.seatId === seatId && runId && m.runId === runId,
+  );
+  const out = { answered: false, failed: false, passed: false, replies: 0 };
+  if (picked.post && already) {
+    emit({
+      level: "warn",
+      scope: "chat",
+      step: "seat.unposted",
+      channel: channelId,
+      seat: seatId,
+      detail: { reason: "extra", messageId: picked.post.id, runId },
+    });
+    stopThinking(channelId, seatId);
+    out.answered = true;
+    return out;
+  }
+  if (picked.post) {
+    const p = picked.post;
+    if (alreadyMirrored(channelId, seatId, p)) {
+      const prior = mirroredReply(channelId, seatId, p, runId);
+      if (prior) {
+        stopThinking(channelId, seatId);
+        out.answered = true;
+        out.replies += 1;
+        routeOnce(channelId, seatId, prior);
+      }
+      return out;
+    }
+    stopThinking(channelId, seatId);
+    out.answered = true;
+    out.replies += 1;
+    if (isPass(p.text)) {
+      out.passed = true;
+      emit({ scope: "chat", step: "seat.pass", channel: channelId, seat: seatId, detail: { messageId: p.id } });
+      return out;
+    }
+    const seat = getState().seats.find((s) => s.id === seatId);
+    const msg = postMessage(channelId, seat?.name || seatId, "bot", p.text, {
+      seatId,
+      mirrored: true,
+      sessionId: p.id,
+      runId,
+      ...threadCaption(seatId, channelId),
+    });
+    routeOnce(channelId, seatId, msg);
+    emit({
+      scope: "chat",
+      step: "seat.reply",
+      channel: channelId,
+      seat: seatId,
+      detail: { messageId: p.id },
+    });
+    return out;
+  }
+  if (!deps.pullFailure) return out;
+  const failure = await deps.pullFailure(seatId, since, { sessionId });
+  if (!failure) return out;
+  const suppressed = suppressedRoomReason(failure.text);
+  if (suppressed) {
+    stopThinking(channelId, seatId);
+    out.answered = true;
+    emit({
+      level: "warn",
+      scope: "chat",
+      step: "seat.unposted",
+      channel: channelId,
+      seat: seatId,
+      detail: { reason: suppressed, runId },
+    });
+    return out;
+  }
+  stopThinking(channelId, seatId);
+  out.failed = true;
+  const seat = getState().seats.find((s) => s.id === seatId);
+  statusMessage(channelId, `${seat?.name || seatId} could not reply: ${failure.text}`);
+  emit({
+    level: "error",
+    scope: "chat",
+    step: "seat.failed",
+    channel: channelId,
+    seat: seatId,
+    detail: { code: failure.code, error: failure.text },
+  });
+  return out;
+}
+
 /**
  * Mirror replies into the room until they arrive or the ticks run out.
  * `sessions` maps a seat to the session its wake ran in; seats without one
@@ -696,6 +816,16 @@ export async function followChannel(
         const sessionId = follow.sessions[seatId] || null;
         const parts = await deps.pullAssistant(seatId, { sessionId });
         if (epoch !== followEpoch) break;
+        const runId = follow.runs[seatId] || latestRunId(seatId);
+        const bound = runById(follow.runs[seatId]);
+        if (bound?.kind === "implicit") {
+          const postedImplicit = await mirrorImplicitReply(channelId, seatId, parts, { since, seen, runId, sessionId });
+          if (postedImplicit.answered) answered.add(seatId);
+          if (postedImplicit.failed) failed.add(seatId);
+          if (postedImplicit.passed) passed.add(seatId);
+          replies += postedImplicit.replies;
+          continue;
+        }
         let posted = 0;
         for (const p of parts) {
           if (!p.id || seen.has(p.id)) continue;
@@ -895,18 +1025,43 @@ function latestRunId(seatId) {
   return [...(getState().runs || [])].reverse().find((r) => r.seatId === seatId)?.id || null;
 }
 
+function runById(runId) {
+  if (!runId) return null;
+  return (getState().runs || []).find((r) => r.id === runId) || null;
+}
+
+function reasoningPart(part) {
+  return /reason|think|thought/i.test(String(part?.type || ""));
+}
+
 export function mirrorTranscript(channelId, seatId, parts) {
   const seat = getState().seats.find((s) => s.id === seatId);
   const posted = [];
+  let droppedReasoning = false;
   for (const p of parts || []) {
-    if (!p?.id || !p.text) continue;
+    if (!p?.id) continue;
     if (looksLikeWakePrompt(p.text)) continue;
-    if (p.role !== "user" && isPass(p.text)) continue;
-    if (alreadyMirrored(channelId, seatId, p)) continue;
-    if (p.role === "user" && getState().messages.some((m) => m.text === p.text && m.channel === channelId)) continue;
-    const role = p.role === "user" ? "human" : "bot";
+    const bot = p.role !== "user";
+    let text = String(p.text || "");
+    if (bot) {
+      if (reasoningPart(p)) {
+        droppedReasoning = true;
+        continue;
+      }
+      const visible = visibleRoomText(text);
+      if (!visible) {
+        if (/<think/i.test(text) || suppressedRoomReason(text) === "reasoning") droppedReasoning = true;
+        continue;
+      }
+      text = visible;
+      if (isPass(text)) continue;
+    } else if (!text.trim()) continue;
+    const part = { ...p, text };
+    if (alreadyMirrored(channelId, seatId, part)) continue;
+    if (!bot && getState().messages.some((m) => m.text === text && m.channel === channelId)) continue;
+    const role = bot ? "bot" : "human";
     const who = role === "human" ? "You" : seat?.name || seatId;
-    const msg = postMessage(channelId, who, role, p.text, {
+    const msg = postMessage(channelId, who, role, text, {
       seatId: role === "human" ? "you" : seatId,
       mirrored: true,
       sessionId: p.id,
@@ -915,6 +1070,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
     posted.push(msg);
     if (role === "bot") routeOnce(channelId, seatId, msg);
   }
+  if (droppedReasoning && !posted.length) recordDroppedReasoning(seatId, channelId);
   if (posted.length) {
     emit({
       scope: "harness",

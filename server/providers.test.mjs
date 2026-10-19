@@ -114,6 +114,63 @@ test("upsertProvider keeps models a seat still uses and never writes a completio
   }
 });
 
+test("upsertProvider does not add an in-use featherless id the upstream catalog omits", async () => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { opencodeDir } = await import("./paths.mjs");
+  const { upsertProvider, readOpenCodeConfig } = await import("./providers.mjs");
+  const { seatModelGap } = await import("./harness.mjs");
+  const path = join(opencodeDir, "opencode.json");
+  const raw = readFileSync(path, "utf8");
+  const cfg = JSON.parse(raw);
+  cfg.provider = cfg.provider || {};
+  cfg.provider.featherless = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "Featherless",
+    options: { apiKey: "{env:FEATHERLESS_API_KEY}" },
+    models: {
+      "Qwen/Qwen2.5-Coder-32B-Instruct": { name: "Qwen" },
+      "unused-model": { name: "Unused" },
+    },
+  };
+  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  const state = {
+    seats: [{ id: "wiki", name: "Wiki Scribe", kind: "bot", model: "featherless/missing-upstream" }],
+    teams: [],
+  };
+  try {
+    upsertProvider(
+      {
+        id: "featherless",
+        name: "Featherless",
+        models: [{ id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen" }],
+      },
+      state,
+      new Set(["Qwen/Qwen2.5-Coder-32B-Instruct"]),
+    );
+    let models = readOpenCodeConfig().provider.featherless.models;
+    assert.ok(models["Qwen/Qwen2.5-Coder-32B-Instruct"]);
+    assert.equal(models["missing-upstream"], undefined);
+    assert.equal(models["unused-model"], undefined);
+    const gap = seatModelGap(state.seats[0], [{ providerID: "featherless", modelID: "Qwen/Qwen2.5-Coder-32B-Instruct" }]);
+    assert.match(gap, /Wiki Scribe needs featherless\/missing-upstream/);
+
+    upsertProvider(
+      {
+        id: "featherless",
+        name: "Featherless",
+        models: [{ id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen" }],
+      },
+      state,
+      null,
+    );
+    models = readOpenCodeConfig().provider.featherless.models;
+    assert.ok(models["missing-upstream"], "unreachable catalog keeps the in-use id");
+  } finally {
+    writeFileSync(path, raw);
+  }
+});
+
 test("serveChildEnv passes wiki-flow env through to opencode serve", async () => {
   const { serveChildEnv } = await import("./providers.mjs");
   const env = serveChildEnv({ PATH: "/bin", WIKIFLOW_URL: "http://wiki", WIKIFLOW_TOKEN: "tok" });

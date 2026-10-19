@@ -15,7 +15,8 @@
  * ROSTER_DISABLE_HARNESS_AUTOSTART=1  alias for ROSTER_HARNESS_AUTOSTART=0 (provider seed still runs)
  */
 import { getState } from "./store.mjs";
-import { hasProviderKey, listProviders, upsertProvider } from "./providers.mjs";
+import { featherlessOfferedModelIds, inUseModelAllowed } from "./featherless-catalog.mjs";
+import { canonicalProviderId, configuredProviderModels, hasProviderKey, listProviders, upsertProvider } from "./providers.mjs";
 import { ensure } from "./harness.mjs";
 
 export function providerFromEnv(env = process.env) {
@@ -89,7 +90,7 @@ export function shouldAutostartHarness(state, env = process.env, configured = pr
  * Env model list plus every model a seat or team already assigns on this provider.
  * A short ROSTER_PROVIDER_MODELS value must not drop DeepSeek-V4.1-Flash or Qwen.
  */
-export function withSeatModels(spec, state) {
+export function withSeatModels(spec, state, offered) {
   if (!spec?.id) return spec;
   const prefix = `${String(spec.id).trim().toLowerCase()}/`;
   const models = [...(spec.models || [])];
@@ -104,26 +105,91 @@ export function withSeatModels(spec, state) {
     if (!raw.toLowerCase().startsWith(prefix)) continue;
     const id = raw.slice(prefix.length);
     if (!id || have.has(id)) continue;
+    if (!inUseModelAllowed(spec.id, id, offered)) continue;
     have.add(id);
     models.push({ id, name: id });
   }
   return { ...spec, models };
 }
 
-/** Idempotent. No-op when ROSTER_PROVIDER_ID is unset. Does not throw on a missing model list. */
-export function seedProviderFromEnv(env = process.env, state) {
+/**
+ * Drop stored Featherless ids the upstream catalog does not offer.
+ * A null catalog means the read failed: keep every stored id.
+ */
+export function pruneUnlistedModels(models, offered) {
+  if (!offered) return models || [];
+  return (models || []).filter((m) => offered.has(String(m?.id || "").trim()));
+}
+
+/** Env and in-use models plus every model already stored for this provider. */
+export function withPersistedModels(spec, persisted = []) {
+  const models = [...(spec?.models || [])];
+  const have = new Set(models.map((m) => m.id));
+  for (const m of persisted) {
+    const id = String(m?.id || "").trim();
+    if (!id || have.has(id)) continue;
+    have.add(id);
+    models.push({ id, name: m.name || id, ...(m.limit ? { limit: m.limit } : {}) });
+  }
+  return { ...spec, models };
+}
+
+/**
+ * Idempotent. No-op when ROSTER_PROVIDER_ID is unset. Does not throw on a missing model list.
+ * When the Featherless catalog is readable, stored ids it does not offer are pruned.
+ * When it is not, stored and in-use ids stay.
+ */
+function commitProviderSeed(env, state, offered) {
+  const spec = providerFromEnv(env);
+  const current = state ?? getState();
+  const persisted = pruneUnlistedModels(configuredProviderModels(spec.id), offered);
+  const merged = withSeatModels(withPersistedModels(spec, persisted), current, offered);
+  const provider = upsertProvider(merged, current, offered);
+  return { seeded: true, provider };
+}
+
+/** Fetch the catalog after boot has already served the permissive model list. */
+function pruneFeatherlessWhenCatalogArrives(env, opts = {}) {
+  const spec = providerFromEnv(env);
+  return featherlessOfferedModelIds({
+    fetchImpl: opts.fetchImpl,
+    baseURL: spec?.baseURL || "https://api.featherless.ai/v1",
+    apiKey: String(env.FEATHERLESS_API_KEY || ""),
+    log: opts.log,
+  }).then((offered) => {
+    if (!offered) return { pruned: false };
+    return { pruned: true, ...commitProviderSeed(env, getState(), offered) };
+  });
+}
+
+export async function seedProviderFromEnv(env = process.env, state, opts = {}) {
   const id = String(env.ROSTER_PROVIDER_ID || "").trim();
   if (!id) return { seeded: false };
   const spec = providerFromEnv(env);
   if (!spec) return { seeded: false, reason: "ROSTER_PROVIDER_MODELS is required to seed a provider" };
-  const provider = upsertProvider(withSeatModels(spec, state ?? getState()));
-  return { seeded: true, provider };
+  const current = state ?? getState();
+  const deferCatalog = opts.backgroundCatalog === true && !("offered" in opts) && canonicalProviderId(spec.id) === "featherless";
+  if (deferCatalog) {
+    const seeded = commitProviderSeed(env, current, null);
+    return { ...seeded, catalog: "pending", pending: pruneFeatherlessWhenCatalogArrives(env, opts) };
+  }
+  let offered;
+  if ("offered" in opts) offered = opts.offered;
+  else if (canonicalProviderId(spec.id) === "featherless") {
+    offered = await featherlessOfferedModelIds({
+      fetchImpl: opts.fetchImpl,
+      baseURL: spec.baseURL || "https://api.featherless.ai/v1",
+      apiKey: String(env.FEATHERLESS_API_KEY || ""),
+      log: opts.log,
+    });
+  }
+  return commitProviderSeed(env, current, offered);
 }
 
 export async function autostartHarness({ ensureFn = ensure, state = getState(), env = process.env } = {}) {
   // Seed before the auto check so a provider written on this boot counts.
   try {
-    seedProviderFromEnv(env, getState() || state);
+    await seedProviderFromEnv(env, getState() || state);
   } catch (err) {
     console.error(`Provider seed from env failed: ${err.message}`);
   }

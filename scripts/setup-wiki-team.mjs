@@ -18,6 +18,7 @@
  *       provider's current models, and every featherless model a seat or
  *       team already uses.
  */
+import { inUseModelAllowed, featherlessOfferedModelIds } from "../server/featherless-catalog.mjs";
 import { contextTokenLimit, FEATHERLESS_CHAT_ID, FEATHERLESS_CODER_ID, outputTokenLimit } from "../server/model-defaults.mjs";
 
 export const FEATHERLESS_MODEL_DEFAULTS = [
@@ -48,7 +49,8 @@ function listedModel(id, name, output, context) {
  * featherless model id. A rerun must not drop a model another seat still uses.
  * Refs for a different provider are ignored.
  */
-export function featherlessModels(assignedRefs = [], current = []) {
+export function featherlessModels(assignedRefs = [], current = [], offered = null) {
+  const defaults = new Set(FEATHERLESS_MODEL_DEFAULTS.map((m) => m.id));
   const byId = new Map(FEATHERLESS_MODEL_DEFAULTS.map((m) => [m.id, listedModel(m.id, m.name)]));
   const add = (id, name, output, context) => {
     const mid = String(id || "").trim();
@@ -57,6 +59,9 @@ export function featherlessModels(assignedRefs = [], current = []) {
   };
   for (const item of current) {
     if (!item) continue;
+    const id = typeof item === "string" ? item : item.id || item.modelID;
+    // A readable catalog drops stored ids it does not offer. Defaults stay; an unread catalog prunes nothing.
+    if (offered && !offered.has(String(id || "").trim()) && !defaults.has(String(id || "").trim())) continue;
     if (typeof item === "string") add(item);
     else add(item.id || item.modelID, item.name, item.limit?.output ?? item.max_tokens, item.limit?.context);
   }
@@ -121,9 +126,22 @@ function coreError(step, res) {
   return new Error(msg);
 }
 
+async function offeredFeatherlessIds({ catalogFetch, log }) {
+  if (!catalogFetch) return featherlessOfferedModelIds({ log });
+  try {
+    const ids = await catalogFetch();
+    if (ids == null) return null;
+    return ids instanceof Set ? ids : new Set(ids);
+  } catch (err) {
+    log(`warn: featherless model catalog unreachable; keeping in-use models: ${err.message}`);
+    return null;
+  }
+}
+
 export async function setupWikiTeam({
   env = process.env,
   fetchImpl = fetch,
+  catalogFetch,
   log = console.log,
 } = {}) {
   const base = (env.ROSTER_API || "http://127.0.0.1:8790").replace(/\/+$/, "");
@@ -142,9 +160,19 @@ export async function setupWikiTeam({
   const inUse = [];
   for (const seat of seats) inUse.push(seat?.model, seat?.fallbackModel);
   for (const team of teams) inUse.push(team?.defaultModel, team?.fallbackModel, ...(team?.allowedModels || []));
+  const offered = await offeredFeatherlessIds({ catalogFetch, log });
+  const keptInUse = inUse.filter((ref) => {
+    const raw = String(ref || "").trim();
+    if (!raw.toLowerCase().startsWith("featherless/")) return true;
+    return inUseModelAllowed("featherless", raw.slice("featherless/".length), offered);
+  });
   const provider = {
     ...FEATHERLESS,
-    models: featherlessModels([`featherless/${model}`, ...specialists.map((s) => s.model), ...inUse], Array.isArray(current) ? current : []),
+    models: featherlessModels(
+      [`featherless/${model}`, ...specialists.map((s) => s.model), ...keptInUse],
+      Array.isArray(current) ? current : [],
+      offered,
+    ),
   };
   const prov = await call("/api/v1/providers", { method: "PUT", body: JSON.stringify(provider) });
   if (prov.status === 401 || prov.status === 403) {

@@ -8,6 +8,7 @@ import {
   followChannel,
   implicitTargets,
   mirrorTranscript,
+  syncBoundSessions,
   providerHint,
   quietRoom,
   resetChatRuntime,
@@ -17,7 +18,7 @@ import {
   seatModelPlan,
   deps,
 } from "./chat.mjs";
-import { deps as busDeps, wakeSeat } from "./bus.mjs";
+import { DROPPED_REASONING, deps as busDeps, wakeSeat } from "./bus.mjs";
 import { emit, listTrace, resetTrace } from "./trace.mjs";
 
 // A fresh data dir boots without a company until onboarding; these tests need the starter seats.
@@ -289,6 +290,103 @@ test("followChannel posts a provider 401 instead of waiting for a reply that nev
   } finally {
     Object.assign(deps, prev);
   }
+});
+
+test("an implicit room follow posts one clean sentence and records reasoning and max-steps", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  const channel = `implicit-${Date.now()}`;
+  const now = Date.now();
+  mutate((s) => {
+    s.runs = [...(s.runs || []), { id: "run-implicit", seatId: "channel", kind: "implicit", status: "running", at: new Date().toISOString() }];
+  });
+  deps.pullAssistant = async () => [
+    { id: "reason", text: "<think>who is in this room</think>", created: now },
+    { id: "answer", text: "Hi, I'm Channel. Maya and Jules are here.", created: now },
+    { id: "steps", text: "Maximum steps reached", created: now },
+  ];
+  deps.pullFailure = async () => ({ id: "fail", code: "MAX_STEPS", text: "Maximum steps reached" });
+  deps.knownLoadedModels = () => null;
+  deps.followDelayMs = 0;
+  try {
+    const replies = await followChannel(channel, ["channel"], 3, { since: now - 1, runs: { channel: "run-implicit" } });
+    assert.equal(replies, 1);
+    const added = getState().messages.filter((m) => m.channel === channel);
+    assert.equal(added.length, 1);
+    assert.equal(added[0].system, undefined);
+    assert.equal(added[0].text, "Hi, I'm Channel. Maya and Jules are here.");
+    assert.equal(added.filter((m) => !m.system).length, 1);
+    const dropped = listTrace({ scope: "chat" }).filter((e) => e.step === "seat.unposted");
+    assert.ok(dropped.some((e) => e.detail.reason === "reasoning"));
+    assert.ok(dropped.some((e) => e.detail.reason === "max-steps"));
+    assert.ok(!added.some((m) => /Maximum steps|Monitoring|<think/i.test(m.text)));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("an implicit room follow posts nothing when only reasoning comes back", async () => {
+  const prev = { ...deps };
+  resetTrace();
+  const channel = `implicit-empty-${Date.now()}`;
+  const now = Date.now();
+  mutate((s) => {
+    s.runs = [...(s.runs || []), { id: "run-empty", seatId: "channel", kind: "implicit", status: "running", at: new Date().toISOString() }];
+  });
+  deps.pullAssistant = async () => [{ id: "reason", text: "<thinking>still looking</thinking>", created: now }];
+  deps.pullFailure = async () => ({ id: "fail", code: "MAX_STEPS", text: "Maximum steps reached" });
+  deps.knownLoadedModels = () => null;
+  deps.followDelayMs = 0;
+  try {
+    const replies = await followChannel(channel, ["channel"], 2, { since: now - 1, runs: { channel: "run-empty" } });
+    assert.equal(replies, 0);
+    assert.equal(getState().messages.filter((m) => m.channel === channel).length, 0);
+    assert.ok(listTrace({ scope: "chat" }).some((e) => e.step === "seat.unposted"));
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("session sync drops a think-only transcript and records it on the run", async () => {
+  const prev = { ...deps };
+  const channel = `think-only-${Date.now()}`;
+  const runId = `run-think-${Date.now()}`;
+  mutate((s) => {
+    s.runs = [...(s.runs || []), { id: runId, seatId: "channel", kind: "implicit", status: "running", at: new Date().toISOString() }];
+    s.roomSessions = {
+      ...(s.roomSessions || {}),
+      channel: { ...(s.roomSessions?.channel || {}), [channel]: { sessionId: "ses-think-only" } },
+    };
+  });
+  deps.pullAssistant = async (_seatId, opts) => {
+    if (opts?.sessionId !== "ses-think-only") return [];
+    return [{ id: "think-only-1", role: "assistant", text: "<think>still deciding who is here</think>" }];
+  };
+  try {
+    await syncBoundSessions();
+    assert.equal(getState().messages.filter((m) => m.channel === channel).length, 0);
+    const run = (getState().runs || []).find((item) => item.id === runId);
+    assert.equal(run.status, "done");
+    assert.equal(run.reason, DROPPED_REASONING);
+  } finally {
+    Object.assign(deps, prev);
+  }
+});
+
+test("session sync posts the sentence from a mixed think block once", () => {
+  const channel = `think-mix-${Date.now()}`;
+  const id = `mix-${Date.now()}`;
+  const sentence = `Mixed sync sentence ${id}.`;
+  const first = mirrorTranscript(channel, "channel", [
+    { id, role: "assistant", text: `<think>secret</think>\n${sentence}` },
+  ]);
+  const again = mirrorTranscript(channel, "channel", [
+    { id, role: "assistant", text: `<think>secret</think>\n${sentence}` },
+  ]);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].text, sentence);
+  assert.equal(again.length, 0);
+  assert.equal(getState().messages.filter((m) => m.channel === channel && !m.system).length, 1);
 });
 
 test("mirrorTranscript skips wake prompts and does not duplicate", () => {
