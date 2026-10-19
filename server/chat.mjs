@@ -1037,7 +1037,7 @@ function reasoningPart(part) {
 export function mirrorTranscript(channelId, seatId, parts) {
   const seat = getState().seats.find((s) => s.id === seatId);
   const posted = [];
-  let droppedReasoning = false;
+  const droppedMessages = [];
   for (const p of parts || []) {
     if (!p?.id) continue;
     if (looksLikeWakePrompt(p.text)) continue;
@@ -1045,12 +1045,14 @@ export function mirrorTranscript(channelId, seatId, parts) {
     let text = String(p.text || "");
     if (bot) {
       if (reasoningPart(p)) {
-        droppedReasoning = true;
+        droppedMessages.push({ id: p.id, created: Number(p.created || 0) });
         continue;
       }
       const visible = visibleRoomText(text);
       if (!visible) {
-        if (/<think/i.test(text) || suppressedRoomReason(text) === "reasoning") droppedReasoning = true;
+        if (/<think/i.test(text) || suppressedRoomReason(text) === "reasoning") {
+          droppedMessages.push({ id: p.id, created: Number(p.created || 0) });
+        }
         continue;
       }
       text = visible;
@@ -1070,7 +1072,7 @@ export function mirrorTranscript(channelId, seatId, parts) {
     posted.push(msg);
     if (role === "bot") routeOnce(channelId, seatId, msg);
   }
-  if (droppedReasoning && !posted.length) recordDroppedReasoning(seatId, channelId);
+  if (droppedMessages.length && !posted.length) recordDroppedReasoning(seatId, channelId, droppedMessages);
   if (posted.length) {
     emit({
       scope: "harness",
