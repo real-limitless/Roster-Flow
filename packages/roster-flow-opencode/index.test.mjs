@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NO_ROOM_ERROR, buildTools, rosterAuthHeaders, systemBlock, wikiflowApi, wikiflowConfig } from "./index.js";
+import plugin, { NO_ROOM_ERROR, buildTools, rosterAuthHeaders, systemBlock, wikiflowApi, wikiflowConfig } from "./index.js";
+
+test("default export is a v2 plugin definition", () => {
+  assert.equal(plugin.id, "roster-flow-opencode");
+  assert.equal(typeof plugin.setup, "function");
+});
 
 function fakeTool(def) {
   return def;

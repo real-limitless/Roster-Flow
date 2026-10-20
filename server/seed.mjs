@@ -97,6 +97,7 @@ export function normalizeModelId(model) {
   const raw = String(model).trim();
   if (!raw) return "";
   if (NICK[raw]) return NICK[raw];
+  if (raw.startsWith("featherless/")) return `roster-featherless/${raw.slice("featherless/".length)}`;
   return raw;
 }
 

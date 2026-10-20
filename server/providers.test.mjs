@@ -41,12 +41,13 @@ test("normalizeOpenCodeConfig folds legacy keys into OpenCode's documented schem
     },
     agents: { build: { mode: "all", system: "Persona: x", permissions: { edit: "deny" } } },
   });
-  assert.equal(out.providers, undefined);
+  assert.equal(out.provider, undefined);
   assert.equal(out.agents, undefined);
-  const p = out.provider.featherless;
-  assert.equal(p.settings, undefined);
-  assert.equal(p.package, undefined);
-  assert.deepEqual(p.options, { baseURL: "https://api.featherless.ai/v1", apiKey: "{env:FEATHERLESS_API_KEY}" });
+  const p = out.providers.featherless;
+  assert.equal(p.options, undefined);
+  assert.equal(p.npm, undefined);
+  assert.equal(p.package, "aisdk:@ai-sdk/openai-compatible");
+  assert.deepEqual(p.settings, { baseURL: "https://api.featherless.ai/v1", apiKey: "{env:FEATHERLESS_API_KEY}" });
   assert.equal(out.agent.build.prompt, "Persona: x");
   assert.equal(out.agent.build.system, undefined);
   assert.deepEqual(out.agent.build.permission, { edit: "deny" });
@@ -100,7 +101,7 @@ test("upsertProvider keeps models a seat still uses and never writes a completio
         teams: [{ allowedModels: ["featherless/team-only", "openai/gpt-5"] }],
       },
     );
-    const models = readOpenCodeConfig().provider.featherless.models;
+    const models = readOpenCodeConfig().providers.featherless.models;
     assert.equal(models["Qwen/Qwen2.5-Coder-32B-Instruct"].limit.output, 512);
     assert.ok(models["Qwen/Qwen2.5-Coder-32B-Instruct"].limit.context > 0);
     assert.equal(models["meta-llama/Llama-3.3-70B-Instruct"].name, "Llama 3.3 70B");
@@ -148,7 +149,7 @@ test("upsertProvider does not add an in-use featherless id the upstream catalog 
       state,
       new Set(["Qwen/Qwen2.5-Coder-32B-Instruct"]),
     );
-    let models = readOpenCodeConfig().provider.featherless.models;
+    let models = readOpenCodeConfig().providers.featherless.models;
     assert.ok(models["Qwen/Qwen2.5-Coder-32B-Instruct"]);
     assert.equal(models["missing-upstream"], undefined);
     assert.equal(models["unused-model"], undefined);

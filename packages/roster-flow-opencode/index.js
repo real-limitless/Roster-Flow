@@ -531,5 +531,9 @@ export async function RosterFlowPlugin(_input) {
   };
 }
 
-export default RosterFlowPlugin;
-export const server = RosterFlowPlugin;
+const definition = {
+  id: "roster-flow-opencode",
+  setup: RosterFlowPlugin,
+};
+export default definition;
+export const server = definition;

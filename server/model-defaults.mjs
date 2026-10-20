@@ -1,11 +1,12 @@
-/** Default Featherless chat model for conductor, channel, architect, and other former Grok seats. */
-export const FEATHERLESS_CHAT_ID = "deepseek-ai/DeepSeek-V4.1-Flash";
+/** Default Featherless chat model. Small instruct model that answers inside a room turn. */
+export const FEATHERLESS_CHAT_ID = "Qwen/Qwen2.5-7B-Instruct";
 
 /** Coding model already published on the Featherless catalog. Seats assigned this id stay on it. */
 export const FEATHERLESS_CODER_ID = "Qwen/Qwen2.5-Coder-32B-Instruct";
 
-export const FEATHERLESS_CHAT_MODEL = `featherless/${FEATHERLESS_CHAT_ID}`;
-export const FEATHERLESS_CODER_MODEL = `featherless/${FEATHERLESS_CODER_ID}`;
+export const FEATHERLESS_PROVIDER_ID = "roster-featherless";
+export const FEATHERLESS_CHAT_MODEL = `${FEATHERLESS_PROVIDER_ID}/${FEATHERLESS_CHAT_ID}`;
+export const FEATHERLESS_CODER_MODEL = `${FEATHERLESS_PROVIDER_ID}/${FEATHERLESS_CODER_ID}`;
 
 /**
  * Reasoning models spend the completion budget before they emit visible text.
@@ -22,8 +23,8 @@ export const DEFAULT_OUTPUT_TOKENS = 8192;
  */
 export const DEFAULT_CONTEXT_TOKENS = 128000;
 
-/** DeepSeek V4.1 Flash context window. A missing limit must not fall back to the generic 128000. */
-export const FEATHERLESS_CHAT_CONTEXT = 262144;
+/** Qwen2.5 7B context window. A missing limit must not fall back to the generic 128000. */
+export const FEATHERLESS_CHAT_CONTEXT = 32768;
 
 /** A positive request is kept, and anything below {@link MIN_OUTPUT_TOKENS} is raised to that floor. */
 export function outputTokenLimit(value) {
@@ -36,6 +37,8 @@ export function outputTokenLimit(value) {
 export function contextTokenLimit(value, modelId) {
   const n = Number(value);
   if (Number.isFinite(n) && n > 0) return Math.trunc(n);
-  if (modelId === FEATHERLESS_CHAT_ID) return FEATHERLESS_CHAT_CONTEXT;
+  if (modelId === FEATHERLESS_CHAT_ID || modelId === "deepseek-ai/DeepSeek-V4.1-Flash") {
+    return modelId === FEATHERLESS_CHAT_ID ? FEATHERLESS_CHAT_CONTEXT : 262144;
+  }
   return DEFAULT_CONTEXT_TOKENS;
 }

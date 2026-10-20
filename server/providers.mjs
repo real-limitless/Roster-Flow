@@ -2,6 +2,8 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { root } from "./paths.mjs";
 import { homedir } from "node:os";
 import { normalizeModelId } from "./seed.mjs";
 import { contextTokenLimit, outputTokenLimit } from "./model-defaults.mjs";
@@ -11,6 +13,14 @@ import { protectPrivateFile, writePrivateFile } from "./private-file.mjs";
 import { getState } from "./store.mjs";
 
 const ocPath = join(ocDir, "opencode.json");
+const ROSTER_PLUGIN_NAME = "roster-flow-opencode";
+const ROSTER_PLUGIN = pathToFileURL(join(root, "packages/roster-flow-opencode/index.js")).href;
+
+function withRosterPlugin(list) {
+  const items = (Array.isArray(list) ? list : []).filter((item) => item !== ROSTER_PLUGIN_NAME && item !== ROSTER_PLUGIN);
+  items.push(ROSTER_PLUGIN);
+  return items;
+}
 
 function readJson(path, fallback) {
   if (!existsSync(path)) return fallback;
@@ -24,28 +34,54 @@ function readJson(path, fallback) {
 export function readOpenCodeConfig() {
   return readJson(ocPath, {
     $schema: "https://opencode.ai/config.json",
-    plugin: ["roster-flow-opencode"],
+    plugin: [ROSTER_PLUGIN],
     provider: {},
   });
 }
 
+function v2Package(raw) {
+  const pkg = String(raw?.package || raw?.npm || "").replace(/^aisdk:/, "");
+  if (!pkg) return "";
+  return pkg.startsWith("@ai-sdk/") ? `aisdk:${pkg}` : pkg;
+}
+
 /**
- * OpenCode's config schema (https://opencode.ai/config.json) only accepts
- * `provider`, `agent`, and `permission`, and provider blocks only take
- * `options` (no `settings` / `package`). Older Roster builds wrote plural keys;
- * fold them into the documented shape so `opencode serve` honors them.
+ * v2 rewrites a provider id it recognizes (`featherless`) onto
+ * `@opencode/ai/providers/openai-compatible` and then demands an OpenCode
+ * account. A custom id keeps the request on the user's API key.
+ */
+const OPENCODE_OWNED_IDS = new Set(["featherless", "xai", "openai", "anthropic", "google", "groq", "mistral", "cohere", "openrouter"]);
+
+export function harnessProviderId(id) {
+  const clean = String(id || "").trim().toLowerCase();
+  if (!OPENCODE_OWNED_IDS.has(clean)) return clean;
+  return `roster-${clean}`;
+}
+
+/**
+ * OpenCode v2.0.32 reads `providers`, `package` (`aisdk:` prefix), and
+ * `settings`. It ignores the v1 `provider` / `npm` / `options` block.
  */
 export function normalizeOpenCodeConfig(cfg = {}) {
   const out = { ...cfg };
-  const provider = { ...(out.providers || {}), ...(out.provider || {}) };
+  const provider = { ...(out.provider || {}), ...(out.providers || {}) };
   for (const [id, raw] of Object.entries(provider)) {
     if (!raw || typeof raw !== "object") continue;
-    const { settings, package: pkg, ...rest } = raw;
-    const options = { ...(settings || {}), ...(rest.options || {}) };
-    provider[id] = { ...rest, ...(rest.npm || !pkg ? {} : { npm: pkg }), ...(Object.keys(options).length ? { options } : {}) };
+    const owned = OPENCODE_OWNED_IDS.has(String(id).toLowerCase());
+    const { settings, options, npm, package: pkg, ...rest } = raw;
+    const merged = { ...(options || {}), ...(settings || {}) };
+    if (owned) delete merged.provider;
+    const pack = owned ? "@ai-sdk/openai-compatible" : v2Package({ package: pkg, npm });
+    const nextId = harnessProviderId(id);
+    if (nextId !== id) delete provider[id];
+    provider[nextId] = {
+      ...rest,
+      ...(pack ? { package: pack } : {}),
+      ...(Object.keys(merged).length ? { settings: merged } : {}),
+    };
   }
-  delete out.providers;
-  out.provider = provider;
+  delete out.provider;
+  out.providers = provider;
   if (out.agents || out.agent) {
     const agent = { ...(out.agents || {}), ...(out.agent || {}) };
     for (const [id, raw] of Object.entries(agent)) {
@@ -63,7 +99,7 @@ export function normalizeOpenCodeConfig(cfg = {}) {
   return out;
 }
 
-function providerBlocks(cfg) {
+export function providerBlocks(cfg) {
   const a = cfg.provider && typeof cfg.provider === "object" ? cfg.provider : {};
   const b = cfg.providers && typeof cfg.providers === "object" ? cfg.providers : {};
   return { ...a, ...b };
@@ -71,8 +107,7 @@ function providerBlocks(cfg) {
 
 export function writeOpenCodeConfig(cfg) {
   mkdirSync(ocDir, { recursive: true });
-  if (!cfg.plugin) cfg.plugin = ["roster-flow-opencode"];
-  else if (!cfg.plugin.includes("roster-flow-opencode")) cfg.plugin.push("roster-flow-opencode");
+  cfg.plugin = withRosterPlugin(cfg.plugin);
   const clean = normalizeOpenCodeConfig(cfg);
   writeFileSync(ocPath, JSON.stringify(clean, null, 2));
   return clean;

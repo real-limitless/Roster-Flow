@@ -46,9 +46,9 @@ function providers() {
 }
 http.createServer((req, res) => {
   res.setHeader("content-type", "application/json");
-  if (req.url === "/global/health") return res.end(JSON.stringify({ healthy: true, version: "fake" }));
-  if (req.url === "/session") return res.end("[]");
-  if (req.url === "/config/providers") return res.end(JSON.stringify({ providers: providers(), default: {} }));
+  if (req.url === "/global/health" || req.url === "/api/info") return res.end(JSON.stringify({ healthy: true, version: "fake" }));
+  if (req.url === "/session" || req.url === "/api/session") return res.end("[]");
+  if (req.url === "/config/providers" || req.url === "/api/provider") return res.end(JSON.stringify({ providers: providers(), data: providers(), default: {} }));
   res.statusCode = 404;
   res.end("{}");
 }).listen(port, "127.0.0.1");
@@ -231,7 +231,8 @@ test("ensure spawns both serves with the roster config and key, and reports load
   assert.equal(seen.env.FEATHERLESS_API_KEY, "fl-test-key");
   const written = JSON.parse(readFileSync(seen.env.OPENCODE_CONFIG, "utf8"));
   assert.ok(written.provider.featherless);
-  assert.ok(written.plugin.includes("roster-flow-opencode"));
+  assert.ok(written.plugin.some((item) => String(item).endsWith("/packages/roster-flow-opencode/index.js")));
+  assert.equal(written.plugin.includes("roster-flow-opencode"), false);
 
   const system = await harness.ensure({ kind: "system" });
   assert.equal(system.harness, "up");
@@ -278,9 +279,10 @@ test("operator mcp, username, and an extra provider survive on both harnesses", 
       assert.equal(cfg.mcp.wiki.url, "https://wiki.example/mcp", file);
       assert.equal(cfg.mcp.wiki.enabled, true, file);
       assert.equal(cfg.theme, "system", file);
-      assert.equal(cfg.provider.operatorprov.name, "Operator", file);
-      assert.equal(cfg.provider.featherless.name, "Featherless", file);
-      assert.ok(cfg.plugin.includes("roster-flow-opencode"), file);
+      assert.equal((cfg.providers || cfg.provider).operatorprov.name, "Operator", file);
+      assert.equal((cfg.providers || cfg.provider).featherless.name, "Featherless", file);
+      assert.ok(cfg.plugin.some((item) => String(item).endsWith("/packages/roster-flow-opencode/index.js")), file);
+      assert.equal(cfg.plugin.includes("roster-flow-opencode"), false, file);
       assert.ok(cfg.plugin.includes("operator-plugin"), file);
     }
   } finally {

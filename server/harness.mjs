@@ -5,8 +5,10 @@
 import { internalPluginToken } from "./internal-token.mjs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   normalizeOpenCodeConfig,
   serveChildEnv,
@@ -15,17 +17,43 @@ import {
   ensureAuthProviders,
   loadedProviderIds,
   isBuiltinProvider,
+  providerBlocks,
 } from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
 import { opencodeHostname, rosterApiUrl } from "./config.mjs";
 import { companyWorkspace, dataDir, opencodeDir, root, systemWorkspace } from "./paths.mjs";
 
-const HEALTH = "/global/health";
-const ROSTER_PLUGIN = "roster-flow-opencode";
+// OpenCode v2 mounts its API under /api/*. Unprefixed routes hit the SPA.
+// v2.0.32: health is /api/info, providers are /api/provider, sessions are /api/session.
+const API = "/api";
+const HEALTH = `${API}/info`;
+const ROSTER_PLUGIN_NAME = "roster-flow-opencode";
+/** Absolute file URL. A bare name makes v2 npm-install it and 404. */
+const ROSTER_PLUGIN = pathToFileURL(join(root, "packages/roster-flow-opencode/index.js")).href;
 const instances = { company: null, system: null };
 const inflight = { company: null, system: null };
 const spawned = new Set();
+
+const OPENCODE_SERVER_USERNAME = "opencode";
+const SERVER_PASSWORD =
+  String(process.env.OPENCODE_SERVER_PASSWORD || process.env.OPENCODE_PASSWORD || "").trim() ||
+  randomBytes(24).toString("base64url");
+
+export function serverPassword() {
+  return SERVER_PASSWORD;
+}
+
+function serverAuthHeader() {
+  return { authorization: `Basic ${Buffer.from(`${OPENCODE_SERVER_USERNAME}:${SERVER_PASSWORD}`).toString("base64")}` };
+}
+
+function unwrapList(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.messages)) return data.messages;
+  return [];
+}
 
 export const COMPANY = "company";
 export const SYSTEM = "system";
@@ -99,6 +127,9 @@ export function serveEnv(kind = COMPANY, base = process.env) {
     OPENCODE_CONFIG_DIR: dir,
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_CLIENT: s.client,
+    OPENCODE_SERVER_PASSWORD: SERVER_PASSWORD,
+    OPENCODE_PASSWORD: SERVER_PASSWORD,
+    OPENCODE_SERVER_USERNAME: OPENCODE_SERVER_USERNAME,
     NODE_PATH: [join(root, "node_modules"), base.NODE_PATH].filter(Boolean).join(":"),
     ROSTER_API: rosterApiUrl(),
     ROSTER_API_TOKEN: String(base.ROSTER_API_TOKEN || "").trim() || internalPluginToken(),
@@ -133,12 +164,13 @@ function unionPlugins(...lists) {
     for (const item of items) {
       if (item == null || item === "") continue;
       const key = typeof item === "string" ? item : JSON.stringify(item);
+      if (key === ROSTER_PLUGIN_NAME || key === ROSTER_PLUGIN) continue;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(item);
     }
   }
-  if (!seen.has(ROSTER_PLUGIN)) out.push(ROSTER_PLUGIN);
+  out.push(ROSTER_PLUGIN);
   return out;
 }
 
@@ -268,10 +300,14 @@ export async function healthCheck(port, timeoutMs = 1500) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetch(`http://${opencodeHostname()}:${port}${HEALTH}`, { signal: ac.signal });
+    const res = await fetch(`http://${opencodeHostname()}:${port}${HEALTH}`, {
+      headers: { accept: "application/json", ...serverAuthHeader() },
+      signal: ac.signal,
+    });
     if (!res.ok) return null;
     const data = await res.json();
-    return data && typeof data === "object" ? data : null;
+    if (!data || typeof data !== "object") return null;
+    return { healthy: true, version: String(data.version || "") };
   } catch {
     return null;
   } finally {
@@ -428,16 +464,34 @@ export function harnessSeatReport(state, status) {
  * `{ providerID, modelID }` for every model the serve loaded (built-ins plus
  * config providers), from `GET /config/providers`. Null when unknown.
  */
-export function flattenConfigProviders(data) {
-  const list = Array.isArray(data?.providers) ? data.providers : Array.isArray(data) ? data : null;
+function modelIds(models) {
+  if (!models || typeof models !== "object") return [];
+  if (Array.isArray(models)) return models.map((m) => m?.id || m?.modelID || m).filter(Boolean).map(String);
+  return Object.keys(models);
+}
+
+/**
+ * `{ providerID, modelID }` for every model the serve loaded. v1 put models on
+ * `/config/providers`. v2.0.32 `/api/provider` lists enabled providers without
+ * models, so an enabled custom provider falls back to the models in our config.
+ */
+export function flattenConfigProviders(data, configured = {}) {
+  const list = Array.isArray(data?.providers)
+    ? data.providers
+    : Array.isArray(data?.data)
+      ? data.data
+      : Array.isArray(data)
+        ? data
+        : null;
   if (!list) return null;
   const out = [];
   for (const p of list) {
     const providerID = p?.id;
     if (!providerID) continue;
-    const models = p.models && typeof p.models === "object" ? p.models : {};
-    const ids = Array.isArray(models) ? models.map((m) => m?.id || m) : Object.keys(models);
-    for (const modelID of ids) if (modelID) out.push({ providerID, modelID: String(modelID) });
+    if (p.activation && p.activation !== "enabled" && p.activation !== "auto") continue;
+    let ids = modelIds(p.models);
+    if (!ids.length) ids = modelIds(configured[providerID]);
+    for (const modelID of ids) out.push({ providerID, modelID: String(modelID) });
   }
   return out;
 }
@@ -447,7 +501,11 @@ export async function loadedModels(kind = COMPANY) {
   const inst = instances[k];
   if (!inst?.healthy) return null;
   try {
-    const loaded = flattenConfigProviders(await ocFetch("/config/providers", {}, k)) ?? [];
+    const configured = {};
+    for (const [id, block] of Object.entries(providerBlocks(readOpenCodeConfig()))) {
+      if (block?.models) configured[id] = block.models;
+    }
+    const loaded = flattenConfigProviders(await ocFetch(`${API}/provider`, {}, k), configured) ?? [];
     if (instances[k] === inst) inst.loaded = loaded;
     return loaded;
   } catch {
@@ -489,7 +547,7 @@ export async function ocFetch(path, init = {}, kind = COMPANY) {
   const inst = instances[k];
   if (!inst?.baseUrl) throw new Error(k === SYSTEM ? "System OpenCode harness is offline" : "OpenCode harness is offline");
   const url = `${inst.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-  const headers = { ...(init.headers || {}) };
+  const headers = { accept: "application/json", ...serverAuthHeader(), ...(init.headers || {}) };
   if (init.body && !headers["content-type"] && !headers["Content-Type"]) {
     headers["content-type"] = "application/json";
   }
@@ -748,7 +806,7 @@ function flattenLiveProviders(data) {
 
 export async function listLiveModels() {
   if (!instances.company?.healthy) return [];
-  for (const path of ["/config", "/global/config", "/provider"]) {
+  for (const path of [`${API}/config`, `${API}/global/config`, `${API}/provider`]) {
     try {
       const data = await ocFetch(path, {}, COMPANY);
       const models = flattenLiveProviders(data);
@@ -761,24 +819,37 @@ export async function listLiveModels() {
 }
 
 export async function listSessions(kind = COMPANY) {
-  const data = await ocFetch("/session", {}, kind);
-  return Array.isArray(data) ? data : [];
+  return unwrapList(await ocFetch(`${API}/session`, {}, kind));
 }
 
 export async function createSession(body = {}, kind = COMPANY) {
-  return ocFetch("/session", { method: "POST", body: JSON.stringify(body) }, kind);
+  const data = await ocFetch(`${API}/session`, { method: "POST", body: JSON.stringify(body) }, kind);
+  return data?.data && typeof data.data === "object" && !Array.isArray(data.data) ? data.data : data;
+}
+
+export function promptRequest(body = {}) {
+  const text = Array.isArray(body.parts)
+    ? body.parts.map((part) => (typeof part === "string" ? part : part?.text || part?.content || "")).filter(Boolean).join("\n")
+    : String(body.text || "");
+  const out = { text };
+  if (body.agent) out.agent = body.agent;
+  if (body.model && typeof body.model === "object") {
+    out.model = {
+      providerID: body.model.providerID,
+      id: body.model.id || body.model.modelID,
+    };
+  }
+  return out;
 }
 
 export async function promptSession(sessionId, body, kind = COMPANY) {
-  return ocFetch(
-    `/session/${sessionId}/prompt_async`,
-    { method: "POST", body: JSON.stringify(body) },
-    kind,
-  );
+  const req = ocFetch(`${API}/session/${sessionId}/prompt`, { method: "POST", body: JSON.stringify(promptRequest(body)) }, kind);
+  req.catch(() => undefined);
+  return undefined;
 }
 
 export async function deleteSession(sessionId, kind = COMPANY) {
-  return ocFetch(`/session/${sessionId}`, { method: "DELETE" }, kind);
+  return ocFetch(`${API}/session/${sessionId}`, { method: "DELETE" }, kind);
 }
 
 /** `roster:<seat>` is a seat's DM session; `roster:<seat>:<room>` is its session for that room. */
@@ -796,8 +867,12 @@ export function serveBaseUrl(kind = COMPANY) {
 
 /** Sessions OpenCode started from this one (the `task` tool's subagent runs). */
 export async function sessionChildren(sessionId, kind = COMPANY) {
-  const data = await ocFetch(`/session/${sessionId}/children`, {}, kind);
-  return Array.isArray(data) ? data : [];
+  try {
+    return unwrapList(await ocFetch(`${API}/session/${sessionId}/children`, {}, kind));
+  } catch (err) {
+    if (err?.status === 404) return [];
+    throw err;
+  }
 }
 
 /** The agent a session ran as: `info.agent` (OpenCode 1.19) or `info.mode` (older assistant messages). */
@@ -924,7 +999,7 @@ function eventStream(kind, baseUrl = instances[harnessKind(kind)]?.baseUrl) {
   eventStreams.set(baseUrl, entry);
   entry.task = (async () => {
     try {
-      const res = await fetch(`${entry.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream" } });
+      const res = await fetch(`${entry.baseUrl}${API}/event`, { signal: ac.signal, headers: { accept: "text/event-stream", ...serverAuthHeader() } });
       if (!res.ok || !res.body) return;
       entry.markOpened(true);
       const reader = res.body.getReader();
@@ -1058,8 +1133,7 @@ export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = provide
 }
 
 export async function sessionMessages(sessionId, kind = COMPANY) {
-  const data = await ocFetch(`/session/${sessionId}/message`, {}, kind);
-  return Array.isArray(data) ? data : data?.messages || [];
+  return unwrapList(await ocFetch(`${API}/session/${sessionId}/message`, {}, kind));
 }
 
 function partText(part) {
