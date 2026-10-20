@@ -5,6 +5,7 @@
 import { internalPluginToken } from "./internal-token.mjs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -26,6 +27,23 @@ const ROSTER_PLUGIN = "roster-flow-opencode";
 const instances = { company: null, system: null };
 const inflight = { company: null, system: null };
 const spawned = new Set();
+
+/**
+ * OpenCode v2 serve requires HTTP basic auth (username `opencode`, password
+ * from OPENCODE_SERVER_PASSWORD). We pin one password per CORE process so
+ * every spawned serve and every probe (healthCheck / ocFetch) share it.
+ * An operator may override by setting OPENCODE_SERVER_PASSWORD in the env.
+ */
+const OPENCODE_SERVER_USERNAME = "opencode";
+const SERVER_PASSWORD =
+  String(process.env.OPENCODE_SERVER_PASSWORD || "").trim() ||
+  randomBytes(24).toString("base64url");
+
+/** Basic-auth `Authorization` header for the harness serves, or "" when unset. */
+function serverAuthHeader() {
+  const raw = `${OPENCODE_SERVER_USERNAME}:${SERVER_PASSWORD}`;
+  return { authorization: `Basic ${Buffer.from(raw).toString("base64")}` };
+}
 
 export const COMPANY = "company";
 export const SYSTEM = "system";
@@ -99,6 +117,8 @@ export function serveEnv(kind = COMPANY, base = process.env) {
     OPENCODE_CONFIG_DIR: dir,
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_CLIENT: s.client,
+    OPENCODE_SERVER_PASSWORD: SERVER_PASSWORD,
+    OPENCODE_SERVER_USERNAME: OPENCODE_SERVER_USERNAME,
     NODE_PATH: [join(root, "node_modules"), base.NODE_PATH].filter(Boolean).join(":"),
     ROSTER_API: rosterApiUrl(),
     ROSTER_API_TOKEN: String(base.ROSTER_API_TOKEN || "").trim() || internalPluginToken(),
@@ -268,7 +288,10 @@ export async function healthCheck(port, timeoutMs = 1500) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetch(`http://${opencodeHostname()}:${port}${HEALTH}`, { signal: ac.signal });
+    const res = await fetch(`http://${opencodeHostname()}:${port}${HEALTH}`, {
+      headers: { accept: "application/json", ...serverAuthHeader() },
+      signal: ac.signal,
+    });
     if (!res.ok) return null;
     const data = await res.json();
     return data && typeof data === "object" ? data : null;
@@ -489,7 +512,7 @@ export async function ocFetch(path, init = {}, kind = COMPANY) {
   const inst = instances[k];
   if (!inst?.baseUrl) throw new Error(k === SYSTEM ? "System OpenCode harness is offline" : "OpenCode harness is offline");
   const url = `${inst.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-  const headers = { ...(init.headers || {}) };
+  const headers = { accept: "application/json", ...serverAuthHeader(), ...(init.headers || {}) };
   if (init.body && !headers["content-type"] && !headers["Content-Type"]) {
     headers["content-type"] = "application/json";
   }
@@ -924,7 +947,7 @@ function eventStream(kind, baseUrl = instances[harnessKind(kind)]?.baseUrl) {
   eventStreams.set(baseUrl, entry);
   entry.task = (async () => {
     try {
-      const res = await fetch(`${entry.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream" } });
+      const res = await fetch(`${entry.baseUrl}/event`, { signal: ac.signal, headers: { accept: "text/event-stream", ...serverAuthHeader() } });
       if (!res.ok || !res.body) return;
       entry.markOpened(true);
       const reader = res.body.getReader();

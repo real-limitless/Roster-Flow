@@ -6,9 +6,20 @@ Roster-flow must not become a second agent runtime. The Everflow pattern (see `P
 
 1. Resolve a real `opencode` binary (reject stubs).
 2. `ensure` — `opencode serve --hostname <OPENCODE_HOSTNAME, default 127.0.0.1> --port <n>` in the project workspace.
-3. Health — `GET /global/health`.
+3. Health — `GET /global/health` (OpenCode v2: HTTP basic auth, username `opencode`, password `OPENCODE_SERVER_PASSWORD`; CORE autogenerates one per process and sends it on every probe).
 4. Talk to sessions over HTTP (Room / API), or attach the TUI (`opencode attach --session`) in the Harness xterm pane.
 5. Write agents, plugins, and providers into the workspace `opencode.json`.
+
+> **OpenCode v2 note.** v2's serve API is a breaking change from v1: basic auth
+> is required on every route, v1 plugins do not run (the `roster-flow-opencode`
+> plugin is v2-shaped: `tool({ description, args, execute })` + `event` +
+> `experimental.session.compacting`), and `experimental.chat.system.transform`
+> is replaced by `experimental.session.compacting` (roster context is injected
+> into `output.context` there). The harness pins one `OPENCODE_SERVER_PASSWORD`
+> per CORE process so spawned serves and probes share it. Some early v2 builds
+> (e.g. `@opencode/cli` 2.0.32) did not mount the API routes on `opencode serve`
+> (upstream issues #42565 / #46498); against those builds the harness stays
+> `offline` until the serve mounts `/global/health` and `/config/providers`.
 
 `server/harness.mjs` manages two local serves:
 

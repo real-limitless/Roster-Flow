@@ -487,6 +487,32 @@ export function systemBlock({ seats = [], teams = [], channels = [], bound = nul
   ];
 }
 
+/**
+ * Fetch the org context (seats/teams/channels + this session's bound room)
+ * and push the Roster-flow system block onto `output.system` (v1
+ * `experimental.chat.system.transform`) or `output.context` (v2
+ * `experimental.session.compacting`). Shared by both hooks so the block
+ * survives compaction in v2 and is injected per-turn in v1.
+ */
+async function injectRosterContext(output, input) {
+  try {
+    const sessionID = input?.sessionID || input?.sessionId || null;
+    const [seats, teams, channels, bound] = await Promise.all([
+      api("/api/v1/seats"),
+      api("/api/v1/teams"),
+      api("/api/v1/channels"),
+      sessionID ? api(`/api/v1/sessions/${encodeURIComponent(sessionID)}/room`).catch(() => null) : null,
+    ]);
+    const block = systemBlock({ seats, teams, channels, bound });
+    if (Array.isArray(output?.system)) output.system.push(...block);
+    else if (Array.isArray(output?.context)) output.context.push(...block);
+  } catch {
+    const note = "Roster-flow plugin: CORE API unreachable. Continue with local tools only.";
+    if (Array.isArray(output?.system)) output.system.push(note);
+    else if (Array.isArray(output?.context)) output.context.push(note);
+  }
+}
+
 /** @type {import('@opencode-ai/plugin').Plugin} */
 export async function RosterFlowPlugin(_input) {
   let tool;
@@ -514,19 +540,17 @@ export async function RosterFlowPlugin(_input) {
         }
       }
     },
+    // v1 per-turn system prompt injection. Still fires in v1 builds; a no-op
+    // in v2 if the hook is not invoked. See experimental.session.compacting
+    // for the v2 injection point.
     async "experimental.chat.system.transform"(input, output) {
-      try {
-        const sessionID = input?.sessionID || input?.sessionId || null;
-        const [seats, teams, channels, bound] = await Promise.all([
-          api("/api/v1/seats"),
-          api("/api/v1/teams"),
-          api("/api/v1/channels"),
-          sessionID ? api(`/api/v1/sessions/${encodeURIComponent(sessionID)}/room`).catch(() => null) : null,
-        ]);
-        output.system.push(...systemBlock({ seats, teams, channels, bound }));
-      } catch {
-        output.system.push("Roster-flow plugin: CORE API unreachable. Continue with local tools only.");
-      }
+      await injectRosterContext(output, input);
+    },
+    // v2 compaction hook: inject the roster block into the retained context
+    // so a compacted session keeps its seat/room/persona. v2 docs list this
+    // hook; pushing into output.context is the documented contract.
+    async "experimental.session.compacting"(input, output) {
+      await injectRosterContext(output, input);
     },
   };
 }
