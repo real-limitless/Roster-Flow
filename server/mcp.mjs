@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { skipOnboarding } from "./flags.mjs";
+import { auditLog } from "./audit-log.mjs";
 import { getState, mutate } from "./store.mjs";
 import { cycleSafe, postBus } from "./bus.mjs";
 import { postMessage } from "./chat.mjs";
@@ -362,6 +363,7 @@ export async function handleMcpMessage(msg = {}, ctx = {}) {
     const args = params?.arguments && typeof params.arguments === "object" ? { ...params.arguments } : {};
     if (isJobTool(name)) return jsonRpcResult(id, await callJobTool(name, args, ctx));
     if (ROOM_WRITE_TOOLS.has(name) && !allowsWrite(ctx.scopes)) {
+      if (ctx.audit) auditLog({ ...ctx.audit, event: "denial", action: "mcp.scope", outcome: "denied", status: 403 });
       return jsonRpcResult(id, { content: [{ type: "text", text: "write scope required" }], isError: true });
     }
     if ((name === "roster_send_message" || name === "roster_handoff") && !args.from) args.from = MCP_GUEST_ID;
@@ -370,6 +372,9 @@ export async function handleMcpMessage(msg = {}, ctx = {}) {
       const result = await callMcpTool(name, args);
       return jsonRpcResult(id, result);
     } catch (err) {
+      if (err.status === 429 && ctx.audit) {
+        auditLog({ ...ctx.audit, event: "rate_limit", action: "mcp.cycle", outcome: "denied", status: 429 });
+      }
       return jsonRpcResult(id, {
         content: [{ type: "text", text: err.message || "tool error" }],
         isError: true,
@@ -413,6 +418,7 @@ function writeSseMessage(res, body, extraHeaders = {}) {
 }
 
 export async function serveMcp(req, res, ctx = {}) {
+  if (req?.audit) ctx.audit = req.audit;
   mutate((s) => ensureMcpGuest(s));
   const method = req.method || "GET";
   if (method === "GET") {

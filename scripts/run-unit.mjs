@@ -59,6 +59,7 @@ const files = [
   "server/knowledge.test.mjs",
   "server/slack.test.mjs",
   "server/flags.test.mjs",
+  "server/audit-log.test.mjs",
 ];
 
 const tempOc = mkdtempSync(join(tmpdir(), "rf-opencode-"));
