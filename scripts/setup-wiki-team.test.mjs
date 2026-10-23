@@ -37,16 +37,16 @@ test("setup-wiki-team registers Featherless by env ref, project, and @wiki team"
   const ids = team.body.specialists.map((s) => s.id);
   assert.deepEqual(ids, ["wiki-architect", "wiki-scribe", "wiki-diagrammer", "wiki-editor"]);
   assert.ok(team.body.specialists.every((s) => s.model.startsWith("featherless/")));
-  assert.equal(team.body.defaultModel, "featherless/deepseek-ai/DeepSeek-V4.1-Flash");
+  assert.equal(team.body.defaultModel, "featherless/Qwen/Qwen2.5-7B-Instruct");
   const modelIds = put.body.models.map((m) => m.id);
-  assert.ok(modelIds.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.ok(modelIds.includes("Qwen/Qwen2.5-7B-Instruct"));
   assert.ok(modelIds.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
   assert.ok(put.body.models.every((m) => m.limit.context > 0 && m.limit.output >= 512));
-  assert.equal(put.body.models.find((m) => m.id === "deepseek-ai/DeepSeek-V4.1-Flash").limit.context, 262144);
+  assert.equal(put.body.models.find((m) => m.id === "Qwen/Qwen2.5-7B-Instruct").limit.context, 32768);
   for (const spec of team.body.specialists) {
     assert.ok(modelIds.includes(spec.model.slice("featherless/".length)), spec.model);
   }
-  assert.equal(out.model, "deepseek-ai/DeepSeek-V4.1-Flash");
+  assert.equal(out.model, "Qwen/Qwen2.5-7B-Instruct");
   assert.equal(out.teamCreated, true);
   assert.ok(calls.every((c) => c.headers.authorization === "Bearer rf_test"));
 });
@@ -58,7 +58,7 @@ test("setup-wiki-team adds a non-default WIKI_MODEL and accepts a featherless/ r
   const team = custom.calls.find((c) => c.method === "POST" && c.path === "/api/v1/teams");
   const ids = put.body.models.map((m) => m.id);
   assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
-  assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.ok(ids.includes("Qwen/Qwen2.5-7B-Instruct"));
   assert.equal(team.body.defaultModel, "featherless/Qwen/Qwen2.5-Coder-32B-Instruct");
   assert.ok(team.body.specialists.every((s) => s.model === "featherless/Qwen/Qwen2.5-Coder-32B-Instruct"));
 
@@ -142,8 +142,9 @@ test("setup-wiki-team omits an in-use featherless id the upstream catalog does n
   });
   const ids = calls.find((c) => c.method === "PUT").body.models.map((m) => m.id);
   assert.ok(!ids.includes("meta-llama/Llama-3.3-70B-Instruct"));
-  assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.ok(ids.includes("Qwen/Qwen2.5-7B-Instruct"));
   assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+  assert.equal(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"), false);
 });
 
 test("setup-wiki-team prunes stored featherless ids the catalog does not offer", async () => {
@@ -169,7 +170,8 @@ test("setup-wiki-team prunes stored featherless ids the catalog does not offer",
   assert.ok(!ids.includes("bogus-87"));
   assert.ok(!ids.includes("meta-llama/Llama-3.3-70B-Instruct"));
   assert.ok(ids.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
-  assert.ok(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"));
+  assert.ok(ids.includes("Qwen/Qwen2.5-7B-Instruct"));
+  assert.equal(ids.includes("deepseek-ai/DeepSeek-V4.1-Flash"), false);
 });
 
 test("setup-wiki-team is idempotent: on 409 it only hires missing specialists", async () => {

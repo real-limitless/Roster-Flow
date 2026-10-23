@@ -149,11 +149,11 @@ function writeSystemOpenCodeConfig(seat) {
   const company = readOpenCodeConfig();
   const cfg = readJson(systemOcPath, {
     $schema: "https://opencode.ai/config.json",
-    plugin: ["roster-flow-opencode"],
+    plugin: [],
     provider: {},
     agent: {},
   });
-  cfg.plugin = ["roster-flow-opencode"];
+  cfg.plugin = company.plugin || [];
   cfg.provider = company.provider || cfg.provider || {};
   const clean = normalizeOpenCodeConfig(cfg);
   clean.agent = clean.agent || {};

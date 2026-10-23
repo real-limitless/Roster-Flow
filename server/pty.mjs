@@ -1,5 +1,6 @@
 /**
- * PTY for `opencode attach <serve> --session <id>`.
+ * PTY for the OpenCode TUI attached to a harness serve.
+ * v2: `opencode --server <url> --session <id> [directory]`
  * Prefers node-pty; otherwise Python pty-bridge.py (this host has no `make`).
  */
 import { spawn } from "node:child_process";
@@ -7,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { opencodeHostname } from "./config.mjs";
-import { ensure, status as harnessStatus, whichOpenCode, harnessKindForSeat, workspacePath } from "./harness.mjs";
+import { ensure, status as harnessStatus, whichOpenCode, harnessKindForSeat, workspacePath, serverPassword } from "./harness.mjs";
 import { getState } from "./store.mjs";
 import { ensureSeatSession } from "./bus.mjs";
 
@@ -15,7 +16,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const bridge = join(root, "server", "pty-bridge.py");
 
 function spawnAttach({ binary, url, sessionId, cols, rows, cwd, env }) {
-  const args = ["attach", url, "--session", sessionId, "--dir", root];
+  // v2 dropped `attach <url>` and `--dir`. Connect with global flags.
+  const args = ["--server", url, "--session", sessionId, cwd || root];
   try {
     // Optional — not installed when node-gyp/`make` is missing.
     const pty = requireNodePty();
@@ -152,14 +154,14 @@ async function handlePty(ws, seatId, params) {
       sessionId,
       cols,
       rows,
-      cwd: kind === "system" ? workspacePath("system") : root,
-      env: process.env,
+      cwd: workspacePath(kind),
+      env: { ...process.env, OPENCODE_PASSWORD: serverPassword(), OPENCODE_SERVER_PASSWORD: serverPassword() },
     });
     send({
       type: "status",
       status: "ready",
       sessionId,
-      attach: `opencode attach ${serveUrl} --session ${sessionId}`,
+      attach: `opencode --server ${serveUrl} --session ${sessionId}`,
       pty: term.kind,
     });
     term.onData((data) => {

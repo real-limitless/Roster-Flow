@@ -3,6 +3,7 @@ import { examplePayload } from "roster-flow-blocks";
 import { skipOnboarding } from "./flags.mjs";
 import { ensureTeamRooms } from "./channels.mjs";
 import { FEATHERLESS_CHAT_MODEL } from "./model-defaults.mjs";
+import { openCodeIsV2 } from "./opencode-generation.mjs";
 import { normalizeLimits, normalizeRespond } from "./room-config.mjs";
 
 /** How the channel seat answers a room when nobody was mentioned. One or two sentences, as a person in the room. */
@@ -97,6 +98,8 @@ export function normalizeModelId(model) {
   const raw = String(model).trim();
   if (!raw) return "";
   if (NICK[raw]) return NICK[raw];
+  if (openCodeIsV2() && raw.startsWith("featherless/")) return `roster-featherless/${raw.slice("featherless/".length)}`;
+  if (!openCodeIsV2() && raw.startsWith("roster-featherless/")) return `featherless/${raw.slice("roster-featherless/".length)}`;
   return raw;
 }
 

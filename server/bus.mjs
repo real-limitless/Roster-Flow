@@ -17,7 +17,7 @@ import {
   watchProviderTurn,
   ensure,
 } from "./harness.mjs";
-import { isBuiltinProvider, isLoadedModel, loadedProviderIds, resolveUsableModel } from "./providers.mjs";
+import { isBuiltinProvider, isLoadedModel, loadedProviderIds, parseModelRef, resolveUsableModel } from "./providers.mjs";
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
@@ -302,6 +302,15 @@ function seatById(id) {
  * (`roster:<seat>:<room>`); without, its DM session (`roster:<seat>`), which
  * the Harness attach pane, heartbeats, and bus mail use.
  */
+function sessionCreateBody(seat, title) {
+  const parsed = parseModelRef(seat?.model);
+  return {
+    title,
+    agent: seat.id,
+    ...(parsed ? { model: { providerID: parsed.providerID, id: parsed.modelID } } : {}),
+  };
+}
+
 export async function ensureSeatSession(to, { channel = null } = {}) {
   const seat = seatById(to);
   if (!seat || seat.kind !== "bot") return null;
@@ -311,7 +320,7 @@ export async function ensureSeatSession(to, { channel = null } = {}) {
   if (channel) {
     const entry = liveRoomSession(getState(), seat, channel);
     if (entry) return entry.sessionId;
-    const ses = await deps.createSession({ title: roomSessionTitle(to, channel), agent: to }, kind);
+    const ses = await deps.createSession(sessionCreateBody(seat, roomSessionTitle(to, channel)), kind);
     const id = ses?.id || ses?.sessionID;
     if (!id) return null;
     setRoomSession(to, channel, { sessionId: id, harness: kind, cursor: null, lastWakeAt: new Date().toISOString() });
@@ -321,7 +330,7 @@ export async function ensureSeatSession(to, { channel = null } = {}) {
   const { key, sessions } = sessionMap(getState(), seat);
   let sessionId = sessions[to];
   if (sessionId) return sessionId;
-  const ses = await deps.createSession({ title: `roster:${to}`, agent: to }, kind);
+  const ses = await deps.createSession(sessionCreateBody(seat, `roster:${to}`), kind);
   sessionId = ses?.id || ses?.sessionID;
   if (sessionId) {
     mutate((s) => {

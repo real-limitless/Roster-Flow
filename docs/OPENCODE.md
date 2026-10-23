@@ -6,20 +6,19 @@ Roster-flow must not become a second agent runtime. The Everflow pattern (see `P
 
 1. Resolve a real `opencode` binary (reject stubs).
 2. `ensure` — `opencode serve --hostname <OPENCODE_HOSTNAME, default 127.0.0.1> --port <n>` in the project workspace.
-3. Health — `GET /global/health` (OpenCode v2: HTTP basic auth, username `opencode`, password `OPENCODE_SERVER_PASSWORD`; CORE autogenerates one per process and sends it on every probe).
+3. Health — `GET /global/health` on OpenCode 1. OpenCode 2 uses `GET /api/info` with HTTP basic auth (username `opencode`, password `OPENCODE_SERVER_PASSWORD` or `OPENCODE_PASSWORD`). CORE autogenerates one password per process and sends it on every probe. The image's installer (`https://opencode.ai/install`) only installs OpenCode 1, so CORE stays on the 1.x routes unless `opencode --version` reports major 2 or newer. Set `ROSTER_OPENCODE_GENERATION=1` or `=2` to override that probe.
 4. Talk to sessions over HTTP (Room / API), or attach the TUI (`opencode attach --session`) in the Harness xterm pane.
 5. Write agents, plugins, and providers into the workspace `opencode.json`.
 
-> **OpenCode v2 note.** v2's serve API is a breaking change from v1: basic auth
-> is required on every route, v1 plugins do not run (the `roster-flow-opencode`
-> plugin is v2-shaped: `tool({ description, args, execute })` + `event` +
-> `experimental.session.compacting`), and `experimental.chat.system.transform`
-> is replaced by `experimental.session.compacting` (roster context is injected
-> into `output.context` there). The harness pins one `OPENCODE_SERVER_PASSWORD`
-> per CORE process so spawned serves and probes share it. Some early v2 builds
-> (e.g. `@opencode/cli` 2.0.32) did not mount the API routes on `opencode serve`
-> (upstream issues #42565 / #46498); against those builds the harness stays
-> `offline` until the serve mounts `/global/health` and `/config/providers`.
+> **OpenCode version gate.** OpenCode 2's serve API is a breaking change from
+> 1.x: routes move under `/api`, basic auth is required, a bare plugin name is
+> installed from npm (CORE points at the local `roster-flow-opencode` file
+> instead), and provider blocks use `providers` / `package` / `settings`. The
+> plugin default export stays callable for OpenCode 1 and also exposes
+> `{ id, setup }` for OpenCode 2. `experimental.chat.system.transform` still
+> runs on 1.x; `experimental.session.compacting` injects the same roster block
+> into `output.context` on 2.x. CORE selects the contract from
+> `opencode --version`. The Docker image does not install OpenCode 2.
 
 `server/harness.mjs` manages two local serves:
 
@@ -47,11 +46,11 @@ Hooks:
 - `event` — bind OpenCode `agent` / session id to a seat.
 - `experimental.chat.system.transform` — inject roster + mailbox so the model knows its job and peers.
 
-Configured in `.opencode/opencode.json` (company) and `.roster-flow/system/.opencode/opencode.json` (System) as `"plugin": ["roster-flow-opencode"]`. The System serve sets `NODE_PATH` at the repo `node_modules` so the plugin still resolves.
+Configured in `.opencode/opencode.json` (company) and `.roster-flow/system/.opencode/opencode.json` (System). OpenCode 1 lists `"plugin": ["roster-flow-opencode"]`. OpenCode 2 lists the plugin's `file://` URL, because a bare name is installed from npm. The System serve sets `NODE_PATH` at the repo `node_modules` so the package name still resolves on OpenCode 1.
 
-Each serve is spawned outside the git checkout (`ROSTER_WORKSPACE` for company, `.roster-flow/system` for System) with `OPENCODE_DISABLE_PROJECT_CONFIG=1`, so a project `opencode.json` or plugin cannot replace the provider list. `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` point at the file this process writes: `ROSTER_OPENCODE_DIR/opencode.json` for company (`/data/opencode` in Compose) and `.roster-flow/system/.opencode/` for System. An operator `OPENCODE_CONFIG` is deep-merged into both of those files before the serve starts (including `username`, `mcp`, and any other keys). The process does not load the operator path instead. Roster provider blocks win when the same provider id is set in both files. Plugin lists are the union of the operator list and the roster list, and always include `roster-flow-opencode`. Every `{env:VAR}` a provider block references is passed through to both serves.
+Each serve is spawned outside the git checkout (`ROSTER_WORKSPACE` for company, `.roster-flow/system` for System) with `OPENCODE_DISABLE_PROJECT_CONFIG=1`, so a project `opencode.json` or plugin cannot replace the provider list. `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` point at the file this process writes: `ROSTER_OPENCODE_DIR/opencode.json` for company (`/data/opencode` in Compose) and `.roster-flow/system/.opencode/` for System. An operator `OPENCODE_CONFIG` is deep-merged into both of those files before the serve starts (including `username`, `mcp`, and any other keys). The process does not load the operator path instead. Roster provider blocks win when the same provider id is set in both files. Plugin lists are the union of the operator list and the roster list, and always include the roster plugin (package name on OpenCode 1, file URL on OpenCode 2). Every `{env:VAR}` a provider block references is passed through to both serves.
 
-Provider writes (`PUT /api/v1/providers`, key, delete) restart a running serve so it reloads. Before a wake, CORE reads `GET /config/providers` from the serve and only sends a model OpenCode loaded; the fallback model and the `Waking <seat> (<model>)…` line use the same list. A provider that is missing, or a turn the provider rejects (for example 401), is posted to the room as a System line instead of an opaque 500 or a silent no-reply. `harness`, `loadedProviders`, and setup `harnessReady` all come from a live health check.
+Provider writes (`PUT /api/v1/providers`, key, delete) restart a running serve so it reloads. Before a wake, CORE reads the serve's provider list (`GET /config/providers` on OpenCode 1, `GET /api/provider` on OpenCode 2) and only sends a model OpenCode loaded; the fallback model and the `Waking <seat> (<model>)…` line use the same list. A provider that is missing, or a turn the provider rejects (for example 401), is posted to the room as a System line instead of an opaque 500 or a silent no-reply. `harness`, `loadedProviders`, and setup `harnessReady` all come from a live health check.
 
 ## Settings (`/app/settings`)
 

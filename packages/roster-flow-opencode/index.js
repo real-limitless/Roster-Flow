@@ -555,5 +555,14 @@ export async function RosterFlowPlugin(_input) {
   };
 }
 
-export default RosterFlowPlugin;
-export const server = RosterFlowPlugin;
+/**
+ * OpenCode 1 calls the default export. OpenCode 2 reads `{ id, setup }`.
+ * One function carries both: v1 invokes it, v2 uses `.setup`.
+ */
+function pluginEntry(input) {
+  return RosterFlowPlugin(input);
+}
+pluginEntry.id = "roster-flow-opencode";
+pluginEntry.setup = RosterFlowPlugin;
+export default pluginEntry;
+export const server = pluginEntry;
