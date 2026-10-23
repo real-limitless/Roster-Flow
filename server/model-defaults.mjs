@@ -1,10 +1,13 @@
+import { openCodeIsV2 } from "./opencode-generation.mjs";
+
 /** Default Featherless chat model. Small instruct model that answers inside a room turn. */
 export const FEATHERLESS_CHAT_ID = "Qwen/Qwen2.5-7B-Instruct";
 
 /** Coding model already published on the Featherless catalog. Seats assigned this id stay on it. */
 export const FEATHERLESS_CODER_ID = "Qwen/Qwen2.5-Coder-32B-Instruct";
 
-export const FEATHERLESS_PROVIDER_ID = "roster-featherless";
+/** OpenCode 2 rewrites a recognized `featherless` id onto its signed-in provider. */
+export const FEATHERLESS_PROVIDER_ID = openCodeIsV2() ? "roster-featherless" : "featherless";
 export const FEATHERLESS_CHAT_MODEL = `${FEATHERLESS_PROVIDER_ID}/${FEATHERLESS_CHAT_ID}`;
 export const FEATHERLESS_CODER_MODEL = `${FEATHERLESS_PROVIDER_ID}/${FEATHERLESS_CODER_ID}`;
 
