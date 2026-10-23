@@ -69,6 +69,7 @@ import { isDataWritable } from "./paths.mjs";
 import { tryServeStatic } from "./static.mjs";
 import { handleSlackAction, handleSlackEvent, mirrorToSlack, slackStatus, verifySlackRequest } from "./slack.mjs";
 import { allowMcp, isMcpPath, MCP_GUEST_ID, serveMcp } from "./mcp.mjs";
+import { actorLabel, beginRequestAudit, emitResponseAudit } from "./audit-log.mjs";
 
 const PORT = apiPort();
 const HOST = apiHost();
@@ -77,7 +78,12 @@ function isCallbackSecretPath(pathname) {
   return pathname === "/api/v1/jobs/callback-secret" || pathname === "/api/v1/jobs/callback-secret/rotate";
 }
 
+function markAudit(res, fields) {
+  res.auditExplicit = fields;
+}
+
 function json(res, code, body, extra) {
+  emitResponseAudit(res, code, body);
   const data = JSON.stringify(body);
   const headers = { "content-type": "application/json; charset=utf-8" };
   if (extra?.secret) headers["cache-control"] = "no-store";
@@ -277,10 +283,11 @@ try {
 }
 
 const server = createServer(async (req, res) => {
+  const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+  const { pathname } = url;
+  const method = req.method || "GET";
+  beginRequestAudit(req, res, { path: pathname, method });
   try {
-    const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
-    const { pathname } = url;
-    const method = req.method || "GET";
     if (method === "OPTIONS") {
       if (isCallbackSecretPath(pathname)) {
         res.writeHead(204, { "cache-control": "no-store" });
@@ -298,11 +305,13 @@ const server = createServer(async (req, res) => {
     if (isMcpPath(pathname)) {
       const token = parseBearer(req);
       const mcpApiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
+      const mcpUserEarly = mcpApiToken ? mcpApiToken.user : userFromToken(getState(), token);
+      if (req.audit) req.audit.actor = actorLabel({ user: mcpUserEarly, tokenId: mcpApiToken?.token?.id, presented: token });
       if (isApiToken(token) && (!mcpApiToken || !tokenAllows(mcpApiToken.token, method, pathname))) {
         json(res, mcpApiToken ? 403 : 401, { error: mcpApiToken ? "token scope does not allow this request" : "invalid, expired, or revoked API token" });
         return;
       }
-      const mcpUser = mcpApiToken ? mcpApiToken.user : userFromToken(getState(), token);
+      const mcpUser = mcpUserEarly;
       if (!allowMcp(req, mcpUser)) {
         json(res, 401, { error: "authentication required" });
         return;
@@ -319,6 +328,7 @@ const server = createServer(async (req, res) => {
     const internal = isInternalPluginToken(token);
     const apiToken = !internal && isApiToken(token) ? resolveApiToken(getState(), token) : null;
     const user = internal ? (getState().users || [])[0] || null : apiToken ? apiToken.user : userFromToken(getState(), token);
+    if (req.audit) req.audit.actor = actorLabel({ user, tokenId: apiToken?.token?.id, presented: internal ? "" : token });
 
     if (internal && !internalTokenAllows(method, pathname)) {
       reply(res, pathname, 403, { error: "the internal plugin token does not allow this request" });
@@ -354,6 +364,7 @@ const server = createServer(async (req, res) => {
           seatId: body.seatId,
         });
       });
+      markAudit(res, { event: "key_change", action: "token.create", outcome: "success", actor: user?.id || "" });
       json(res, 201, out);
       return;
     }
@@ -363,6 +374,7 @@ const server = createServer(async (req, res) => {
       mutate((s) => {
         out = revokeApiToken(s, decodeURIComponent(tokenOne[1]));
       });
+      markAudit(res, { event: "key_change", action: "token.revoke", outcome: "success", actor: user?.id || "" });
       json(res, 200, out);
       return;
     }
@@ -406,6 +418,7 @@ const server = createServer(async (req, res) => {
       } catch {
         /* agent files are best-effort */
       }
+      markAudit(res, { event: "admin_action", action: "setup.complete", outcome: "success", actor: user?.id || "" });
       json(res, 200, { ...(await setupPayload(next, user)), state: publicState(next) });
       return;
     }
@@ -435,6 +448,7 @@ const server = createServer(async (req, res) => {
         }
         return next;
       });
+      markAudit(res, { event: "admin_action", action: "setup.start_over", outcome: "success" });
       json(res, 200, await setupPayload(next, null));
       return;
     }
@@ -442,6 +456,7 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const out = await loginUser(getState(), body);
       save();
+      markAudit(res, { event: "auth_success", action: "auth.login", outcome: "success", actor: out.user?.id || "" });
       json(res, 200, out);
       return;
     }
@@ -471,6 +486,7 @@ const server = createServer(async (req, res) => {
         keepToken: token,
       });
       save();
+      markAudit(res, { event: "key_change", action: "password.change", outcome: "success", actor: user?.id || "" });
       json(res, 200, { ok: true, ...out });
       return;
     }
@@ -594,6 +610,7 @@ const server = createServer(async (req, res) => {
       } catch {
         /* agent files are best-effort */
       }
+      markAudit(res, { event: "admin_action", action: "state.reset", outcome: "success", actor: user?.id || "" });
       json(res, 200, publicState(st));
       return;
     }
@@ -819,6 +836,7 @@ const server = createServer(async (req, res) => {
         if (seat.kind === "bot") syncSeatAgent(seat);
       }
       for (const team of result.created?.teams || []) syncTeamAgent(team);
+      markAudit(res, { event: "admin_action", action: `approval.${action}`, outcome: "success", actor: user?.id || "" });
       json(res, 200, {
         ...result,
         seats: getState().seats,
@@ -1020,6 +1038,7 @@ const server = createServer(async (req, res) => {
         });
       });
       if (seat.kind === "bot") syncSeatAgent(seat);
+      markAudit(res, { event: "admin_action", action: "seat.hire", outcome: "success", actor: user?.id || "" });
       json(res, 201, publicSeat(seat));
       return;
     }
@@ -1113,6 +1132,7 @@ const server = createServer(async (req, res) => {
       mutate((s) => {
         result = fireSeat(s, id);
       });
+      markAudit(res, { event: "admin_action", action: "seat.fire", outcome: "success", actor: user?.id || "" });
       json(res, 200, result);
       return;
     }
@@ -1266,6 +1286,7 @@ const server = createServer(async (req, res) => {
         ? routeChannelMessage({ channelId: id, text, from: extras.seatId || "you", messageId: msg?.id || null })
         : { mentions: [], wakes: [], notify: [], pending: Promise.resolve([]) };
       const wakeResults = (await (routed.started || routed.pending) || []).map((row) => publishedWake(row));
+      if (routed.rateLimited) markAudit(res, { event: "rate_limit", action: "chat.implicit", outcome: "denied" });
       json(res, 201, {
         ...msg,
         mentions: routed.mentions,
@@ -1415,6 +1436,7 @@ const server = createServer(async (req, res) => {
           mutate((s) => {
             info = rotateCallbackSecret(s);
           });
+          markAudit(res, { event: "key_change", action: "callback_secret.rotate", outcome: "success", actor: user?.id || "" });
           secretJson(res, 200, info);
           return;
         }
@@ -1633,6 +1655,7 @@ const server = createServer(async (req, res) => {
       const out = upsertProvider(body, getState(), offered);
       restartForProviderChange();
       syncBotAgents(getState().seats, getState().teams);
+      markAudit(res, { event: "config_change", action: "provider.upsert", outcome: "success", actor: user?.id || "" });
       json(res, 200, out);
       return;
     }
@@ -1642,6 +1665,7 @@ const server = createServer(async (req, res) => {
       const out = setAuth(decodeURIComponent(authP[1]), body.apiKey || body.key);
       restartForProviderChange();
       syncBotAgents(getState().seats, getState().teams);
+      markAudit(res, { event: "key_change", action: "provider.key", outcome: "success", actor: user?.id || "" });
       json(res, 200, out);
       return;
     }
@@ -1650,6 +1674,7 @@ const server = createServer(async (req, res) => {
       const out = removeProvider(decodeURIComponent(delP[1]));
       restartForProviderChange();
       syncBotAgents(getState().seats, getState().teams);
+      markAudit(res, { event: "config_change", action: "provider.remove", outcome: "success", actor: user?.id || "" });
       json(res, 200, out);
       return;
     }
