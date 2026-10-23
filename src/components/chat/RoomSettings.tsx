@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Channel, RespondMode, RoomLimits, Seat, SeatRoom, Team } from "../../data";
+import type { CatalogModel, Channel, RespondMode, RoomLimits, Seat, SeatRoom, Team } from "../../data";
 import { api } from "../../lib/api";
 
 export const CONDUCTOR_ID = "channel";
@@ -39,6 +39,49 @@ export function leadChoices(channel: Channel, teams: Team[], roster: Seat[]): Se
   );
 }
 
+function catalogId(model: CatalogModel) {
+  return `${model.providerID}/${model.modelID}`;
+}
+
+function catalogLabel(model: CatalogModel) {
+  const name = (model.name || "").trim();
+  const id = catalogId(model);
+  if (name && name !== id && name !== model.modelID) return name;
+  return model.modelID || id;
+}
+
+/** Teams that own this room's model list: its teams, or the teams of its members. */
+export function teamsForChannel(channel: Channel, teams: Team[], roster: Seat[]): Team[] {
+  const byId = new Map(teams.map((t) => [t.id, t]));
+  const direct = (channel.teamIds || []).map((id) => byId.get(id)).filter((t): t is Team => Boolean(t));
+  if (direct.length) return direct;
+  const seen = new Set<string>();
+  const out: Team[] = [];
+  for (const seat of roomMembers(channel, teams, roster)) {
+    const team = seat.team ? byId.get(seat.team) : undefined;
+    if (!team || seen.has(team.id)) continue;
+    seen.add(team.id);
+    out.push(team);
+  }
+  return out;
+}
+
+/** Allowed models that are in the provider catalog the client already loaded. */
+export function channelModelChoices(channel: Channel, teams: Team[], roster: Seat[], models: CatalogModel[]): CatalogModel[] {
+  const allowed = new Set<string>();
+  for (const team of teamsForChannel(channel, teams, roster)) {
+    for (const id of team.allowedModels || []) if (id) allowed.add(id);
+  }
+  return models.filter((m) => allowed.has(catalogId(m)));
+}
+
+export function channelTeamDefaultId(channel: Channel, teams: Team[], roster: Seat[]): string {
+  for (const team of teamsForChannel(channel, teams, roster)) {
+    if (team.defaultModel) return team.defaultModel;
+  }
+  return "";
+}
+
 export function responderLabel(channel: Channel | undefined, roster: Seat[]): string | null {
   if (!channel) return null;
   const mode = channel.respond || "lead";
@@ -56,16 +99,22 @@ export function RoomReplySettings({
   channel,
   roster,
   teams,
+  models = [],
   onPatch,
 }: {
   channel: Channel;
   roster: Seat[];
   teams: Team[];
+  models?: CatalogModel[];
   onPatch: (body: Partial<Channel>) => void;
 }) {
   const mode = channel.respond || "lead";
   const choices = leadChoices(channel, teams, roster);
   const responder = roster.find((s) => s.id === channel.responderSeatId);
+  const modelChoices = channelModelChoices(channel, teams, roster, models);
+  const teamDefault = channelTeamDefaultId(channel, teams, roster);
+  const teamDefaultModel = modelChoices.find((m) => catalogId(m) === teamDefault);
+  const teamDefaultLabel = teamDefaultModel ? catalogLabel(teamDefaultModel) : teamDefault;
   return (
     <div className="room-reply-settings" data-testid="room-reply-settings">
       <h4>Replies</h4>
@@ -84,6 +133,22 @@ export function RoomReplySettings({
         </select>
       </label>
       <p className="micro">{MODES.find((m) => m.id === mode)?.hint}</p>
+      <label className="kv-label">
+        Reply model
+        <select
+          data-testid="room-model"
+          value={channel.model || ""}
+          onChange={(e) => onPatch({ model: e.target.value || null })}
+        >
+          <option value="">{teamDefaultLabel ? `Team default (${teamDefaultLabel})` : "Team default"}</option>
+          {modelChoices.map((m) => (
+            <option key={catalogId(m)} value={catalogId(m)} title={catalogId(m)}>
+              {catalogLabel(m)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="micro">Bot replies in this room use this model. If it leaves the allowed catalog, replies use the team default.</p>
       {(mode === "lead" || mode === "team") && (
         <label className="kv-label">
           Lead
