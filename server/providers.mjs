@@ -350,6 +350,9 @@ export function listModels() {
 /** Env vars the OpenCode serve child needs for roster-flow-opencode plugin tools. */
 export const PLUGIN_PASSTHROUGH_ENV = ["WIKIFLOW_URL", "WIKIFLOW_TOKEN"];
 
+/** Model OpenCode substitutes for `{env:ROSTER_DEV_AGENT_MODEL}` when that var is blank. */
+export const DEFAULT_DEV_AGENT_MODEL = "example-provider-dev/example-model";
+
 const BUILTIN_KEY_ENV = {
   xai: "XAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
@@ -386,6 +389,8 @@ export function serveChildEnv(base = process.env) {
     const name = fromCfg || fallback[id] || `${String(id).toUpperCase().replace(/-/g, "_")}_API_KEY`;
     if (!env[name]) env[name] = key;
   }
+  const devAgentModel = String(env.ROSTER_DEV_AGENT_MODEL || "").trim();
+  env.ROSTER_DEV_AGENT_MODEL = devAgentModel || DEFAULT_DEV_AGENT_MODEL;
   return env;
 }
 
@@ -467,19 +472,41 @@ export function modelAllowedInConfig(model) {
   return true;
 }
 
+/** Placeholder pairs used when `ROSTER_FALLBACK_MODELS` is unset. */
+export const DEFAULT_FALLBACK_MODELS = [
+  ["example-provider-dev", "example-model"],
+  ["example-provider-dev", "example-auto"],
+  ["example-provider", "example-small"],
+  ["standardcompute", "StandardComputeRouter"],
+  ["xai", "grok-4"],
+];
+
+/**
+ * Preferred provider/model pairs for the connected-model fallback.
+ * `ROSTER_FALLBACK_MODELS` is a comma-separated `provider/model` list and
+ * replaces the default when it contains at least one pair. A model id may
+ * itself contain slashes; only the first slash separates the provider.
+ */
+export function fallbackModelPairs(env = process.env) {
+  const raw = String(env?.ROSTER_FALLBACK_MODELS ?? "").trim();
+  if (!raw) return DEFAULT_FALLBACK_MODELS.map((pair) => pair.slice());
+  const pairs = [];
+  for (const item of raw.split(",")) {
+    const ref = item.trim();
+    const slash = ref.indexOf("/");
+    if (slash <= 0 || slash === ref.length - 1) continue;
+    pairs.push([ref.slice(0, slash), ref.slice(slash + 1)]);
+  }
+  return pairs.length ? pairs : DEFAULT_FALLBACK_MODELS.map((pair) => pair.slice());
+}
+
 /** A connected configured model, restricted to ones the serve loaded when `loaded` is known. */
-export function firstConnectedModel(loaded = null, models = listModels()) {
+export function firstConnectedModel(loaded = null, models = listModels(), env = process.env) {
   const pool = (models || []).filter(
     (m) => m.connected && !isBuiltinProvider(m.providerID) && isLoadedModel(loaded, m.providerID, m.modelID) !== false,
   );
   if (!pool.length) return null;
-  const preferred = [
-    ["infiniterouter-dev", "big-pickle"],
-    ["infiniterouter-dev", "auto"],
-    ["infiniterouter", "small-tier"],
-    ["standardcompute", "StandardComputeRouter"],
-    ["xai", "grok-4"],
-  ];
+  const preferred = fallbackModelPairs(env);
   for (const [providerID, modelID] of preferred) {
     const hit = pool.find((m) => m.providerID === providerID && m.modelID === modelID);
     if (hit) return hit;

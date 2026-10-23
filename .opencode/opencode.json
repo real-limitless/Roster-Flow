@@ -110,7 +110,7 @@
     "eng": {
       "description": "Ship accepted work as a PR.",
       "mode": "primary",
-      "model": "infiniterouter-dev/big-pickle",
+      "model": "{env:ROSTER_DEV_AGENT_MODEL}",
       "system": "Persona: You are the @eng team alias in OpenCode.\nInstructions: Team role: Engineering\nDescription: Build and review product code.\nJob: Ship accepted work as a PR.\nSpecial rules:\nSupervisor routes. Generic does undifferentiated work. Specialists own implement and review.\nYou are @eng. Mail to you reaches the Supervisor (eng-supervisor).\nRoute via roster_handoff. Do not impersonate members."
     },
     "services": {
@@ -194,7 +194,7 @@
     "eng-generic": {
       "description": "Default @eng worker for undifferentiated tasks.",
       "mode": "all",
-      "model": "infiniterouter-dev/big-pickle",
+      "model": "{env:ROSTER_DEV_AGENT_MODEL}",
       "system": "Persona: Versatile eng teammate.\nInstructions: Do whatever the Supervisor assigned. Stay in the worktree. Do not deploy.\n\nTeam charter:\nTeam role: Engineering\nDescription: Build and review product code.\nJob: Ship accepted work as a PR.\nSpecial rules:\nSupervisor routes. Generic does undifferentiated work. Specialists own implement and review.\nProject: billing"
     },
     "eng-build": {
@@ -236,7 +236,7 @@
     "scout": {
       "description": "Cheap, disposable search.",
       "mode": "all",
-      "model": "infiniterouter-dev/big-pickle",
+      "model": "{env:ROSTER_DEV_AGENT_MODEL}",
       "system": "Persona: Cheap, disposable searcher.\nInstructions: Find the file, the stack, the last two hours. Hand off. Do not edit."
     },
     "docs": {

@@ -126,7 +126,7 @@ test("routeChannelMessage falls back to a connected OpenCode model", async () =>
   };
   deps.pullAssistant = async () => [{ id: `a-${Date.now()}`, text: "Fallback supervisor is awake." }];
   deps.keyStatus = () => ({ providerID: "xai", modelID: "grok-4", configured: false, connected: false });
-  deps.fallbackModel = () => ({ providerID: "infiniterouter-dev", modelID: "big-pickle", connected: true });
+  deps.fallbackModel = () => ({ providerID: "example-provider-dev", modelID: "example-model", connected: true });
   deps.followTicks = 1;
   deps.followDelayMs = 0;
   const before = getState().messages.length;
@@ -169,7 +169,7 @@ test("seatModelPlan falls back only to a model the serve loaded, and labels it",
   deps.keyStatus = keyedStatus("featherless", "Qwen/Qwen2.5-Coder-32B-Instruct");
   deps.fallbackModel = (loaded) => {
     fallbackCalls.push(loaded);
-    return loaded?.some((m) => m.providerID === "infiniterouter-dev") ? { providerID: "infiniterouter-dev", modelID: "big-pickle" } : null;
+    return loaded?.some((m) => m.providerID === "example-provider-dev") ? { providerID: "example-provider-dev", modelID: "example-model" } : null;
   };
   const seat = { name: "Channel", model: "featherless/Qwen/Qwen2.5-Coder-32B-Instruct" };
   try {
@@ -178,19 +178,19 @@ test("seatModelPlan falls back only to a model the serve loaded, and labels it",
     assert.equal(unknown.fallback, false);
     assert.equal(unknown.model, seat.model);
 
-    const loaded = [...BUILTIN_ONLY, { providerID: "infiniterouter-dev", modelID: "big-pickle" }];
+    const loaded = [...BUILTIN_ONLY, { providerID: "example-provider-dev", modelID: "example-model" }];
     const assigned = seatModelPlan(seat, loaded);
     assert.equal(assigned.ok, false);
     assert.equal(assigned.fallback, false);
     assert.equal(assigned.model, seat.model);
-    assert.match(assigned.hint, /featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct is not loaded by the harness \(loaded: opencode, infiniterouter-dev\)/);
+    assert.match(assigned.hint, /featherless\/Qwen\/Qwen2\.5-Coder-32B-Instruct is not loaded by the harness \(loaded: opencode, example-provider-dev\)/);
     assert.equal(fallbackCalls.length, 0);
 
     const open = seatModelPlan({ name: "Channel", model: "" }, loaded);
     assert.equal(open.ok, true);
     assert.equal(open.fallback, true);
-    assert.equal(open.model, "infiniterouter-dev/big-pickle");
-    assert.match(open.hint, /no model assigned\. Using infiniterouter-dev\/big-pickle/);
+    assert.equal(open.model, "example-provider-dev/example-model");
+    assert.match(open.hint, /no model assigned\. Using example-provider-dev\/example-model/);
 
     const none = seatModelPlan(seat, BUILTIN_ONLY);
     assert.equal(none.ok, false);
@@ -203,17 +203,17 @@ test("seatModelPlan falls back only to a model the serve loaded, and labels it",
 test("routeChannelMessage labels the Channel seat with the loaded fallback and wakes it", async () => {
   const prev = { ...deps };
   resetTrace();
-  const loaded = [...BUILTIN_ONLY, { providerID: "infiniterouter-dev", modelID: "big-pickle" }];
+  const loaded = [...BUILTIN_ONLY, { providerID: "example-provider-dev", modelID: "example-model" }];
   deps.harnessStatus = () => ({ harness: "up" });
   deps.ensure = async () => ({ harness: "up" });
   deps.loadedModels = async () => loaded;
   deps.knownLoadedModels = () => loaded;
   deps.keyStatus = keyedStatus("featherless", "Qwen/Qwen2.5-Coder-32B-Instruct");
-  deps.fallbackModel = (l) => (l ? { providerID: "infiniterouter-dev", modelID: "big-pickle" } : null);
+  deps.fallbackModel = (l) => (l ? { providerID: "example-provider-dev", modelID: "example-model" } : null);
   let woke = null;
   deps.wakeSeat = async (to) => {
     woke = to;
-    return { seat: to, runId: "run-loaded", started: false, error: "model is not loaded by the harness (loaded: opencode, infiniterouter-dev)." };
+    return { seat: to, runId: "run-loaded", started: false, error: "model is not loaded by the harness (loaded: opencode, example-provider-dev)." };
   };
   deps.pullAssistant = async () => [{ id: `a-loaded-${Date.now()}`, text: "Loaded fallback reply." }];
   deps.pullFailure = async () => null;

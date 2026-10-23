@@ -88,6 +88,8 @@ ROSTER_MCP_TOKEN=            # optional dedicated bearer for POST /mcp
 WIKIFLOW_URL=               # wiki-flow base URL (wikiflow_* tools)
 WIKIFLOW_TOKEN=             # wiki-flow Bearer token; never commit it
 FEATHERLESS_API_KEY=        # used by scripts/setup-wiki-team.mjs seats via {env:...}
+ROSTER_FALLBACK_MODELS=     # optional provider/model list; blank keeps the placeholder default
+ROSTER_DEV_AGENT_MODEL=example-provider-dev/example-model  # {env:ROSTER_DEV_AGENT_MODEL} on checked-in dev agents
 ```
 
 ## OpenCode config schema
