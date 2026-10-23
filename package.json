@@ -25,7 +25,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "react": "^19.1.1",
-    "react-d3-tree": "^3.6.6",
+    "react-d3-tree": "^3.6.7",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.2",
     "roster-flow-blocks": "file:packages/roster-flow-blocks",
@@ -39,6 +39,10 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.0.2",
     "typescript": "^5.9.2",
-    "vite": "^7.1.5"
+    "vite": "^7.3.7"
+  },
+  "overrides": {
+    "source-map-js": "1.2.2",
+    "toml": "5.0.1"
   }
 }
