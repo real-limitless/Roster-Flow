@@ -34,6 +34,8 @@ process.on("exit", () => killCores("SIGKILL"));
 export async function bootCore(env) {
   const dir = mkdtempSync(join(tmpdir(), "rf-boot-"));
   const port = 20000 + Math.floor(Math.random() * 20000);
+  const callerSetRuntime = env && ("NODE_ENV" in env || "ENVIRONMENT" in env);
+  const skip = /^(1|true)$/i.test(String(env?.ROSTER_SKIP_ONBOARDING || ""));
   const child = spawn(process.execPath, [join(root, "server/index.mjs")], {
     env: {
       ...process.env,
@@ -45,7 +47,10 @@ export async function bootCore(env) {
       ROSTER_WORKSPACE: join(dir, "ws"),
       ROSTER_DISABLE_ROUTINES: "1",
       OPENCODE_BIN: "/nonexistent/opencode",
+      ROSTER_AUTH_RATE_MAX: "100000",
+      ROSTER_AUTH_LOCKOUT_AFTER: "100000",
       HOME: dir,
+      ...(skip && !callerSetRuntime ? { ENVIRONMENT: "local" } : {}),
       ...env,
     },
     stdio: "ignore",

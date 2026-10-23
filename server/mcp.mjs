@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { skipOnboarding } from "./flags.mjs";
+import { corsHeaders } from "./cors.mjs";
 import { getState, mutate } from "./store.mjs";
 import { cycleSafe, postBus } from "./bus.mjs";
 import { postMessage } from "./chat.mjs";
@@ -379,14 +380,11 @@ export async function handleMcpMessage(msg = {}, ctx = {}) {
   return jsonRpcError(id, -32601, `method not found: ${method}`);
 }
 
-export function mcpCorsHeaders(extra = {}) {
-  return {
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
+export function mcpCorsHeaders(req, extra = {}) {
+  return corsHeaders(req, {
     "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
-    "access-control-expose-headers": "mcp-session-id, mcp-protocol-version",
     ...extra,
-  };
+  });
 }
 
 async function readRaw(req) {
@@ -400,14 +398,14 @@ function wantsSse(req) {
   return accept.includes("text/event-stream") && !accept.includes("application/json");
 }
 
-function writeJson(res, code, body, extraHeaders = {}) {
+function writeJson(req, res, code, body, extraHeaders = {}) {
   const data = JSON.stringify(body);
-  res.writeHead(code, mcpCorsHeaders({ "content-type": "application/json; charset=utf-8", ...extraHeaders }));
+  res.writeHead(code, mcpCorsHeaders(req, { "content-type": "application/json; charset=utf-8", ...extraHeaders }));
   res.end(data);
 }
 
-function writeSseMessage(res, body, extraHeaders = {}) {
-  res.writeHead(200, mcpCorsHeaders({ "content-type": "text/event-stream", "cache-control": "no-cache", ...extraHeaders }));
+function writeSseMessage(req, res, body, extraHeaders = {}) {
+  res.writeHead(200, mcpCorsHeaders(req, { "content-type": "text/event-stream", "cache-control": "no-cache", ...extraHeaders }));
   res.write(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
   res.end();
 }
@@ -419,7 +417,7 @@ export async function serveMcp(req, res, ctx = {}) {
     if (wantsSse(req)) {
       res.writeHead(
         200,
-        mcpCorsHeaders({
+        mcpCorsHeaders(req, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
           connection: "keep-alive",
@@ -430,7 +428,7 @@ export async function serveMcp(req, res, ctx = {}) {
       res.end();
       return;
     }
-    writeJson(res, 200, {
+    writeJson(req, res, 200, {
       ok: true,
       name: "roster-flow",
       transport: "streamable-http",
@@ -442,12 +440,12 @@ export async function serveMcp(req, res, ctx = {}) {
   if (method === "DELETE") {
     const sid = req.headers["mcp-session-id"];
     if (sid) mcpSessions.delete(String(sid));
-    res.writeHead(204, mcpCorsHeaders());
+    res.writeHead(204, mcpCorsHeaders(req));
     res.end();
     return;
   }
   if (method !== "POST") {
-    res.writeHead(405, mcpCorsHeaders());
+    res.writeHead(405, mcpCorsHeaders(req));
     res.end();
     return;
   }
@@ -456,7 +454,7 @@ export async function serveMcp(req, res, ctx = {}) {
   try {
     raw = await readRaw(req);
   } catch (err) {
-    writeJson(res, 400, jsonRpcError(null, -32700, err.message || "parse error"));
+    writeJson(req, res, 400, jsonRpcError(null, -32700, err.message || "parse error"));
     return;
   }
 
@@ -464,13 +462,13 @@ export async function serveMcp(req, res, ctx = {}) {
   try {
     msg = raw ? JSON.parse(raw) : {};
   } catch {
-    writeJson(res, 400, jsonRpcError(null, -32700, "Parse error"));
+    writeJson(req, res, 400, jsonRpcError(null, -32700, "Parse error"));
     return;
   }
 
   const out = await handleMcpMessage(msg, ctx);
   if (out && out.notification) {
-    res.writeHead(202, mcpCorsHeaders());
+    res.writeHead(202, mcpCorsHeaders(req));
     res.end();
     return;
   }
@@ -486,8 +484,8 @@ export async function serveMcp(req, res, ctx = {}) {
   }
 
   if (wantsSse(req)) {
-    writeSseMessage(res, out, extra);
+    writeSseMessage(req, res, out, extra);
     return;
   }
-  writeJson(res, 200, out, extra);
+  writeJson(req, res, 200, out, extra);
 }

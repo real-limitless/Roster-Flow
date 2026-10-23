@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { addFirstUser, changePassword, hashPassword, loginUser, publicUser, resetOwnerPassword, userFromToken, verifyPassword } from "./auth.mjs";
-import { skipOnboarding } from "./flags.mjs";
+import { DEMO_TOKEN, resetSkipOnboardingNotice, skipOnboarding } from "./flags.mjs";
 import { pendingState } from "./seed.mjs";
 
 const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -108,19 +108,41 @@ test("owner-reset CLI rewrites hash without deleting seats", async () => {
   }
 });
 
-test("skipOnboarding is false unless the env flag is 1 or true", () => {
-  const prev = process.env.ROSTER_SKIP_ONBOARDING;
+test("skipOnboarding and the demo token require an explicit local environment", () => {
+  const prev = {
+    ROSTER_SKIP_ONBOARDING: process.env.ROSTER_SKIP_ONBOARDING,
+    NODE_ENV: process.env.NODE_ENV,
+    ENVIRONMENT: process.env.ENVIRONMENT,
+  };
+  const warnings = [];
+  const orig = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  resetSkipOnboardingNotice();
+  const state = { users: [] };
   try {
+    process.env.NODE_ENV = "local";
+    process.env.ENVIRONMENT = "";
     process.env.ROSTER_SKIP_ONBOARDING = "";
     assert.equal(skipOnboarding(), false);
     process.env.ROSTER_SKIP_ONBOARDING = "0";
     assert.equal(skipOnboarding(), false);
     process.env.ROSTER_SKIP_ONBOARDING = "1";
     assert.equal(skipOnboarding(), true);
+    assert.equal(userFromToken(state, DEMO_TOKEN)?.id, "demo");
     process.env.ROSTER_SKIP_ONBOARDING = "true";
     assert.equal(skipOnboarding(), true);
+    process.env.NODE_ENV = "production";
+    process.env.ENVIRONMENT = "production";
+    assert.equal(skipOnboarding(), false);
+    assert.equal(userFromToken(state, DEMO_TOKEN), null);
+    assert.equal(skipOnboarding(), false);
+    assert.equal(warnings.length, 1);
   } finally {
-    if (prev === undefined) delete process.env.ROSTER_SKIP_ONBOARDING;
-    else process.env.ROSTER_SKIP_ONBOARDING = prev;
+    console.warn = orig;
+    resetSkipOnboardingNotice();
+    for (const key of Object.keys(prev)) {
+      if (prev[key] === undefined) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
   }
 });

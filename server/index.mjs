@@ -19,7 +19,10 @@ import {
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey, canonicalProviderId } from "./providers.mjs";
 import { featherlessOfferedModelIds, PROVIDER_WRITE_CATALOG_TIMEOUT_MS } from "./featherless-catalog.mjs";
 import { addFirstUser, changePassword, DEMO_TOKEN, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
-import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
+import { allowStateReset, demoMode, demoResetMs, isLocalOrDev } from "./flags.mjs";
+import { chargeAuthRate, authGuardKind, clearAuthFailures, recordAuthFailure } from "./auth-guard.mjs";
+import { corsHeaders } from "./cors.mjs";
+import { clientIp } from "./client-ip.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
@@ -81,14 +84,19 @@ function json(res, code, body, extra) {
   const data = JSON.stringify(body);
   const headers = { "content-type": "application/json; charset=utf-8" };
   if (extra?.secret) headers["cache-control"] = "no-store";
-  else {
-    headers["access-control-allow-origin"] = "*";
-    headers["access-control-allow-headers"] = "content-type, authorization, mcp-session-id, mcp-protocol-version";
-    headers["access-control-allow-methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
-    headers["access-control-expose-headers"] = "mcp-session-id, mcp-protocol-version";
-  }
+  else Object.assign(headers, corsHeaders(res.rosterReq));
   res.writeHead(code, headers);
   res.end(data);
+}
+
+function tooMany(res, decision) {
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "retry-after": String(decision.retryAfter),
+    ...corsHeaders(res.rosterReq),
+  };
+  res.writeHead(429, headers);
+  res.end(JSON.stringify({ error: decision.error }));
 }
 
 function secretJson(res, code, body) {
@@ -277,21 +285,33 @@ try {
 }
 
 const server = createServer(async (req, res) => {
+  let guardKind = "";
+  let guardIp = "";
   try {
     const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
     const { pathname } = url;
     const method = req.method || "GET";
+    res.rosterReq = req;
+    guardKind = authGuardKind(method, pathname);
+    guardIp = clientIp(req);
+    if (guardKind) {
+      const blocked = chargeAuthRate(guardIp);
+      if (blocked) {
+        tooMany(res, blocked);
+        return;
+      }
+    }
+    if (method === "GET" && pathname === "/api/v1/debug/trace" && !isLocalOrDev()) {
+      json(res, 404, { error: "not found" });
+      return;
+    }
     if (method === "OPTIONS") {
       if (isCallbackSecretPath(pathname)) {
         res.writeHead(204, { "cache-control": "no-store" });
         res.end();
         return;
       }
-      res.writeHead(204, {
-        "access-control-allow-origin": "*",
-        "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
-        "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-      });
+      res.writeHead(204, corsHeaders(req));
       res.end();
       return;
     }
@@ -441,6 +461,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/auth/login" && method === "POST") {
       const body = await readBody(req);
       const out = await loginUser(getState(), body);
+      clearAuthFailures(guardIp);
       save();
       json(res, 200, out);
       return;
@@ -517,9 +538,11 @@ const server = createServer(async (req, res) => {
       const ts = req.headers["x-slack-request-timestamp"];
       const sig = req.headers["x-slack-signature"];
       if (!verifySlackRequest(raw, ts, sig)) {
+        recordAuthFailure(guardIp);
         json(res, 401, { error: "invalid slack signature" });
         return;
       }
+      clearAuthFailures(guardIp);
       let body = {};
       try {
         body = raw ? JSON.parse(raw) : {};
@@ -540,9 +563,11 @@ const server = createServer(async (req, res) => {
       const ts = req.headers["x-slack-request-timestamp"];
       const sig = req.headers["x-slack-signature"];
       if (!verifySlackRequest(raw, ts, sig)) {
+        recordAuthFailure(guardIp);
         json(res, 401, { error: "invalid slack signature" });
         return;
       }
+      clearAuthFailures(guardIp);
       let payload = {};
       try {
         if (String(req.headers["content-type"] || "").includes("application/x-www-form-urlencoded")) {
@@ -747,7 +772,7 @@ const server = createServer(async (req, res) => {
         res.writeHead(200, {
           "content-type": "text/csv; charset=utf-8",
           "content-disposition": "attachment; filename=roster-usage.csv",
-          "access-control-allow-origin": "*",
+          ...corsHeaders(req),
         });
         res.end(body);
         return;
@@ -1668,6 +1693,7 @@ const server = createServer(async (req, res) => {
     }
     json(res, 404, { error: "not found", path: pathname });
   } catch (err) {
+    if (guardKind && (err.status || 500) === 401) recordAuthFailure(guardIp);
     fail(res, err);
   }
 });

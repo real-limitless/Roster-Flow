@@ -849,7 +849,7 @@ test("unauthenticated callback-secret reads are 403 when onboarding is skipped",
     assert.equal(opt.headers.get("access-control-allow-origin"), null);
     assert.equal(opt.headers.get("cache-control"), "no-store");
     const health = await fetch(`${open.base}/api/v1/health`);
-    assert.equal(health.headers.get("access-control-allow-origin"), "*");
+    assert.equal(health.headers.get("access-control-allow-origin"), null);
   } finally {
     await open.stop();
   }
