@@ -120,6 +120,7 @@ Extend the channel record (`server/channels.mjs`):
   teamIds: [],            // every seat on the team is a member
   leadSeatId: null,       // bot that answers un-mentioned messages
   respond: "lead",        // "lead" | "team" | "conductor" | "quiet"
+  model: null,            // bot-reply model; null keeps the team default
   limits: {               // all optional; defaults below
     implicitPerMinute: 4,
     fanout: 3,
@@ -133,7 +134,7 @@ Extend the channel record (`server/channels.mjs`):
 - `resolveMembers()` stays the membership truth: direct seats plus team seats plus the conductor.
 - **Every bot can be in any number of rooms.** Membership does not move a seat between serves. Company seats stay on the company serve and system seats on the System serve.
 - A seat's rooms are derived (`channelsForSeat(state, seatId)`), not stored on the seat, so there is one source of truth.
-- `PATCH /api/v1/channels/:id` accepts `leadSeatId`, `respond`, and `limits`. `leadSeatId` must be a bot member; it is cleared when the seat is fired or leaves.
+- `PATCH /api/v1/channels/:id` accepts `leadSeatId`, `respond`, `limits`, and `model`. `leadSeatId` must be a bot member; it is cleared when the seat is fired or leaves. `model` must be in the channel's allowed catalog (member teams' `allowedModels` that are loaded in the provider catalog), or `null` for the team default. A stored model that drops out of that catalog is not used: the room session starts on the team default.
 
 ### 3.2 Team membership
 

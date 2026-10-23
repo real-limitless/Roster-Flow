@@ -450,6 +450,7 @@ export function migrateState(state) {
       leadSeatId: ch.leadSeatId ? String(ch.leadSeatId) : null,
       ...(ch.respond !== undefined ? { respond: normalizeRespond(ch.respond) } : {}),
       limits: normalizeLimits(ch.limits),
+      model: normalizeModelId(ch.model) || null,
     };
   });
   ensureTeamRooms(next);

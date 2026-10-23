@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CHANNEL_ROOM_REPLY, emptyState, migrateState } from "./seed.mjs";
 import {
+  channelResponseModel,
   channelsForSeat,
   createChannel,
   dropStaleLead,
@@ -196,4 +197,46 @@ test("a room over its daily token budget reads as quiet, and publicChannel repor
   assert.equal(effectiveRespond(ship, state, now), "quiet");
   ship.respond = "team";
   assert.equal(effectiveRespond(ship, state, Date.parse("2026-10-17T00:01:00.000Z")), "team");
+});
+
+test("patchChannel stores a reply model from the allowed catalog and rejects anything else", () => {
+  const state = emptyState();
+  const eng = state.teams.find((t) => t.id === "eng");
+  eng.allowedModels = ["e2efake/m1", "e2efake/m2"];
+  eng.defaultModel = "e2efake/m1";
+  const catalog = ["e2efake/m1"];
+  const ch = patchChannel(state, "ship", { model: "e2efake/m1" }, { catalog });
+  assert.equal(ch.model, "e2efake/m1");
+  assert.equal(publicChannel(ch, state).model, "e2efake/m1");
+  assert.throws(() => patchChannel(state, "ship", { model: "e2efake/m2" }, { catalog }), /allowed catalog/);
+  assert.equal(state.channels.find((c) => c.id === "ship").model, "e2efake/m1");
+  assert.throws(() => patchChannel(state, "ship", { model: "openai/not-allowed" }), /allowed catalog/);
+  assert.equal(state.channels.find((c) => c.id === "ship").model, "e2efake/m1");
+  patchChannel(state, "ship", { model: null });
+  assert.equal(state.channels.find((c) => c.id === "ship").model, null);
+  assert.equal(publicChannel(state.channels.find((c) => c.id === "ship"), state).model, null);
+});
+
+test("migrateState keeps a channel reply model", () => {
+  const state = emptyState();
+  const eng = state.teams.find((t) => t.id === "eng");
+  eng.allowedModels = ["e2efake/m1"];
+  patchChannel(state, "eng-agents", { model: "e2efake/m1" });
+  const reloaded = migrateState(JSON.parse(JSON.stringify(state)));
+  assert.equal(reloaded.channels.find((c) => c.id === "eng-agents").model, "e2efake/m1");
+  assert.equal(reloaded.channels.find((c) => c.id === "ship").model, null);
+});
+
+test("channelResponseModel uses the override while it is allowed and loaded, then the team default", () => {
+  const state = emptyState();
+  const ship = state.channels.find((c) => c.id === "ship");
+  const eng = state.teams.find((t) => t.id === "eng");
+  eng.allowedModels = ["e2efake/m1", "e2efake/m2"];
+  eng.defaultModel = "e2efake/m1";
+  assert.equal(channelResponseModel(ship, state, null), null);
+  ship.model = "e2efake/m2";
+  assert.equal(channelResponseModel(ship, state, [{ providerID: "e2efake", modelID: "m2" }]), "e2efake/m2");
+  assert.equal(channelResponseModel(ship, state, [{ providerID: "e2efake", modelID: "m1" }]), "e2efake/m1");
+  eng.allowedModels = ["e2efake/m1"];
+  assert.equal(channelResponseModel(ship, state, [{ providerID: "e2efake", modelID: "m1" }, { providerID: "e2efake", modelID: "m2" }]), "e2efake/m1");
 });

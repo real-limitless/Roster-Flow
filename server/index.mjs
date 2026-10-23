@@ -126,6 +126,12 @@ function fail(res, err) {
   json(res, err.status || 500, { error: err.message || "error", detail: err.detail || err.code || undefined });
 }
 
+/** Provider/model ids currently configured or loaded. Channel model writes must be in this set. */
+async function providerCatalogRefs() {
+  const live = await listLiveModels().catch(() => []);
+  return mergeModelLists(live, listModels()).map((m) => `${m.providerID}/${m.modelID}`);
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const c of req) chunks.push(c);
@@ -1209,9 +1215,10 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/channels" && method === "POST") {
       const body = await readBody(req);
+      const catalog = body?.model ? await providerCatalogRefs() : null;
       let created = null;
       mutate((s) => {
-        created = createChannel(s, body);
+        created = createChannel(s, body, { catalog });
       });
       json(res, 201, publicChannel(created, getState()));
       return;
@@ -1230,9 +1237,10 @@ const server = createServer(async (req, res) => {
     if (chOne && method === "PATCH") {
       const id = decodeURIComponent(chOne[1]);
       const body = await readBody(req);
+      const catalog = body?.model ? await providerCatalogRefs() : null;
       let updated = null;
       mutate((s) => {
-        updated = patchChannel(s, id, body);
+        updated = patchChannel(s, id, body, { catalog });
       });
       if (!updated) {
         json(res, 404, { error: "channel not found" });

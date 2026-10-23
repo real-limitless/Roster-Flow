@@ -1,6 +1,6 @@
-import { slugify } from "./seed.mjs";
+import { normalizeModelId, slugify } from "./seed.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
-import { normalizeLimits, normalizeRespond, roomLimits, teamHomeRoom, teamRoomId } from "./room-config.mjs";
+import { badRequest, normalizeLimits, normalizeRespond, roomLimits, teamHomeRoom, teamRoomId } from "./room-config.mjs";
 import { nextUtcMidnight, roomSpentToday } from "./budget.mjs";
 
 export { RESPOND_MODES, ROOM_LIMIT_DEFAULTS, roomLimits, teamRoomId } from "./room-config.mjs";
@@ -17,7 +17,91 @@ export function normalizeChannel(ch = {}) {
     leadSeatId: ch.leadSeatId ? String(ch.leadSeatId) : null,
     respond: normalizeRespond(ch.respond),
     limits: normalizeLimits(ch.limits),
+    model: normalizeModelId(ch.model) || null,
   };
+}
+
+/**
+ * Teams that supply this room's model catalog: the room's teams, or, when it
+ * lists none, the teams of its member seats.
+ */
+export function channelTeams(channel, state = {}) {
+  const teams = state.teams || [];
+  const byId = (id) => teams.find((t) => t.id === id);
+  const out = [];
+  const seen = new Set();
+  const add = (team) => {
+    if (!team || seen.has(team.id)) return;
+    seen.add(team.id);
+    out.push(team);
+  };
+  for (const id of channel?.teamIds || []) add(byId(id));
+  if (out.length) return out;
+  for (const seat of resolveMembers(channel, state)) add(byId(seat.team));
+  return out;
+}
+
+/** Team `allowedModels` for this room, normalized and de-duplicated. */
+export function channelAllowedModels(channel, state = {}) {
+  const ids = [];
+  for (const team of channelTeams(channel, state)) {
+    for (const raw of team.allowedModels || []) {
+      const id = normalizeModelId(raw);
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Models an owner may assign. `providerModels` is the loaded provider catalog
+ * (`provider/model` ids). Without it, the team's allowedModels are the catalog.
+ */
+export function channelModelCatalog(channel, state = {}, providerModels = null) {
+  const allowed = channelAllowedModels(channel, state);
+  if (!Array.isArray(providerModels)) return allowed;
+  const known = new Set(providerModels.map((m) => normalizeModelId(m)).filter(Boolean));
+  return allowed.filter((id) => known.has(id));
+}
+
+/** First member team's default model, used when a room has no usable override. */
+export function channelTeamDefault(channel, state = {}) {
+  for (const team of channelTeams(channel, state)) {
+    const id = normalizeModelId(team.defaultModel);
+    if (id) return id;
+  }
+  return "";
+}
+
+function modelLoaded(ref, loaded) {
+  const id = normalizeModelId(ref);
+  const slash = id.indexOf("/");
+  if (slash <= 0) return false;
+  const providerID = id.slice(0, slash);
+  if (providerID.toLowerCase() === "opencode") return false;
+  if (!Array.isArray(loaded)) return true;
+  const modelID = id.slice(slash + 1);
+  return loaded.some((m) => m && m.providerID === providerID && m.modelID === modelID);
+}
+
+/**
+ * Model a room session starts with. Null keeps the seat's own model.
+ * An override that is no longer allowed or loaded falls back to the team default.
+ */
+export function channelResponseModel(channel, state = {}, loaded = null) {
+  const override = normalizeModelId(channel?.model);
+  if (!override) return null;
+  if (channelAllowedModels(channel, state).includes(override) && modelLoaded(override, loaded)) return override;
+  return channelTeamDefault(channel, state) || null;
+}
+
+function assertChannelModel(state, ch, raw, catalog) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const id = normalizeModelId(raw);
+  if (!id || !channelModelCatalog(ch, state, catalog).includes(id)) {
+    throw badRequest("model must be in the channel's allowed catalog");
+  }
+  return id;
 }
 
 function isBot(seat) {
@@ -89,7 +173,7 @@ export function resolveMembers(channel, state = {}) {
   return [...seatIds].map((id) => (state.seats || []).find((s) => s.id === id)).filter(Boolean);
 }
 
-export function createChannel(state, body = {}) {
+export function createChannel(state, body = {}, options = {}) {
   const draft = normalizeChannel(body);
   if (!draft.id) {
     const err = new Error("name required");
@@ -102,19 +186,20 @@ export function createChannel(state, body = {}) {
     throw err;
   }
   if (!draft.seatIds.includes(CONDUCTOR_ID)) draft.seatIds.unshift(CONDUCTOR_ID);
+  draft.model = assertChannelModel(state, draft, draft.model, options.catalog);
   state.channels = [...(state.channels || []), draft];
   return draft;
 }
 
-export function patchChannel(state, id, body = {}) {
+export function patchChannel(state, id, body = {}, options = {}) {
   const live = (state.channels || []).find((c) => c.id === id);
   if (!live) return null;
   const ch = { ...live, teamIds: [...(live.teamIds || [])], seatIds: [...(live.seatIds || [])] };
-  applyChannelPatch(state, ch, body);
+  applyChannelPatch(state, ch, body, options.catalog);
   return Object.assign(live, ch);
 }
 
-function applyChannelPatch(state, ch, body) {
+function applyChannelPatch(state, ch, body, catalog) {
   if (body.name) ch.name = String(body.name).startsWith("#") ? body.name : `#${String(body.name).replace(/^#/, "")}`;
   if (body.topic !== undefined) ch.topic = String(body.topic || "");
   if (Array.isArray(body.teamIds)) ch.teamIds = [...new Set(body.teamIds.map(String))];
@@ -130,6 +215,7 @@ function applyChannelPatch(state, ch, body) {
   for (const [key, value] of Object.entries(body.limits || {})) {
     if (value === null || value === "") delete ch.limits[key];
   }
+  if (body.model !== undefined) ch.model = assertChannelModel(state, ch, body.model, catalog);
   dropStaleLead(ch, state);
 }
 
@@ -187,6 +273,7 @@ export function publicChannel(channel, state = {}) {
     ...channel,
     respond: normalizeRespond(channel.respond),
     limits: normalizeLimits(channel.limits),
+    model: normalizeModelId(channel.model) || null,
     responderSeatId: roomResponder(channel, state),
     budget: roomBudget(channel, state),
   };

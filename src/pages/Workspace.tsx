@@ -1071,6 +1071,7 @@ export function Workspace() {
                 channel={currentRoom || { id: channel, name: channelName }}
                 roster={roster}
                 teams={panelTeams}
+                models={models}
                 onPatch={(body) => patchRoom(channel, body)}
                 onClose={() => setModalOpen(false)}
               />
@@ -2597,7 +2598,13 @@ function TeamInspector({
             </button>
           ))}
           {homeRoom && onPatchRoom && (
-            <RoomReplySettings channel={homeRoom} roster={roster} teams={teams} onPatch={(body) => onPatchRoom(homeRoom.id, body)} />
+            <RoomReplySettings
+              channel={homeRoom}
+              roster={roster}
+              teams={teams}
+              models={models}
+              onPatch={(body) => onPatchRoom(homeRoom.id, body)}
+            />
           )}
         </div>
       )}
@@ -2621,6 +2628,7 @@ function ChannelEditor({
   channel,
   roster,
   teams,
+  models = [],
   onPatch,
   onClose,
   embedded = false,
@@ -2628,6 +2636,7 @@ function ChannelEditor({
   channel: Channel;
   roster: Seat[];
   teams: Team[];
+  models?: CatalogModel[];
   onPatch: (body: Partial<Channel>) => void;
   onClose: () => void;
   embedded?: boolean;
@@ -2664,7 +2673,7 @@ function ChannelEditor({
           Topic
           <input defaultValue={channel.topic || ""} key={`${channel.id}-topic`} onBlur={(e) => onPatch({ topic: e.target.value })} />
         </label>
-        <RoomReplySettings channel={channel} roster={roster} teams={teams} onPatch={onPatch} />
+        <RoomReplySettings channel={channel} roster={roster} teams={teams} models={models} onPatch={onPatch} />
         <h4>Teams</h4>
         <div className="member-picks">
           {staffed.map((t) => {

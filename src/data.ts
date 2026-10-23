@@ -187,6 +187,8 @@ export type Channel = {
   leadSeatId?: string | null;
   respond?: RespondMode;
   limits?: RoomLimits;
+  /** Bot-reply model for this room. Null uses the team default. */
+  model?: string | null;
   /** Set by CORE: who answers un-mentioned messages now, before pause and model checks. */
   responderSeatId?: string | null;
   /** Set by CORE when the room has a daily token budget. */
