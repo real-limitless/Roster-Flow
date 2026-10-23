@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowStateReset, demoMode, demoResetMs, skipOnboarding } from "./flags.mjs";
+import { allowStateReset, demoMode, demoResetMs, isLocalOrDev, resetSkipOnboardingNotice, skipOnboarding } from "./flags.mjs";
 
 function withEnv(map, fn) {
   const prev = {};
@@ -40,6 +40,27 @@ test("demoResetMs defaults to 30 minutes in demo and 0 otherwise", () => {
   withEnv({ ROSTER_DEMO: "1", ROSTER_DEMO_RESET_MS: "5000" }, () => assert.equal(demoResetMs(), 5000));
 });
 
-test("skipOnboarding still reads ROSTER_SKIP_ONBOARDING", () => {
-  withEnv({ ROSTER_SKIP_ONBOARDING: "1" }, () => assert.equal(skipOnboarding(), true));
+test("skipOnboarding is honored only when NODE_ENV or ENVIRONMENT is local", () => {
+  const warnings = [];
+  const orig = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  resetSkipOnboardingNotice();
+  try {
+    withEnv({ ROSTER_SKIP_ONBOARDING: "1", NODE_ENV: "local", ENVIRONMENT: "" }, () => assert.equal(skipOnboarding(), true));
+    withEnv({ ROSTER_SKIP_ONBOARDING: "true", NODE_ENV: "", ENVIRONMENT: "local" }, () => assert.equal(skipOnboarding(), true));
+    withEnv({ ROSTER_SKIP_ONBOARDING: "", NODE_ENV: "local", ENVIRONMENT: "local" }, () => assert.equal(skipOnboarding(), false));
+    withEnv({ ROSTER_SKIP_ONBOARDING: "1", NODE_ENV: "production", ENVIRONMENT: "production" }, () => {
+      assert.equal(skipOnboarding(), false);
+      assert.equal(skipOnboarding(), false);
+    });
+    withEnv({ ROSTER_SKIP_ONBOARDING: "1", NODE_ENV: "development", ENVIRONMENT: "" }, () => assert.equal(skipOnboarding(), false));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /ignored because NODE_ENV\/ENVIRONMENT is not local/);
+    withEnv({ NODE_ENV: "dev", ENVIRONMENT: "" }, () => assert.equal(isLocalOrDev(), true));
+    withEnv({ NODE_ENV: "production", ENVIRONMENT: "development" }, () => assert.equal(isLocalOrDev(), true));
+    withEnv({ NODE_ENV: "production", ENVIRONMENT: "production" }, () => assert.equal(isLocalOrDev(), false));
+  } finally {
+    console.warn = orig;
+    resetSkipOnboardingNotice();
+  }
 });
