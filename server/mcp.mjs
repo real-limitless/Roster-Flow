@@ -338,9 +338,9 @@ export function jsonRpcError(id, code, message) {
  * `ctx` (from CORE /mcp): `caller`, token `scopes` (null = session, unscoped),
  * and job deps for the job tools in mcp-jobs.mjs.
  */
-export async function handleMcpMessage(msg = {}, ctx = {}) {
+export async function handleMcpMessage(msg = {}, ctx = {}, audit = null) {
   if (Array.isArray(msg)) {
-    return Promise.all(msg.map((m) => handleMcpMessage(m, ctx)));
+    return Promise.all(msg.map((m) => handleMcpMessage(m, ctx, audit)));
   }
   if (!msg || typeof msg !== "object") return jsonRpcError(null, -32600, "invalid request");
   const { id, method, params } = msg;
@@ -364,7 +364,7 @@ export async function handleMcpMessage(msg = {}, ctx = {}) {
     const args = params?.arguments && typeof params.arguments === "object" ? { ...params.arguments } : {};
     if (isJobTool(name)) return jsonRpcResult(id, await callJobTool(name, args, ctx));
     if (ROOM_WRITE_TOOLS.has(name) && !allowsWrite(ctx.scopes)) {
-      if (ctx.audit) auditLog({ ...ctx.audit, event: "denial", action: "mcp.scope", outcome: "denied", status: 403 });
+      if (audit) auditLog({ ...audit, event: "denial", action: "mcp.scope", outcome: "denied", status: 403 });
       return jsonRpcResult(id, { content: [{ type: "text", text: "write scope required" }], isError: true });
     }
     if ((name === "roster_send_message" || name === "roster_handoff") && !args.from) args.from = MCP_GUEST_ID;
@@ -373,8 +373,8 @@ export async function handleMcpMessage(msg = {}, ctx = {}) {
       const result = await callMcpTool(name, args);
       return jsonRpcResult(id, result);
     } catch (err) {
-      if (err.status === 429 && ctx.audit) {
-        auditLog({ ...ctx.audit, event: "rate_limit", action: "mcp.cycle", outcome: "denied", status: 429 });
+      if (err.status === 429 && audit) {
+        auditLog({ ...audit, event: "rate_limit", action: "mcp.cycle", outcome: "denied", status: 429 });
       }
       return jsonRpcResult(id, {
         content: [{ type: "text", text: err.message || "tool error" }],
@@ -415,8 +415,21 @@ function writeSseMessage(req, res, body, extraHeaders = {}) {
   res.end();
 }
 
+function auditSnapshot(audit) {
+  if (!audit) return null;
+  return {
+    request_id: String(audit.request_id || ""),
+    client_ip: String(audit.client_ip || ""),
+    user_agent: String(audit.user_agent || ""),
+    host: String(audit.host || ""),
+    path: String(audit.path || ""),
+    method: String(audit.method || ""),
+    actor: String(audit.actor || ""),
+  };
+}
+
 export async function serveMcp(req, res, ctx = {}) {
-  if (req?.audit) ctx.audit = req.audit;
+  const audit = auditSnapshot(req?.audit);
   mutate((s) => ensureMcpGuest(s));
   const method = req.method || "GET";
   if (method === "GET") {
@@ -472,7 +485,7 @@ export async function serveMcp(req, res, ctx = {}) {
     return;
   }
 
-  const out = await handleMcpMessage(msg, ctx);
+  const out = await handleMcpMessage(msg, ctx, audit);
   if (out && out.notification) {
     res.writeHead(202, mcpCorsHeaders(req));
     res.end();

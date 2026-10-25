@@ -332,13 +332,12 @@ const server = createServer(async (req, res) => {
     if (isMcpPath(pathname)) {
       const token = parseBearer(req);
       const mcpApiToken = isApiToken(token) ? resolveApiToken(getState(), token) : null;
-      const mcpUserEarly = mcpApiToken ? mcpApiToken.user : userFromToken(getState(), token);
-      if (req.audit) req.audit.actor = actorLabel({ user: mcpUserEarly, tokenId: mcpApiToken?.token?.id, presented: token });
       if (isApiToken(token) && (!mcpApiToken || !tokenAllows(mcpApiToken.token, method, pathname))) {
         json(res, mcpApiToken ? 403 : 401, { error: mcpApiToken ? "token scope does not allow this request" : "invalid, expired, or revoked API token" });
         return;
       }
-      const mcpUser = mcpUserEarly;
+      const mcpUser = mcpApiToken ? mcpApiToken.user : userFromToken(getState(), token);
+      if (req.audit) req.audit.actor = actorLabel({ user: mcpUser?.id ? { id: mcpUser.id } : undefined, presented: token });
       if (!allowMcp(req, mcpUser)) {
         json(res, 401, { error: "authentication required" });
         return;
@@ -355,7 +354,7 @@ const server = createServer(async (req, res) => {
     const internal = isInternalPluginToken(token);
     const apiToken = !internal && isApiToken(token) ? resolveApiToken(getState(), token) : null;
     const user = internal ? (getState().users || [])[0] || null : apiToken ? apiToken.user : userFromToken(getState(), token);
-    if (req.audit) req.audit.actor = actorLabel({ user, tokenId: apiToken?.token?.id, presented: internal ? "" : token });
+    if (req.audit) req.audit.actor = actorLabel({ user: user?.id ? { id: user.id } : undefined, presented: internal ? "" : token });
 
     if (internal && !internalTokenAllows(method, pathname)) {
       reply(res, pathname, 403, { error: "the internal plugin token does not allow this request" });
