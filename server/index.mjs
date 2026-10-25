@@ -19,7 +19,10 @@ import {
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey, canonicalProviderId } from "./providers.mjs";
 import { featherlessOfferedModelIds, PROVIDER_WRITE_CATALOG_TIMEOUT_MS } from "./featherless-catalog.mjs";
 import { addFirstUser, changePassword, DEMO_TOKEN, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
-import { allowStateReset, demoMode, demoResetMs } from "./flags.mjs";
+import { allowStateReset, demoMode, demoResetMs, isLocalOrDev } from "./flags.mjs";
+import { chargeAuthRate, authGuardKind, clearAuthFailures, recordAuthFailure } from "./auth-guard.mjs";
+import { corsHeaders } from "./cors.mjs";
+import { clientIp } from "./client-ip.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
 import { requireBootstrapToken, seedOwnerFromEnv, setupClosed } from "./bootstrap.mjs";
 import { completeSetup, markHarnessStep, markInstallSeen, publicSetupStatus, publicState, setupStatus, startOver } from "./setup.mjs";
@@ -87,14 +90,20 @@ function json(res, code, body, extra) {
   const data = JSON.stringify(body);
   const headers = { "content-type": "application/json; charset=utf-8" };
   if (extra?.secret) headers["cache-control"] = "no-store";
-  else {
-    headers["access-control-allow-origin"] = "*";
-    headers["access-control-allow-headers"] = "content-type, authorization, mcp-session-id, mcp-protocol-version";
-    headers["access-control-allow-methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
-    headers["access-control-expose-headers"] = "mcp-session-id, mcp-protocol-version";
-  }
+  else Object.assign(headers, corsHeaders(res.rosterReq));
   res.writeHead(code, headers);
   res.end(data);
+}
+
+function tooMany(res, decision) {
+  emitResponseAudit(res, 429, { error: decision.error });
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "retry-after": String(decision.retryAfter),
+    ...corsHeaders(res.rosterReq),
+  };
+  res.writeHead(429, headers);
+  res.end(JSON.stringify({ error: decision.error }));
 }
 
 function secretJson(res, code, body) {
@@ -130,6 +139,12 @@ async function setupPayload(state, user) {
 
 function fail(res, err) {
   json(res, err.status || 500, { error: err.message || "error", detail: err.detail || err.code || undefined });
+}
+
+/** Provider/model ids currently configured or loaded. Channel model writes must be in this set. */
+async function providerCatalogRefs() {
+  const live = await listLiveModels().catch(() => []);
+  return mergeModelLists(live, listModels()).map((m) => `${m.providerID}/${m.modelID}`);
 }
 
 async function readBody(req) {
@@ -283,22 +298,34 @@ try {
 }
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
-  const { pathname } = url;
-  const method = req.method || "GET";
-  beginRequestAudit(req, res, { path: pathname, method });
+  let guardKind = "";
+  let guardIp = "";
   try {
+    const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+    const { pathname } = url;
+    const method = req.method || "GET";
+    res.rosterReq = req;
+    beginRequestAudit(req, res, { path: pathname, method });
+    guardKind = authGuardKind(method, pathname);
+    guardIp = clientIp(req);
+    if (guardKind) {
+      const blocked = chargeAuthRate(guardIp);
+      if (blocked) {
+        tooMany(res, blocked);
+        return;
+      }
+    }
+    if (method === "GET" && pathname === "/api/v1/debug/trace" && !isLocalOrDev()) {
+      json(res, 404, { error: "not found" });
+      return;
+    }
     if (method === "OPTIONS") {
       if (isCallbackSecretPath(pathname)) {
         res.writeHead(204, { "cache-control": "no-store" });
         res.end();
         return;
       }
-      res.writeHead(204, {
-        "access-control-allow-origin": "*",
-        "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
-        "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-      });
+      res.writeHead(204, corsHeaders(req));
       res.end();
       return;
     }
@@ -455,6 +482,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/v1/auth/login" && method === "POST") {
       const body = await readBody(req);
       const out = await loginUser(getState(), body);
+      clearAuthFailures(guardIp);
       save();
       markAudit(res, { event: "auth_success", action: "auth.login", outcome: "success", actor: out.user?.id || "" });
       json(res, 200, out);
@@ -533,9 +561,11 @@ const server = createServer(async (req, res) => {
       const ts = req.headers["x-slack-request-timestamp"];
       const sig = req.headers["x-slack-signature"];
       if (!verifySlackRequest(raw, ts, sig)) {
+        recordAuthFailure(guardIp);
         json(res, 401, { error: "invalid slack signature" });
         return;
       }
+      clearAuthFailures(guardIp);
       let body = {};
       try {
         body = raw ? JSON.parse(raw) : {};
@@ -556,9 +586,11 @@ const server = createServer(async (req, res) => {
       const ts = req.headers["x-slack-request-timestamp"];
       const sig = req.headers["x-slack-signature"];
       if (!verifySlackRequest(raw, ts, sig)) {
+        recordAuthFailure(guardIp);
         json(res, 401, { error: "invalid slack signature" });
         return;
       }
+      clearAuthFailures(guardIp);
       let payload = {};
       try {
         if (String(req.headers["content-type"] || "").includes("application/x-www-form-urlencoded")) {
@@ -764,7 +796,7 @@ const server = createServer(async (req, res) => {
         res.writeHead(200, {
           "content-type": "text/csv; charset=utf-8",
           "content-disposition": "attachment; filename=roster-usage.csv",
-          "access-control-allow-origin": "*",
+          ...corsHeaders(req),
         });
         res.end(body);
         return;
@@ -1229,9 +1261,10 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/v1/channels" && method === "POST") {
       const body = await readBody(req);
+      const catalog = body?.model ? await providerCatalogRefs() : null;
       let created = null;
       mutate((s) => {
-        created = createChannel(s, body);
+        created = createChannel(s, body, { catalog });
       });
       json(res, 201, publicChannel(created, getState()));
       return;
@@ -1250,9 +1283,10 @@ const server = createServer(async (req, res) => {
     if (chOne && method === "PATCH") {
       const id = decodeURIComponent(chOne[1]);
       const body = await readBody(req);
+      const catalog = body?.model ? await providerCatalogRefs() : null;
       let updated = null;
       mutate((s) => {
-        updated = patchChannel(s, id, body);
+        updated = patchChannel(s, id, body, { catalog });
       });
       if (!updated) {
         json(res, 404, { error: "channel not found" });
@@ -1693,6 +1727,7 @@ const server = createServer(async (req, res) => {
     }
     json(res, 404, { error: "not found", path: pathname });
   } catch (err) {
+    if (guardKind && (err.status || 500) === 401) recordAuthFailure(guardIp);
     fail(res, err);
   }
 });

@@ -92,7 +92,8 @@ export function shouldAutostartHarness(state, env = process.env, configured = pr
  */
 export function withSeatModels(spec, state, offered) {
   if (!spec?.id) return spec;
-  const prefix = `${String(spec.id).trim().toLowerCase()}/`;
+  const id = String(spec.id).trim().toLowerCase();
+  const prefixes = [...new Set([id, id.startsWith("roster-") ? id.slice("roster-".length) : `roster-${id}`])].filter(Boolean).map((name) => `${name}/`);
   const models = [...(spec.models || [])];
   const have = new Set(models.map((m) => m.id));
   const refs = [];
@@ -102,7 +103,9 @@ export function withSeatModels(spec, state, offered) {
   }
   for (const ref of refs) {
     const raw = String(ref || "").trim();
-    if (!raw.toLowerCase().startsWith(prefix)) continue;
+    const lower = raw.toLowerCase();
+    const prefix = prefixes.find((item) => lower.startsWith(item));
+    if (!prefix) continue;
     const id = raw.slice(prefix.length);
     if (!id || have.has(id)) continue;
     if (!inUseModelAllowed(spec.id, id, offered)) continue;

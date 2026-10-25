@@ -29,6 +29,10 @@ const fakeBin = join(dir, "bin", "opencode");
 writeFileSync(
   fakeBin,
   `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("2.0.32\\n");
+  process.exit(0);
+}
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -40,7 +44,8 @@ function providers() {
   for (const f of files) {
     if (!f || !fs.existsSync(f)) continue;
     const cfg = JSON.parse(fs.readFileSync(f, "utf8"));
-    for (const [id, p] of Object.entries(cfg.provider || {})) if (!out.some((x) => x.id === id)) out.push({ id, models: p.models || {} });
+    const blocks = { ...(cfg.provider || {}), ...(cfg.providers || {}) };
+    for (const [id, p] of Object.entries(blocks)) if (!out.some((x) => x.id === id)) out.push({ id, models: p.models || {} });
   }
   return out;
 }
@@ -83,6 +88,37 @@ after(async () => {
     }
   }
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("serve contract follows the OpenCode major version", async () => {
+  const { parseOpenCodeMajor } = await import("./opencode-generation.mjs");
+  assert.equal(parseOpenCodeMajor("1.19.4"), 1);
+  assert.equal(parseOpenCodeMajor("2.0.32"), 2);
+  assert.equal(parseOpenCodeMajor("not a version"), null);
+  const prev = process.env.ROSTER_OPENCODE_GENERATION;
+  try {
+    process.env.ROSTER_OPENCODE_GENERATION = "1";
+    const v1 = harness.serveContract();
+    assert.equal(v1.v2, false);
+    assert.equal(v1.health, "/global/health");
+    assert.equal(v1.providers, "/config/providers");
+    assert.equal(v1.session, "/session");
+    assert.equal(v1.event, "/event");
+    assert.equal(v1.promptSuffix, "/prompt_async");
+    assert.equal(v1.plugin, "roster-flow-opencode");
+    process.env.ROSTER_OPENCODE_GENERATION = "2";
+    const v2 = harness.serveContract();
+    assert.equal(v2.v2, true);
+    assert.equal(v2.health, "/api/info");
+    assert.equal(v2.providers, "/api/provider");
+    assert.equal(v2.session, "/api/session");
+    assert.equal(v2.event, "/api/event");
+    assert.equal(v2.promptSuffix, "/prompt");
+    assert.ok(String(v2.plugin).endsWith("/packages/roster-flow-opencode/index.js"));
+  } finally {
+    if (prev === undefined) delete process.env.ROSTER_OPENCODE_GENERATION;
+    else process.env.ROSTER_OPENCODE_GENERATION = prev;
+  }
 });
 
 test("configPaths point the company serve at the file providers.mjs writes", () => {
@@ -220,7 +256,7 @@ test("ensure spawns both serves with the roster config and key, and reports load
   writeCompany({ featherless: FEATHERLESS_BLOCK });
   const company = await harness.ensure({ kind: "company" });
   assert.equal(company.harness, "up");
-  assert.ok(company.loadedProviders.includes("featherless"), company.loadedProviders.join(","));
+  assert.ok(company.loadedProviders.includes("roster-featherless"), company.loadedProviders.join(","));
   assert.equal(company.config, join(ocDir, "opencode.json"));
 
   const seen = JSON.parse(readFileSync(join(envOut, "roster-flow.json"), "utf8"));
@@ -230,20 +266,21 @@ test("ensure spawns both serves with the roster config and key, and reports load
   assert.equal(seen.cwd, join(dir, "ws"));
   assert.equal(seen.env.FEATHERLESS_API_KEY, "fl-test-key");
   const written = JSON.parse(readFileSync(seen.env.OPENCODE_CONFIG, "utf8"));
-  assert.ok(written.provider.featherless);
+  assert.ok(written.providers["roster-featherless"]);
+  assert.equal(written.provider, undefined);
   assert.ok(written.plugin.some((item) => String(item).endsWith("/packages/roster-flow-opencode/index.js")));
   assert.equal(written.plugin.includes("roster-flow-opencode"), false);
 
   const system = await harness.ensure({ kind: "system" });
   assert.equal(system.harness, "up");
-  assert.ok(system.loadedProviders.includes("featherless"));
+  assert.ok(system.loadedProviders.includes("roster-featherless"));
   const sys = JSON.parse(readFileSync(join(envOut, "roster-flow-system.json"), "utf8"));
   assert.equal(sys.env.OPENCODE_CONFIG, harness.configPaths("system").file);
   assert.equal(sys.env.FEATHERLESS_API_KEY, "fl-test-key");
-  assert.ok(JSON.parse(readFileSync(sys.env.OPENCODE_CONFIG, "utf8")).provider.featherless);
+  assert.ok(JSON.parse(readFileSync(sys.env.OPENCODE_CONFIG, "utf8")).providers["roster-featherless"]);
 
   const loaded = await harness.loadedModels("company");
-  assert.ok(loaded.some((m) => m.providerID === "featherless" && m.modelID === "Qwen/Qwen2.5-Coder-32B-Instruct"));
+  assert.ok(loaded.some((m) => m.providerID === "roster-featherless" && m.modelID === "Qwen/Qwen2.5-Coder-32B-Instruct"));
   assert.deepEqual(harness.knownLoadedModels("company"), loaded);
 });
 
@@ -280,7 +317,7 @@ test("operator mcp, username, and an extra provider survive on both harnesses", 
       assert.equal(cfg.mcp.wiki.enabled, true, file);
       assert.equal(cfg.theme, "system", file);
       assert.equal((cfg.providers || cfg.provider).operatorprov.name, "Operator", file);
-      assert.equal((cfg.providers || cfg.provider).featherless.name, "Featherless", file);
+      assert.equal((cfg.providers || cfg.provider)["roster-featherless"].name, "Featherless", file);
       assert.ok(cfg.plugin.some((item) => String(item).endsWith("/packages/roster-flow-opencode/index.js")), file);
       assert.equal(cfg.plugin.includes("roster-flow-opencode"), false, file);
       assert.ok(cfg.plugin.includes("operator-plugin"), file);
@@ -306,9 +343,9 @@ test("fallback and seat resolution only pick models OpenCode loaded", () => {
   const builtinOnly = [{ providerID: "opencode", modelID: "big-pickle" }];
   const withFeatherless = [...builtinOnly, { providerID: "featherless", modelID: "Qwen/Qwen2.5-Coder-32B-Instruct" }];
 
-  assert.equal(providers.firstConnectedModel()?.providerID, "featherless");
+  assert.equal(providers.firstConnectedModel()?.providerID, "roster-featherless");
   assert.equal(providers.firstConnectedModel(builtinOnly), null);
-  assert.equal(providers.firstConnectedModel(withFeatherless)?.providerID, "featherless");
+  assert.equal(providers.firstConnectedModel(withFeatherless)?.providerID, "roster-featherless");
 
   const st = providers.keyStatusForModel("featherless/Qwen/Qwen2.5-Coder-32B-Instruct", builtinOnly);
   assert.equal(st.connected, true);
@@ -325,7 +362,7 @@ test("fallback and seat resolution only pick models OpenCode loaded", () => {
     modelID: "grok-4",
   });
   assert.deepEqual(providers.resolveUsableModel({ model: "" }, undefined, withFeatherless), {
-    providerID: "featherless",
+    providerID: "roster-featherless",
     modelID: "Qwen/Qwen2.5-Coder-32B-Instruct",
   });
   assert.deepEqual(providers.resolveUsableModel(seat, undefined, builtinOnly), { providerID: "xai", modelID: "grok-4" });

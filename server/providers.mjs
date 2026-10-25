@@ -10,15 +10,21 @@ import { contextTokenLimit, outputTokenLimit } from "./model-defaults.mjs";
 import { inUseModelAllowed } from "./featherless-catalog.mjs";
 import { authPath, opencodeDir as ocDir } from "./paths.mjs";
 import { protectPrivateFile, writePrivateFile } from "./private-file.mjs";
+import { openCodeGeneration, openCodeIsV2 } from "./opencode-generation.mjs";
 import { getState } from "./store.mjs";
 
 const ocPath = join(ocDir, "opencode.json");
 const ROSTER_PLUGIN_NAME = "roster-flow-opencode";
 const ROSTER_PLUGIN = pathToFileURL(join(root, "packages/roster-flow-opencode/index.js")).href;
 
+function rosterPluginEntry() {
+  return openCodeIsV2() ? ROSTER_PLUGIN : ROSTER_PLUGIN_NAME;
+}
+
 function withRosterPlugin(list) {
+  const chosen = rosterPluginEntry();
   const items = (Array.isArray(list) ? list : []).filter((item) => item !== ROSTER_PLUGIN_NAME && item !== ROSTER_PLUGIN);
-  items.push(ROSTER_PLUGIN);
+  if (!items.includes(chosen)) items.push(chosen);
   return items;
 }
 
@@ -34,7 +40,7 @@ function readJson(path, fallback) {
 export function readOpenCodeConfig() {
   return readJson(ocPath, {
     $schema: "https://opencode.ai/config.json",
-    plugin: [ROSTER_PLUGIN],
+    plugin: [rosterPluginEntry()],
     provider: {},
   });
 }
@@ -59,44 +65,88 @@ export function harnessProviderId(id) {
 }
 
 /**
- * OpenCode v2.0.32 reads `providers`, `package` (`aisdk:` prefix), and
- * `settings`. It ignores the v1 `provider` / `npm` / `options` block.
+ * OpenCode 1's config schema only accepts `provider`, `npm`, and `options`.
+ * Older Roster builds wrote plural keys; fold them into that shape.
  */
-export function normalizeOpenCodeConfig(cfg = {}) {
+function normalizeOpenCodeConfigV1(cfg = {}) {
+  const out = { ...cfg };
+  const provider = { ...(out.providers || {}), ...(out.provider || {}) };
+  for (const [id, raw] of Object.entries(provider)) {
+    if (!raw || typeof raw !== "object") continue;
+    const { settings, package: pkg, ...rest } = raw;
+    const options = { ...(settings || {}), ...(rest.options || {}) };
+    const npm = rest.npm || (pkg ? String(pkg).replace(/^aisdk:/, "") : "");
+    provider[id] = { ...rest, ...(npm ? { npm } : {}), ...(Object.keys(options).length ? { options } : {}) };
+    delete provider[id].settings;
+    delete provider[id].package;
+  }
+  delete out.providers;
+  out.provider = provider;
+  return applyAgentFold(out);
+}
+
+/**
+ * OpenCode 2 reads `providers`, `package` (`aisdk:` prefix), and `settings`.
+ * A recognized id such as `featherless` is rewritten onto OpenCode's signed-in
+ * provider, so the stored id is `roster-<id>` and the request stays on the
+ * configured key.
+ */
+function normalizeOpenCodeConfigV2(cfg = {}) {
   const out = { ...cfg };
   const provider = { ...(out.provider || {}), ...(out.providers || {}) };
-  for (const [id, raw] of Object.entries(provider)) {
+  const entries = Object.entries(provider).sort((a, b) => {
+    const rank = (id) => (String(id).startsWith("roster-") ? 0 : 1);
+    return rank(a[0]) - rank(b[0]);
+  });
+  const next = {};
+  for (const [id, raw] of entries) {
     if (!raw || typeof raw !== "object") continue;
     const owned = OPENCODE_OWNED_IDS.has(String(id).toLowerCase());
     const { settings, options, npm, package: pkg, ...rest } = raw;
     const merged = { ...(options || {}), ...(settings || {}) };
     if (owned) delete merged.provider;
-    const pack = owned ? "@ai-sdk/openai-compatible" : v2Package({ package: pkg, npm });
+    const pack = owned ? v2Package({ package: "@ai-sdk/openai-compatible" }) : v2Package({ package: pkg, npm });
     const nextId = harnessProviderId(id);
-    if (nextId !== id) delete provider[id];
-    provider[nextId] = {
+    next[nextId] = {
       ...rest,
       ...(pack ? { package: pack } : {}),
       ...(Object.keys(merged).length ? { settings: merged } : {}),
     };
   }
   delete out.provider;
-  out.providers = provider;
-  if (out.agents || out.agent) {
-    const agent = { ...(out.agents || {}), ...(out.agent || {}) };
-    for (const [id, raw] of Object.entries(agent)) {
-      if (!raw || typeof raw !== "object") continue;
-      const { system, permissions, ...rest } = raw;
-      agent[id] = {
-        ...rest,
-        ...(rest.prompt || !system ? {} : { prompt: system }),
-        ...(rest.permission || !permissions || Array.isArray(permissions) ? {} : { permission: permissions }),
-      };
-    }
-    delete out.agents;
-    out.agent = agent;
-  }
+  out.providers = next;
+  return applyAgentFold(out);
+}
+
+function applyAgentFold(out) {
+  if (!out.agents && !out.agent) return out;
+  out.agent = foldAgents(out);
+  delete out.agents;
   return out;
+}
+
+function foldAgents(out) {
+  if (!out.agents && !out.agent) return out.agent;
+  const agent = { ...(out.agents || {}), ...(out.agent || {}) };
+  for (const [id, raw] of Object.entries(agent)) {
+    if (!raw || typeof raw !== "object") continue;
+    const { system, permissions, ...rest } = raw;
+    agent[id] = {
+      ...rest,
+      ...(rest.prompt || !system ? {} : { prompt: system }),
+      ...(rest.permission || !permissions || Array.isArray(permissions) ? {} : { permission: permissions }),
+    };
+  }
+  return agent;
+}
+
+/**
+ * OpenCode 2 reads `providers` / `package` / `settings`. OpenCode 1 (the
+ * Docker installer) reads `provider` / `npm` / `options`. `generation` 2
+ * selects the v2 shape; anything else keeps the v1 shape.
+ */
+export function normalizeOpenCodeConfig(cfg = {}, generation = openCodeGeneration()) {
+  return Number(generation) >= 2 ? normalizeOpenCodeConfigV2(cfg) : normalizeOpenCodeConfigV1(cfg);
 }
 
 export function providerBlocks(cfg) {
@@ -160,7 +210,8 @@ export function canonicalProviderId(id) {
 export function configuredProviderModels(providerId) {
   const id = canonicalProviderId(providerId);
   if (!id) return [];
-  const block = providerBlocks(readOpenCodeConfig())[id];
+  const blocks = providerBlocks(readOpenCodeConfig());
+  const block = blocks[id] || blocks[harnessProviderId(id)];
   const models = block?.models && typeof block.models === "object" ? block.models : {};
   return Object.entries(models).map(([mid, m]) => ({
     id: mid,
@@ -171,14 +222,17 @@ export function configuredProviderModels(providerId) {
 
 /** Model ids on this provider that a seat or team already assigns. A short catalog write must not drop them. */
 export function providerModelIdsInUse(providerId, state) {
-  const prefix = `${String(providerId || "").trim().toLowerCase()}/`;
-  if (prefix === "/") return [];
+  const id = canonicalProviderId(providerId);
+  if (!id) return [];
+  const prefixes = [...new Set([id, harnessProviderId(id)])].map((name) => `${name}/`);
   const ids = new Set();
   const take = (ref) => {
     const raw = String(ref || "").trim();
-    if (!raw.toLowerCase().startsWith(prefix)) return;
-    const id = raw.slice(prefix.length);
-    if (id) ids.add(id);
+    const lower = raw.toLowerCase();
+    const prefix = prefixes.find((item) => lower.startsWith(item));
+    if (!prefix) return;
+    const modelId = raw.slice(prefix.length);
+    if (modelId) ids.add(modelId);
   };
   for (const seat of state?.seats || []) {
     take(seat?.model);
@@ -189,6 +243,7 @@ export function providerModelIdsInUse(providerId, state) {
     take(team?.fallbackModel);
     for (const model of team?.allowedModels || []) take(model);
   }
+  for (const channel of state?.channels || []) take(channel?.model);
   return [...ids];
 }
 
@@ -204,7 +259,12 @@ export function upsertProvider(body, state = getState(), offered) {
   if (!id) throw Object.assign(new Error("provider id required"), { status: 400 });
   const cfg = readOpenCodeConfig();
   cfg.provider = cfg.provider || {};
-  const previous = cfg.provider[id]?.models && typeof cfg.provider[id].models === "object" ? cfg.provider[id].models : {};
+  const direct = cfg.provider?.[id]?.models;
+  const aliased =
+    cfg.providers?.[harnessProviderId(id)]?.models ||
+    cfg.providers?.[id]?.models ||
+    cfg.provider?.[harnessProviderId(id)]?.models;
+  const previous = (direct && typeof direct === "object" ? direct : null) || (aliased && typeof aliased === "object" ? aliased : {}) || {};
   const models = {};
   for (const m of body.models || []) {
     const mid = String(m?.id || m || "").trim();
@@ -231,10 +291,16 @@ export function upsertProvider(body, state = getState(), offered) {
     },
     models,
   };
+  delete cfg.provider[harnessProviderId(id)];
+  if (cfg.providers) {
+    delete cfg.providers[id];
+    delete cfg.providers[harnessProviderId(id)];
+  }
   cfg.provider[id] = block;
   writeOpenCodeConfig(cfg);
   if (body.apiKey) setAuth(id, body.apiKey);
-  return listProviders().find((p) => p.id === id);
+  const storedId = openCodeIsV2() ? harnessProviderId(id) : id;
+  return listProviders().find((p) => p.id === storedId || p.id === id);
 }
 
 export function setAuth(id, apiKey) {
@@ -246,8 +312,11 @@ export function setAuth(id, apiKey) {
 
 export function removeProvider(id) {
   const cfg = readOpenCodeConfig();
-  if (cfg.provider) delete cfg.provider[id];
-  if (cfg.providers) delete cfg.providers[id];
+  const ids = [id, harnessProviderId(id)];
+  for (const key of ids) {
+    if (cfg.provider) delete cfg.provider[key];
+    if (cfg.providers) delete cfg.providers[key];
+  }
   writeOpenCodeConfig(cfg);
   const auth = readAuth();
   delete auth[id];
@@ -350,6 +419,9 @@ export function listModels() {
 /** Env vars the OpenCode serve child needs for roster-flow-opencode plugin tools. */
 export const PLUGIN_PASSTHROUGH_ENV = ["WIKIFLOW_URL", "WIKIFLOW_TOKEN"];
 
+/** Model OpenCode substitutes for `{env:ROSTER_DEV_AGENT_MODEL}` when that var is blank. */
+export const DEFAULT_DEV_AGENT_MODEL = "example-provider-dev/example-model";
+
 const BUILTIN_KEY_ENV = {
   xai: "XAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
@@ -386,6 +458,8 @@ export function serveChildEnv(base = process.env) {
     const name = fromCfg || fallback[id] || `${String(id).toUpperCase().replace(/-/g, "_")}_API_KEY`;
     if (!env[name]) env[name] = key;
   }
+  const devAgentModel = String(env.ROSTER_DEV_AGENT_MODEL || "").trim();
+  env.ROSTER_DEV_AGENT_MODEL = devAgentModel || DEFAULT_DEV_AGENT_MODEL;
   return env;
 }
 
@@ -404,9 +478,20 @@ export function hasProviderKey() {
  * Whether OpenCode actually loaded `providerID/modelID`. `loaded` is the live
  * list from the serve (`{ providerID, modelID }[]`); null means unknown.
  */
+function providerAliases(providerID) {
+  const clean = String(providerID || "").trim().toLowerCase();
+  const aliases = new Set();
+  if (!clean) return aliases;
+  aliases.add(clean);
+  if (clean.startsWith("roster-")) aliases.add(clean.slice("roster-".length));
+  else aliases.add(`roster-${clean}`);
+  return aliases;
+}
+
 export function isLoadedModel(loaded, providerID, modelID) {
   if (!Array.isArray(loaded)) return null;
-  return loaded.some((m) => m.providerID === providerID && (!modelID || m.modelID === modelID));
+  const aliases = providerAliases(providerID);
+  return loaded.some((m) => aliases.has(String(m.providerID || "").toLowerCase()) && (!modelID || m.modelID === modelID));
 }
 
 export function loadedProviderIds(loaded) {
@@ -467,19 +552,41 @@ export function modelAllowedInConfig(model) {
   return true;
 }
 
+/** Placeholder pairs used when `ROSTER_FALLBACK_MODELS` is unset. */
+export const DEFAULT_FALLBACK_MODELS = [
+  ["example-provider-dev", "example-model"],
+  ["example-provider-dev", "example-auto"],
+  ["example-provider", "example-small"],
+  ["standardcompute", "StandardComputeRouter"],
+  ["xai", "grok-4"],
+];
+
+/**
+ * Preferred provider/model pairs for the connected-model fallback.
+ * `ROSTER_FALLBACK_MODELS` is a comma-separated `provider/model` list and
+ * replaces the default when it contains at least one pair. A model id may
+ * itself contain slashes; only the first slash separates the provider.
+ */
+export function fallbackModelPairs(env = process.env) {
+  const raw = String(env?.ROSTER_FALLBACK_MODELS ?? "").trim();
+  if (!raw) return DEFAULT_FALLBACK_MODELS.map((pair) => pair.slice());
+  const pairs = [];
+  for (const item of raw.split(",")) {
+    const ref = item.trim();
+    const slash = ref.indexOf("/");
+    if (slash <= 0 || slash === ref.length - 1) continue;
+    pairs.push([ref.slice(0, slash), ref.slice(slash + 1)]);
+  }
+  return pairs.length ? pairs : DEFAULT_FALLBACK_MODELS.map((pair) => pair.slice());
+}
+
 /** A connected configured model, restricted to ones the serve loaded when `loaded` is known. */
-export function firstConnectedModel(loaded = null, models = listModels()) {
+export function firstConnectedModel(loaded = null, models = listModels(), env = process.env) {
   const pool = (models || []).filter(
     (m) => m.connected && !isBuiltinProvider(m.providerID) && isLoadedModel(loaded, m.providerID, m.modelID) !== false,
   );
   if (!pool.length) return null;
-  const preferred = [
-    ["infiniterouter-dev", "big-pickle"],
-    ["infiniterouter-dev", "auto"],
-    ["infiniterouter", "small-tier"],
-    ["standardcompute", "StandardComputeRouter"],
-    ["xai", "grok-4"],
-  ];
+  const preferred = fallbackModelPairs(env);
   for (const [providerID, modelID] of preferred) {
     const hit = pool.find((m) => m.providerID === providerID && m.modelID === modelID);
     if (hit) return hit;

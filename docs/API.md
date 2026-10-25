@@ -2,7 +2,7 @@
 
 Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only and does not publish them on the host. 8787 is mcp-flow.
 
-Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`. The callback-secret routes stay closed in that mode: they need an owner or admin session, and they return **403** when no auth is configured.
+Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo` only when `NODE_ENV` or `ENVIRONMENT` is `local`. Set anywhere else, the flag and the demo token are ignored and a warning is logged once. The callback-secret routes stay closed in that mode: they need an owner or admin session, and they return **403** when no auth is configured.
 
 Existing `.roster-flow/state.json` without an `onboarding` field is treated as already complete. CORE writes `state.json` (callback secret, session tokens, password hashes) with mode `0600`, and sets that mode on an existing file when it loads.
 
@@ -10,7 +10,11 @@ All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, 
 
 ## Setup and auth
 
-Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`. `GET` and `POST /api/v1/jobs/callback-secret` are the exception: they require an owner or admin session in every mode, including when onboarding is skipped.
+Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1` in an explicit local environment. `GET` and `POST /api/v1/jobs/callback-secret` are the exception: they require an owner or admin session in every mode, including when onboarding is skipped.
+
+`POST /api/v1/auth/login`, `/api/v1/access`, `/api/v1/setup/*`, and `/api/v1/slack*` share an in-memory limit per client IP. Defaults are 30 requests per 10 minutes (`ROSTER_AUTH_RATE_MAX`, `ROSTER_AUTH_RATE_WINDOW_MS`) and a lockout after 8 failed attempts for 15 minutes (`ROSTER_AUTH_LOCKOUT_AFTER`, `ROSTER_AUTH_LOCKOUT_MS`). Both return **429** with `Retry-After`. `CF-Connecting-IP` and `X-Forwarded-For` are used only when `ROSTER_TRUST_PROXY=1` or the peer is listed in `ROSTER_TRUSTED_PROXIES`.
+
+CORS allow-origin is never `*`. `ROSTER_CORS_ORIGINS` is a comma-separated allowlist. When it is unset, only a same-origin `Origin` (its host matches the request `Host`) is reflected. `GET /api/v1/debug/trace` responds only when `NODE_ENV` or `ENVIRONMENT` is `local`, `dev`, or `development`; otherwise it is **404**.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -186,9 +190,9 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/channels` | Channels plus membership, `leadSeatId`, `respond`, `limits`, and `responderSeatId` (who answers un-mentioned messages now, before pause and model checks; `null` in a quiet room) |
-| POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`) |
-| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`); set `respond` (`lead`, `team`, `conductor`, or `quiet`); set `limits.implicitPerMinute`, `limits.maxHops`, or `limits.maxBotWakesPerThread` (1–1000; `null` restores the default of 4, 4, or 8), `limits.fanout` (1–10, default 3), or `limits.tokensPerDay` (1–1,000,000,000; `null` means no room budget). Bad input is a 400 and changes nothing |
+| GET | `/api/v1/channels` | Channels plus membership, `leadSeatId`, `respond`, `limits`, `model` (the room's bot-reply model, or `null` for the team default), and `responderSeatId` (who answers un-mentioned messages now, before pause and model checks; `null` in a quiet room) |
+| POST | `/api/v1/channels` | Create a room (`name`, `teamIds`, `seatIds`, optional `model`) |
+| PATCH | `/api/v1/channels/:id` | Add/remove teams and seats; set `leadSeatId` (a bot member, or `null`); set `respond` (`lead`, `team`, `conductor`, or `quiet`); set `model` (an id in the channel's allowed catalog, or `null` for the team default); set `limits.implicitPerMinute`, `limits.maxHops`, or `limits.maxBotWakesPerThread` (1–1000; `null` restores the default of 4, 4, or 8), `limits.fanout` (1–10, default 3), or `limits.tokensPerDay` (1–1,000,000,000; `null` means no room budget). Bad input is a 400 and changes nothing |
 | GET | `/api/v1/channels/:id/messages` | Messages in a channel |
 | GET | `/api/v1/channels/:id/thinking` | Seats with a wake in flight in the room: `[{ seatId, name, model, since }]`. The Room shows them as `<seat> is thinking…` until the reply lands, the wake fails, or the follow window ends |
 | POST | `/api/v1/channels/:id/messages` | Post as You; parse `@channel` / `@eng` / `@build` and wake. The response includes `runId` and `started` for the first wake, and `wakeResults` (`seat`, `runId`, `started`) for every seat woken. It returns once the wakes have started, not when the reply arrives. `queued: true` means the room's responder is still answering and the message will follow. `rateLimited: true` means the room hit `limits.implicitPerMinute`; `quiet: true` means the room is quiet and only people were notified |
@@ -213,6 +217,8 @@ Plugin tools: `roster_task_create`, `roster_task_claim`, `roster_task_complete`.
 A message with no mention, from a human, wakes one responder for the room. The order is: the channel's `leadSeatId`; the supervisors of member teams; bot members that report to a human member; other bot members; the Channel conductor. Seats that are paused, over budget, or whose model is not usable are skipped, and the room gets one `Skipped …` line. When nobody can answer, the first seat reports why. The responder is told to answer in plain text, and its reply is posted to the same room. A message from a bot seat with no mention wakes nobody.
 
 The room's `respond` mode changes this. `lead` (the default) uses the order above. `team` wakes up to `limits.fanout` awake bot members, in the same order (lead first), each told to reply only if it can help and otherwise reply exactly `PASS`. `PASS` replies are not posted; when every member passes, the room gets one `Nobody had anything to add` line. `conductor` always wakes the Channel conductor. `quiet` wakes nobody: the other people in the room get a notify row, and the room gets one System line. A room answers at most `limits.implicitPerMinute` un-mentioned messages a minute (default 4); past that, the room gets one `Rate limit:` line and @mentions still work. With `limits.tokensPerDay` set, a room whose usage rows for the UTC day reach the budget acts as `quiet` until 00:00 UTC and says so in its System line; @mentions still work and seat budgets still apply. Channels sent to clients carry `budget: { tokensPerDay, spentToday, over, quietUntil }` when a budget is set.
+
+A room's `model` chooses the model for bot replies in that room. The allowed catalog is the member teams' `allowedModels` (when the room lists no teams, the teams of its member seats) that are also in the provider catalog (`GET /api/v1/models`). `null` leaves the team default in place. A stored model that is no longer allowed or loaded is not sent: the room session starts on the first of those teams' `defaultModel`.
 
 Each seat has one OpenCode session per room it is woken in (`roster:<seat>:<room>`), separate from its DM session (`roster:<seat>`), which bus mail, heartbeats, its own DM, and Harness attach use. A room wake carries the room messages posted since the seat's last turn there (up to 20 lines, about 2k tokens, oldest first, without System lines or its own posts), and replies are read from that session only. Room sessions idle for 14 days are deleted and reopened on the next wake.
 

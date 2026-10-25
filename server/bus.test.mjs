@@ -853,6 +853,77 @@ test("room wakes run in the seat's session for that room and carry the messages 
   }
 });
 
+test("a channel model is what a room session starts with, and an unloaded override falls back to the team default", async () => {
+  const created = [];
+  const prompts = [];
+  const prev = { ...deps };
+  deps.harnessStatus = () => ({ harness: "up" });
+  deps.loadedModels = async () => [
+    { providerID: "e2efake", modelID: "m1" },
+    { providerID: "e2efake", modelID: "m2" },
+  ];
+  deps.createSession = async (body) => {
+    created.push(body);
+    return { id: `ses_model_${created.length}` };
+  };
+  deps.promptSession = async (_id, body) => {
+    prompts.push(body.model);
+  };
+  deps.sessionMessages = async () => [];
+  deps.agentNeedsServeRestart = () => false;
+  deps.watchProviderTurn = () => Object.assign(Promise.resolve({ reached: true, text: "ok", done: true }), { cancel() {} });
+  const snap = {};
+  mutate((s) => {
+    const eng = (s.teams || []).find((t) => t.id === "eng");
+    const ship = (s.channels || []).find((c) => c.id === "ship");
+    const seat = (s.seats || []).find((x) => x.id === "build");
+    snap.allowed = [...(eng.allowedModels || [])];
+    snap.defaultModel = eng.defaultModel;
+    snap.model = ship.model;
+    snap.seatModel = seat.model;
+    snap.seatFallback = seat.fallbackModel;
+    eng.allowedModels = ["e2efake/m1", "e2efake/m2"];
+    eng.defaultModel = "e2efake/m1";
+    ship.model = "e2efake/m2";
+    seat.model = "dead/not-loaded";
+    seat.fallbackModel = "";
+    seat.status = "idle";
+    if (s.roomSessions?.build) delete s.roomSessions.build.ship;
+  });
+  try {
+    const first = await wakeSeat("build", "use the room model", { from: "you", kind: "mention-seat", channel: "ship", announce: false });
+    assert.equal(first.started, true);
+    assert.deepEqual(created[0].model, { providerID: "e2efake", id: "m2" });
+    assert.deepEqual(prompts[0], { providerID: "e2efake", modelID: "m2" });
+
+    deps.loadedModels = async () => [{ providerID: "e2efake", modelID: "m1" }];
+    mutate((s) => {
+      if (s.roomSessions?.build) delete s.roomSessions.build.ship;
+    });
+    const second = await wakeSeat("build", "fallback", { from: "you", kind: "mention-seat", channel: "ship", announce: false });
+    assert.equal(second.started, true);
+    assert.deepEqual(created.at(-1).model, { providerID: "e2efake", id: "m1" });
+    assert.deepEqual(prompts.at(-1), { providerID: "e2efake", modelID: "m1" });
+  } finally {
+    mutate((s) => {
+      const eng = (s.teams || []).find((t) => t.id === "eng");
+      const ship = (s.channels || []).find((c) => c.id === "ship");
+      const seat = (s.seats || []).find((x) => x.id === "build");
+      if (eng) {
+        eng.allowedModels = snap.allowed;
+        eng.defaultModel = snap.defaultModel;
+      }
+      if (ship) ship.model = snap.model ?? null;
+      if (seat) {
+        seat.model = snap.seatModel;
+        seat.fallbackModel = snap.seatFallback;
+      }
+      if (s.roomSessions?.build) delete s.roomSessions.build.ship;
+    });
+    Object.assign(deps, prev);
+  }
+});
+
 test("room wakes tell the seat how to bring someone in, and hop wakes say who mentioned it", () => {
   const plain = roomReplyLines({ channel: "ship", kind: "mention-seat" });
   assert.ok(plain.some((l) => l.includes("@mention their seat id in your reply; that wakes them here")));

@@ -266,7 +266,11 @@ test("autostartHarness starts on the permissive list while the Featherless catal
     assert.equal(raced.result.started, true);
     assert.equal(ensured, 2);
     const permissive = JSON.parse(readFileSync(path, "utf8"));
-    const blocks = [permissive.provider?.featherless, permissive.providers?.featherless].filter(Boolean);
+    const blocks = [
+      permissive.provider?.featherless,
+      permissive.providers?.featherless,
+      permissive.providers?.["roster-featherless"],
+    ].filter(Boolean);
     assert.ok(blocks.some((block) => block.models?.["bogus-87"]));
     release({
       ok: true,
@@ -351,7 +355,7 @@ test("fresh container with owner and provider reports harness ready", async () =
     assert.ok(seeded);
     assert.equal(seeded.baseURL, "https://api.featherless.ai/v1");
     assert.equal(seeded.apiKeyEnv, "FEATHERLESS_API_KEY");
-    assert.deepEqual(seeded.models.map((m) => m.id), ["demo-small", "deepseek-ai/DeepSeek-V4.1-Flash"]);
+    assert.deepEqual(seeded.models.map((m) => m.id), ["demo-small", "Qwen/Qwen2.5-7B-Instruct"]);
 
     let health;
     const start = Date.now();

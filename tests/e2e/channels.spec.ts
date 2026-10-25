@@ -96,7 +96,15 @@ async function closeModal(page: Page) {
   await expect(modal).toHaveCount(0);
 }
 
-type Room = { id: string; leadSeatId: string | null; respond: string; responderSeatId: string | null; seatIds: string[]; limits?: Record<string, number> };
+type Room = {
+  id: string;
+  leadSeatId: string | null;
+  respond: string;
+  responderSeatId: string | null;
+  seatIds: string[];
+  limits?: Record<string, number>;
+  model?: string | null;
+};
 
 test("room settings set the lead and mode, and a quiet room only notifies people", async ({ page, request }) => {
   await resetApi(request);
@@ -362,6 +370,37 @@ test("a supervisor delegates to a direct report with the task tool and the child
     expect(list.filter((r) => r.source === "task").map((r) => [r.seatId, r.tokens, r.parentSeatId])).toEqual([["build", 1300, "eng-supervisor"]]);
   } finally {
     await fake.close();
+    await dropFakeModel(request);
+  }
+});
+
+test("channel settings save a reply model from the team's allowed catalog", async ({ page, request }) => {
+  await resetApi(request);
+  await useFakeModel(request, []);
+  try {
+    const team = await request.patch(`${API}/api/v1/teams/eng`, {
+      data: { defaultModel: "e2efake/m1", allowedModels: ["e2efake/m1", "e2efake/m2"], fallbackModel: "e2efake/m1" },
+    });
+    expect(team.ok()).toBeTruthy();
+    const rejected = await request.patch(`${API}/api/v1/channels/ship`, { data: { model: "e2efake/m2" } });
+    expect(rejected.status()).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: expect.stringMatching(/allowed catalog/) });
+
+    await page.goto("/app");
+    await page.getByTestId("channel-ship").click();
+    await page.getByTestId("conversation-title").click();
+    const select = page.getByTestId("room-model");
+    await expect(select.locator("option[value='e2efake/m1']")).toHaveCount(1);
+    await expect(select.locator("option[value='e2efake/m2']")).toHaveCount(0);
+    await select.selectOption("e2efake/m1");
+    await expect
+      .poll(async () => ((await (await request.get(`${API}/api/v1/channels/ship`)).json()) as Room).model)
+      .toBe("e2efake/m1");
+    await select.selectOption({ value: "" });
+    await expect
+      .poll(async () => ((await (await request.get(`${API}/api/v1/channels/ship`)).json()) as Room).model)
+      .toBeNull();
+  } finally {
     await dropFakeModel(request);
   }
 });
