@@ -2,7 +2,7 @@
 
 Base URL: `http://127.0.0.1:8790` (Vite proxies `/api` there in `npm run dev`). `docker compose up` exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only and does not publish them on the host. 8787 is mcp-flow.
 
-Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo`. The callback-secret routes stay closed in that mode: they need an owner or admin session, and they return **403** when no auth is configured.
+Local standup has a **local owner account** after first-run setup. Send `Authorization: Bearer <token>` from `POST /api/v1/auth/login`. `ROSTER_SKIP_ONBOARDING=1` leaves the API open and still accepts `Authorization: Bearer roster-demo` only when `NODE_ENV` or `ENVIRONMENT` is `local`. Set anywhere else, the flag and the demo token are ignored and a warning is logged once. The callback-secret routes stay closed in that mode: they need an owner or admin session, and they return **403** when no auth is configured.
 
 Existing `.roster-flow/state.json` without an `onboarding` field is treated as already complete. CORE writes `state.json` (callback secret, session tokens, password hashes) with mode `0600`, and sets that mode on an existing file when it loads.
 
@@ -10,7 +10,11 @@ All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, 
 
 ## Setup and auth
 
-Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1`. `GET` and `POST /api/v1/jobs/callback-secret` are the exception: they require an owner or admin session in every mode, including when onboarding is skipped.
+Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1` in an explicit local environment. `GET` and `POST /api/v1/jobs/callback-secret` are the exception: they require an owner or admin session in every mode, including when onboarding is skipped.
+
+`POST /api/v1/auth/login`, `/api/v1/access`, `/api/v1/setup/*`, and `/api/v1/slack*` share an in-memory limit per client IP. Defaults are 30 requests per 10 minutes (`ROSTER_AUTH_RATE_MAX`, `ROSTER_AUTH_RATE_WINDOW_MS`) and a lockout after 8 failed attempts for 15 minutes (`ROSTER_AUTH_LOCKOUT_AFTER`, `ROSTER_AUTH_LOCKOUT_MS`). Both return **429** with `Retry-After`. `CF-Connecting-IP` and `X-Forwarded-For` are used only when `ROSTER_TRUST_PROXY=1` or the peer is listed in `ROSTER_TRUSTED_PROXIES`.
+
+CORS allow-origin is never `*`. `ROSTER_CORS_ORIGINS` is a comma-separated allowlist. When it is unset, only a same-origin `Origin` (its host matches the request `Host`) is reflected. `GET /api/v1/debug/trace` responds only when `NODE_ENV` or `ENVIRONMENT` is `local`, `dev`, or `development`; otherwise it is **404**.
 
 | Method | Path | Purpose |
 |---|---|---|

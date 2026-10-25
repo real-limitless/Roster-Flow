@@ -6,6 +6,7 @@ const env = {
   ROSTER_DEMO: process.env.ROSTER_DEMO || "1",
   ROSTER_DEMO_RESET_MS: process.env.ROSTER_DEMO_RESET_MS || String(30 * 60 * 1000),
 };
+if (!String(env.NODE_ENV || "").trim() && !String(env.ENVIRONMENT || "").trim()) env.ENVIRONMENT = "local";
 
 const web = `http://127.0.0.1:${process.env.ROSTER_WEB_PORT || 5175}`;
 console.log(`Demo (no owner): ${web}/app  — starter #ship, Chart, Harness`);

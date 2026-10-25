@@ -133,7 +133,7 @@ npm run start:static   # http://127.0.0.1:8790/setup
 - Optional: [OpenCode CLI](https://opencode.ai) on `PATH`, or `OPENCODE_BIN=/path/to/opencode`
 - Optional provider keys in the environment (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …)
 
-First run: open http://127.0.0.1:5175/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds.
+First run: open http://127.0.0.1:5175/setup (install → owner → login → harness → welcome). Playwright and local demo agents should set `ENVIRONMENT=local` and `ROSTER_SKIP_ONBOARDING=1` so `/app` stays open and the starter company still seeds. The skip and the demo token are ignored unless `NODE_ENV` or `ENVIRONMENT` is `local`.
 
 ## Host install
 
@@ -260,7 +260,7 @@ Reset (starter company, skip wizard):
 
 ```bash
 rm -rf .roster-flow/state.json
-ROSTER_SKIP_ONBOARDING=1 npm run api
+ENVIRONMENT=local ROSTER_SKIP_ONBOARDING=1 npm run api
 ```
 
 ## Stable selectors (use these, not CSS soup)
