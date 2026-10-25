@@ -70,6 +70,8 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_PROVIDER_BASE_URL` | unset | OpenAI-compatible base URL. |
 | `ROSTER_PROVIDER_API_KEY_ENV` | unset | **Name** of the env var that holds the key. The key is not written into config. |
 | `ROSTER_PROVIDER_MODELS` | unset | Comma-separated model ids. |
+| `ROSTER_FALLBACK_MODELS` | placeholder list | Comma-separated `provider/model` pairs for the connected-model fallback. First match wins and the value replaces the default list. Blank keeps `example-provider-dev/example-model`, `example-provider-dev/example-auto`, `example-provider/example-small`, then `standardcompute/StandardComputeRouter` and `xai/grok-4`. |
+| `ROSTER_DEV_AGENT_MODEL` | `example-provider-dev/example-model` | Model for checked-in dev agents whose config says `{env:ROSTER_DEV_AGENT_MODEL}`. The serve sets this placeholder when the variable is blank so OpenCode does not substitute an empty model. |
 | `OPENCODE_CONFIG` | empty | Optional operator OpenCode config. The whole file is deep-merged into both harness configs (`username`, `mcp`, plugins, and other keys). Roster provider blocks win on a conflicting id. Plugin lists are a union and always include `roster-flow-opencode`. The serve loads the roster file, not this path. |
 | `FEATHERLESS_API_KEY` | unset | Key for the `featherless` provider that `roster-setup` writes as `{env:FEATHERLESS_API_KEY}`. Passed through to both OpenCode serves. |
 

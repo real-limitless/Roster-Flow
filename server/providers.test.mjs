@@ -1,6 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { keyStatusForModel, listModels, mergeModelLists } from "./providers.mjs";
+import { fallbackModelPairs, firstConnectedModel, keyStatusForModel, listModels, mergeModelLists, serveChildEnv } from "./providers.mjs";
+
+test("fallback model preference uses placeholder ids unless ROSTER_FALLBACK_MODELS is set", () => {
+  assert.deepEqual(fallbackModelPairs({}), [
+    ["example-provider-dev", "example-model"],
+    ["example-provider-dev", "example-auto"],
+    ["example-provider", "example-small"],
+    ["standardcompute", "StandardComputeRouter"],
+    ["xai", "grok-4"],
+  ]);
+  assert.deepEqual(fallbackModelPairs({ ROSTER_FALLBACK_MODELS: "  " }), fallbackModelPairs({}));
+  assert.deepEqual(fallbackModelPairs({ ROSTER_FALLBACK_MODELS: "not-a-pair" }), fallbackModelPairs({}));
+  assert.deepEqual(fallbackModelPairs({ ROSTER_FALLBACK_MODELS: " example-provider/example-small , featherless/Qwen/Qwen2.5-Coder-32B-Instruct " }), [
+    ["example-provider", "example-small"],
+    ["featherless", "Qwen/Qwen2.5-Coder-32B-Instruct"],
+  ]);
+
+  const pool = [
+    { providerID: "featherless", modelID: "Qwen/Qwen2.5-Coder-32B-Instruct", connected: true },
+    { providerID: "example-provider-dev", modelID: "example-model", connected: true },
+    { providerID: "example-provider", modelID: "example-small", connected: true },
+    { providerID: "opencode", modelID: "big-pickle", connected: true },
+  ];
+  assert.equal(firstConnectedModel(null, pool, {}).modelID, "example-model");
+  assert.equal(firstConnectedModel(null, pool, { ROSTER_FALLBACK_MODELS: "example-provider/example-small" }).modelID, "example-small");
+  assert.equal(
+    firstConnectedModel([{ providerID: "featherless", modelID: "Qwen/Qwen2.5-Coder-32B-Instruct" }], pool, {}).providerID,
+    "featherless",
+  );
+  assert.equal(firstConnectedModel(null, pool, {}).providerID === "opencode", false);
+});
+
+test("serveChildEnv supplies a placeholder dev agent model when the variable is blank", () => {
+  assert.equal(serveChildEnv({ PATH: "/bin" }).ROSTER_DEV_AGENT_MODEL, "example-provider-dev/example-model");
+  assert.equal(
+    serveChildEnv({ PATH: "/bin", ROSTER_DEV_AGENT_MODEL: " example-provider/example-auto " }).ROSTER_DEV_AGENT_MODEL,
+    "example-provider/example-auto",
+  );
+  assert.equal(serveChildEnv({ PATH: "/bin", ROSTER_DEV_AGENT_MODEL: "  " }).ROSTER_DEV_AGENT_MODEL, "example-provider-dev/example-model");
+});
 
 test("listModels does not invent a fake provider catalog", () => {
   const models = listModels();
