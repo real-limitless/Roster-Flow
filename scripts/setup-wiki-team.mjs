@@ -13,7 +13,7 @@
  * Auth: ROSTER_API_TOKEN, a scoped API token (rf_..., needs "write") from
  *       Settings → API tokens, POST /api/v1/tokens, or scripts/create-token.mjs.
  * Env:  ROSTER_API (default http://127.0.0.1:8790), WIKI_PROJECT_ID (wiki-flow-docs),
- *       WIKI_MODEL (default deepseek-ai/DeepSeek-V4.1-Flash). The provider
+ *       WIKI_MODEL (default Qwen/Qwen2.5-7B-Instruct). The provider
  *       models list is the catalog, the models this script assigns, the
  *       provider's current models, and every featherless model a seat or
  *       team already uses.
@@ -25,7 +25,7 @@ export const FEATHERLESS_MODEL_DEFAULTS = [
   { id: FEATHERLESS_CODER_ID, name: "Qwen2.5 Coder 32B" },
   { id: "meta-llama/Meta-Llama-3.1-70B-Instruct", name: "Llama 3.1 70B" },
   { id: "deepseek-ai/DeepSeek-V3-0324", name: "DeepSeek V3" },
-  { id: FEATHERLESS_CHAT_ID, name: "DeepSeek V4.1 Flash" },
+  { id: FEATHERLESS_CHAT_ID, name: "Qwen2.5 7B Instruct" },
 ];
 
 export const FEATHERLESS = {

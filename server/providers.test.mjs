@@ -66,9 +66,9 @@ test("mergeModelLists prefers live then configured", () => {
   assert.equal(merged[0].source, "live");
 });
 
-test("normalizeOpenCodeConfig folds legacy keys into OpenCode's documented schema", async () => {
+test("normalizeOpenCodeConfig keeps OpenCode 1 keys and speaks OpenCode 2 when asked", async () => {
   const { normalizeOpenCodeConfig } = await import("./providers.mjs");
-  const out = normalizeOpenCodeConfig({
+  const input = {
     $schema: "https://opencode.ai/config.json",
     providers: {
       featherless: {
@@ -79,10 +79,20 @@ test("normalizeOpenCodeConfig folds legacy keys into OpenCode's documented schem
       },
     },
     agents: { build: { mode: "all", system: "Persona: x", permissions: { edit: "deny" } } },
-  });
+  };
+  const v1 = normalizeOpenCodeConfig(input, 1);
+  assert.equal(v1.providers, undefined);
+  assert.equal(v1.agents, undefined);
+  assert.equal(v1.provider.featherless.npm, "@ai-sdk/openai-compatible");
+  assert.equal(v1.provider.featherless.package, undefined);
+  assert.equal(v1.provider.featherless.settings, undefined);
+  assert.deepEqual(v1.provider.featherless.options, { baseURL: "https://api.featherless.ai/v1", apiKey: "{env:FEATHERLESS_API_KEY}" });
+  assert.equal(v1.agent.build.prompt, "Persona: x");
+
+  const out = normalizeOpenCodeConfig(input, 2);
   assert.equal(out.provider, undefined);
   assert.equal(out.agents, undefined);
-  const p = out.providers.featherless;
+  const p = out.providers["roster-featherless"];
   assert.equal(p.options, undefined);
   assert.equal(p.npm, undefined);
   assert.equal(p.package, "aisdk:@ai-sdk/openai-compatible");
@@ -91,6 +101,39 @@ test("normalizeOpenCodeConfig folds legacy keys into OpenCode's documented schem
   assert.equal(out.agent.build.system, undefined);
   assert.deepEqual(out.agent.build.permission, { edit: "deny" });
   assert.equal(out.agent.build.permissions, undefined);
+});
+
+test("OpenCode 2 stores featherless under roster-featherless and reads it back by the public id", async () => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { opencodeDir } = await import("./paths.mjs");
+  const { configuredProviderModels, readOpenCodeConfig, upsertProvider } = await import("./providers.mjs");
+  const path = join(opencodeDir, "opencode.json");
+  const raw = readFileSync(path, "utf8");
+  const prev = process.env.ROSTER_OPENCODE_GENERATION;
+  process.env.ROSTER_OPENCODE_GENERATION = "2";
+  try {
+    upsertProvider(
+      {
+        id: "featherless",
+        name: "Featherless",
+        models: [{ id: "Qwen/Qwen2.5-Coder-32B-Instruct", name: "Qwen" }],
+      },
+      { seats: [{ model: "featherless/keep-me" }, { model: "roster-featherless/also-kept" }], teams: [] },
+      null,
+    );
+    const saved = readOpenCodeConfig();
+    assert.equal(saved.provider, undefined);
+    assert.equal(saved.providers["roster-featherless"].package, "aisdk:@ai-sdk/openai-compatible");
+    const models = configuredProviderModels("featherless").map((m) => m.id);
+    assert.ok(models.includes("Qwen/Qwen2.5-Coder-32B-Instruct"));
+    assert.ok(models.includes("keep-me"));
+    assert.ok(models.includes("also-kept"));
+  } finally {
+    if (prev === undefined) delete process.env.ROSTER_OPENCODE_GENERATION;
+    else process.env.ROSTER_OPENCODE_GENERATION = prev;
+    writeFileSync(path, raw);
+  }
 });
 
 test("endpointAccepts rejects a closed port and accepts an open one", async () => {
@@ -140,7 +183,8 @@ test("upsertProvider keeps models a seat still uses and never writes a completio
         teams: [{ allowedModels: ["featherless/team-only", "openai/gpt-5"] }],
       },
     );
-    const models = readOpenCodeConfig().providers.featherless.models;
+    const saved = readOpenCodeConfig();
+    const models = (saved.provider?.featherless || saved.providers?.featherless || saved.providers?.["roster-featherless"]).models;
     assert.equal(models["Qwen/Qwen2.5-Coder-32B-Instruct"].limit.output, 512);
     assert.ok(models["Qwen/Qwen2.5-Coder-32B-Instruct"].limit.context > 0);
     assert.equal(models["meta-llama/Llama-3.3-70B-Instruct"].name, "Llama 3.3 70B");
@@ -188,7 +232,11 @@ test("upsertProvider does not add an in-use featherless id the upstream catalog 
       state,
       new Set(["Qwen/Qwen2.5-Coder-32B-Instruct"]),
     );
-    let models = readOpenCodeConfig().providers.featherless.models;
+    const readModels = () => {
+      const saved = readOpenCodeConfig();
+      return (saved.provider?.featherless || saved.providers?.featherless || saved.providers?.["roster-featherless"]).models;
+    };
+    let models = readModels();
     assert.ok(models["Qwen/Qwen2.5-Coder-32B-Instruct"]);
     assert.equal(models["missing-upstream"], undefined);
     assert.equal(models["unused-model"], undefined);
@@ -204,7 +252,7 @@ test("upsertProvider does not add an in-use featherless id the upstream catalog 
       state,
       null,
     );
-    models = readOpenCodeConfig().provider.featherless.models;
+    models = readModels();
     assert.ok(models["missing-upstream"], "unreachable catalog keeps the in-use id");
   } finally {
     writeFileSync(path, raw);

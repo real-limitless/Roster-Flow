@@ -12,6 +12,7 @@ test("chat and conductor output budget stays at or above 512", () => {
   assert.equal(outputTokenLimit(4096), 4096);
   assert.equal(contextTokenLimit(undefined), DEFAULT_CONTEXT_TOKENS);
   assert.equal(contextTokenLimit(200000), 200000);
-  assert.equal(FEATHERLESS_CHAT_CONTEXT, 262144);
-  assert.equal(contextTokenLimit(undefined, FEATHERLESS_CHAT_ID), 262144);
+  assert.equal(FEATHERLESS_CHAT_CONTEXT, 32768);
+  assert.equal(contextTokenLimit(undefined, FEATHERLESS_CHAT_ID), 32768);
+  assert.equal(contextTokenLimit(undefined, "deepseek-ai/DeepSeek-V4.1-Flash"), 262144);
 });

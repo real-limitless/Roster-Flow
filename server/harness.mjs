@@ -18,16 +18,14 @@ import {
   loadedProviderIds,
   isBuiltinProvider,
   providerBlocks,
+  harnessProviderId,
 } from "./providers.mjs";
 import { getState, mutate } from "./store.mjs";
 import { emit } from "./trace.mjs";
 import { opencodeHostname, rosterApiUrl } from "./config.mjs";
+import { openCodeIsV2, resolveOpenCodeBin } from "./opencode-generation.mjs";
 import { companyWorkspace, dataDir, opencodeDir, root, systemWorkspace } from "./paths.mjs";
 
-// OpenCode v2 mounts its API under /api/*. Unprefixed routes hit the SPA.
-// v2.0.32: health is /api/info, providers are /api/provider, sessions are /api/session.
-const API = "/api";
-const HEALTH = `${API}/info`;
 const ROSTER_PLUGIN_NAME = "roster-flow-opencode";
 /** Absolute file URL. A bare name makes v2 npm-install it and 404. */
 const ROSTER_PLUGIN = pathToFileURL(join(root, "packages/roster-flow-opencode/index.js")).href;
@@ -35,6 +33,12 @@ const instances = { company: null, system: null };
 const inflight = { company: null, system: null };
 const spawned = new Set();
 
+/**
+ * OpenCode v2 serve requires HTTP basic auth (username `opencode`, password
+ * from OPENCODE_SERVER_PASSWORD or OPENCODE_PASSWORD). We pin one password
+ * per CORE process so every spawned serve and every probe share it.
+ * An operator may override by setting either env var.
+ */
 const OPENCODE_SERVER_USERNAME = "opencode";
 const SERVER_PASSWORD =
   String(process.env.OPENCODE_SERVER_PASSWORD || process.env.OPENCODE_PASSWORD || "").trim() ||
@@ -53,6 +57,27 @@ function unwrapList(data) {
   if (Array.isArray(data?.data)) return data.data;
   if (Array.isArray(data?.messages)) return data.messages;
   return [];
+}
+
+/**
+ * OpenCode 1 (what `https://opencode.ai/install` installs) serves unprefixed
+ * routes and loads a plugin by package name. OpenCode 2 mounts `/api/*`,
+ * requires basic auth, and npm-installs a bare plugin name, so the roster
+ * plugin is a file URL.
+ */
+export function serveContract() {
+  const v2 = openCodeIsV2();
+  const prefix = v2 ? "/api" : "";
+  return {
+    v2,
+    health: v2 ? "/api/info" : "/global/health",
+    providers: v2 ? "/api/provider" : "/config/providers",
+    live: [`${prefix}/config`, `${prefix}/global/config`, `${prefix}/provider`],
+    session: `${prefix}/session`,
+    event: `${prefix}/event`,
+    promptSuffix: v2 ? "/prompt" : "/prompt_async",
+    plugin: v2 ? ROSTER_PLUGIN : ROSTER_PLUGIN_NAME,
+  };
 }
 
 export const COMPANY = "company";
@@ -170,7 +195,7 @@ function unionPlugins(...lists) {
       out.push(item);
     }
   }
-  out.push(ROSTER_PLUGIN);
+  out.push(serveContract().plugin);
   return out;
 }
 
@@ -178,7 +203,14 @@ function providerMap(cfg) {
   if (!isPlainObject(cfg)) return {};
   const plural = isPlainObject(cfg.providers) ? cfg.providers : {};
   const singular = isPlainObject(cfg.provider) ? cfg.provider : {};
-  return { ...plural, ...singular };
+  const merged = { ...plural, ...singular };
+  // OpenCode 2 stores owned providers as roster-<id>. Canonicalize before the
+  // later-file-wins assign so an operator featherless block cannot overwrite
+  // the roster block under a different key.
+  if (!openCodeIsV2()) return merged;
+  const out = {};
+  for (const [id, block] of Object.entries(merged)) out[harnessProviderId(id)] = block;
+  return out;
 }
 
 /** Overlay objects. Plugin and provider maps are applied by the caller. */
@@ -267,14 +299,7 @@ process.on("SIGINT", () => {
 process.on("exit", shutdownSpawned);
 
 export function whichOpenCode() {
-  const envBin = process.env.OPENCODE_BIN;
-  if (envBin) return existsSync(envBin) ? envBin : null;
-  const path = process.env.PATH || "";
-  for (const dir of path.split(":")) {
-    const cand = join(dir, "opencode");
-    if (existsSync(cand)) return cand;
-  }
-  return null;
+  return resolveOpenCodeBin();
 }
 
 function freePort(preferred) {
@@ -300,7 +325,7 @@ export async function healthCheck(port, timeoutMs = 1500) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetch(`http://${opencodeHostname()}:${port}${HEALTH}`, {
+    const res = await fetch(`http://${opencodeHostname()}:${port}${serveContract().health}`, {
       headers: { accept: "application/json", ...serverAuthHeader() },
       signal: ac.signal,
     });
@@ -505,7 +530,7 @@ export async function loadedModels(kind = COMPANY) {
     for (const [id, block] of Object.entries(providerBlocks(readOpenCodeConfig()))) {
       if (block?.models) configured[id] = block.models;
     }
-    const loaded = flattenConfigProviders(await ocFetch(`${API}/provider`, {}, k), configured) ?? [];
+    const loaded = flattenConfigProviders(await ocFetch(serveContract().providers, {}, k), configured) ?? [];
     if (instances[k] === inst) inst.loaded = loaded;
     return loaded;
   } catch {
@@ -806,7 +831,7 @@ function flattenLiveProviders(data) {
 
 export async function listLiveModels() {
   if (!instances.company?.healthy) return [];
-  for (const path of [`${API}/config`, `${API}/global/config`, `${API}/provider`]) {
+  for (const path of serveContract().live) {
     try {
       const data = await ocFetch(path, {}, COMPANY);
       const models = flattenLiveProviders(data);
@@ -819,11 +844,11 @@ export async function listLiveModels() {
 }
 
 export async function listSessions(kind = COMPANY) {
-  return unwrapList(await ocFetch(`${API}/session`, {}, kind));
+  return unwrapList(await ocFetch(serveContract().session, {}, kind));
 }
 
 export async function createSession(body = {}, kind = COMPANY) {
-  const data = await ocFetch(`${API}/session`, { method: "POST", body: JSON.stringify(body) }, kind);
+  const data = await ocFetch(serveContract().session, { method: "POST", body: JSON.stringify(body) }, kind);
   return data?.data && typeof data.data === "object" && !Array.isArray(data.data) ? data.data : data;
 }
 
@@ -843,13 +868,18 @@ export function promptRequest(body = {}) {
 }
 
 export async function promptSession(sessionId, body, kind = COMPANY) {
-  const req = ocFetch(`${API}/session/${sessionId}/prompt`, { method: "POST", body: JSON.stringify(promptRequest(body)) }, kind);
+  const contract = serveContract();
+  const path = `${contract.session}/${sessionId}${contract.promptSuffix}`;
+  if (!contract.v2) {
+    return ocFetch(path, { method: "POST", body: JSON.stringify(body) }, kind);
+  }
+  const req = ocFetch(path, { method: "POST", body: JSON.stringify(promptRequest(body)) }, kind);
   req.catch(() => undefined);
   return undefined;
 }
 
 export async function deleteSession(sessionId, kind = COMPANY) {
-  return ocFetch(`${API}/session/${sessionId}`, { method: "DELETE" }, kind);
+  return ocFetch(`${serveContract().session}/${sessionId}`, { method: "DELETE" }, kind);
 }
 
 /** `roster:<seat>` is a seat's DM session; `roster:<seat>:<room>` is its session for that room. */
@@ -868,7 +898,7 @@ export function serveBaseUrl(kind = COMPANY) {
 /** Sessions OpenCode started from this one (the `task` tool's subagent runs). */
 export async function sessionChildren(sessionId, kind = COMPANY) {
   try {
-    return unwrapList(await ocFetch(`${API}/session/${sessionId}/children`, {}, kind));
+    return unwrapList(await ocFetch(`${serveContract().session}/${sessionId}/children`, {}, kind));
   } catch (err) {
     if (err?.status === 404) return [];
     throw err;
@@ -999,7 +1029,7 @@ function eventStream(kind, baseUrl = instances[harnessKind(kind)]?.baseUrl) {
   eventStreams.set(baseUrl, entry);
   entry.task = (async () => {
     try {
-      const res = await fetch(`${entry.baseUrl}${API}/event`, { signal: ac.signal, headers: { accept: "text/event-stream", ...serverAuthHeader() } });
+      const res = await fetch(`${entry.baseUrl}${serveContract().event}`, { signal: ac.signal, headers: { accept: "text/event-stream", ...serverAuthHeader() } });
       if (!res.ok || !res.body) return;
       entry.markOpened(true);
       const reader = res.body.getReader();
@@ -1133,7 +1163,7 @@ export function watchProviderTurn(sessionId, kind = COMPANY, timeoutMs = provide
 }
 
 export async function sessionMessages(sessionId, kind = COMPANY) {
-  return unwrapList(await ocFetch(`${API}/session/${sessionId}/message`, {}, kind));
+  return unwrapList(await ocFetch(`${serveContract().session}/${sessionId}/message`, {}, kind));
 }
 
 function partText(part) {
