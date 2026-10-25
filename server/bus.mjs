@@ -21,7 +21,7 @@ import { isBuiltinProvider, isLoadedModel, loadedProviderIds, parseModelRef, res
 import { teamWakeTarget } from "./teams.mjs";
 import { modelChainForSeat } from "./models.mjs";
 import { CONDUCTOR_ID } from "./mentions.mjs";
-import { resolveMembers } from "./channels.mjs";
+import { channelResponseModel, resolveMembers } from "./channels.mjs";
 import { emit } from "./trace.mjs";
 import { goalPackLines } from "./goals.mjs";
 import { wakeBlocked } from "./seats.mjs";
@@ -302,13 +302,22 @@ function seatById(id) {
  * (`roster:<seat>:<room>`); without, its DM session (`roster:<seat>`), which
  * the Harness attach pane, heartbeats, and bus mail use.
  */
-function sessionCreateBody(seat, title) {
-  const parsed = parseModelRef(seat?.model);
+function sessionCreateBody(seat, title, modelRefOverride = null) {
+  const parsed = parseModelRef(modelRefOverride || seat?.model);
   return {
     title,
     agent: seat.id,
     ...(parsed ? { model: { providerID: parsed.providerID, id: parsed.modelID } } : {}),
   };
+}
+
+/** Channel override for a new room session, or null to keep the seat model. */
+async function roomSessionModel(seat, channel, kind) {
+  if (!channel) return null;
+  const ch = (getState().channels || []).find((c) => c.id === channel);
+  if (!ch) return null;
+  const loaded = await deps.loadedModels(kind).catch(() => null);
+  return channelResponseModel(ch, getState(), Array.isArray(loaded) ? loaded : null);
 }
 
 export async function ensureSeatSession(to, { channel = null } = {}) {
@@ -320,7 +329,8 @@ export async function ensureSeatSession(to, { channel = null } = {}) {
   if (channel) {
     const entry = liveRoomSession(getState(), seat, channel);
     if (entry) return entry.sessionId;
-    const ses = await deps.createSession(sessionCreateBody(seat, roomSessionTitle(to, channel)), kind);
+    const model = await roomSessionModel(seat, channel, kind);
+    const ses = await deps.createSession(sessionCreateBody(seat, roomSessionTitle(to, channel), model), kind);
     const id = ses?.id || ses?.sessionID;
     if (!id) return null;
     setRoomSession(to, channel, { sessionId: id, harness: kind, cursor: null, lastWakeAt: new Date().toISOString() });
@@ -644,11 +654,24 @@ async function promptWithFallback(sessionId, seat, to, text, meta, room = null) 
   // Sending a model OpenCode did not load fails inside the serve (prompt_async
   // still returns 204), so the seat would never reply. Stop here instead.
   // The built-in `opencode` provider is not a fallback: it is loaded but unconfigured.
-  const refs = resolved.filter((m) => {
+  let refs = resolved.filter((m) => {
     if (!m?.providerID || !m?.modelID) return false;
     if (isBuiltinProvider(m.providerID)) return false;
     return isLoadedModel(loaded, m.providerID, m.modelID) !== false;
   });
+  if (room) {
+    const channel = (state.channels || []).find((c) => c.id === room);
+    const pick = channel ? channelResponseModel(channel, state, Array.isArray(loaded) ? loaded : null) : null;
+    if (pick) {
+      const parsed = resolveUsableModel(seat, pick, loaded);
+      const usable =
+        parsed?.providerID &&
+        parsed?.modelID &&
+        !isBuiltinProvider(parsed.providerID) &&
+        isLoadedModel(loaded, parsed.providerID, parsed.modelID) !== false;
+      if (usable) refs = [parsed];
+    }
+  }
   if (!refs.length) {
     const want = modelRef(resolved[0]) || seat.model || "the seat model";
     const have = loadedProviderIds(loaded);
@@ -1181,7 +1204,11 @@ async function wakeSeatBody(to, text, meta = {}) {
     return { offline: true, seat: to, harness: kind, runId: runMeta.runId, started: false };
   }
   const loadedList = await deps.loadedModels(kind).catch(() => null);
-  const gap = seatModelGap(seat, Array.isArray(loadedList) ? loadedList : null);
+  const loadedArr = Array.isArray(loadedList) ? loadedList : null;
+  const roomForModel = roomSessionChannel(runMeta, to);
+  const channelForModel = roomForModel ? (getState().channels || []).find((c) => c.id === roomForModel) : null;
+  const responseModel = channelForModel ? channelResponseModel(channelForModel, getState(), loadedArr) : null;
+  const gap = seatModelGap(responseModel ? { ...seat, model: responseModel } : seat, loadedArr);
   if (gap) {
     noteRun(runMeta.runId, to, "blocked", gap);
     await announceWake(runMeta, `${seat.name} did not start run ${runMeta.runId}: ${gap}`);

@@ -189,6 +189,7 @@ export function providerModelIdsInUse(providerId, state) {
     take(team?.fallbackModel);
     for (const model of team?.allowedModels || []) take(model);
   }
+  for (const channel of state?.channels || []) take(channel?.model);
   return [...ids];
 }
 
