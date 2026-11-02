@@ -61,6 +61,7 @@ const files = [
   "server/flags.test.mjs",
   "server/audit-log.test.mjs",
   "server/hardening.test.mjs",
+  "src/components/avatarPalette.test.mjs",
 ];
 
 const tempOc = mkdtempSync(join(tmpdir(), "rf-opencode-"));

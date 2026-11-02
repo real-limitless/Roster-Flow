@@ -1,28 +1,6 @@
 /** Deterministic blob avatar from a seat id. No uploads. */
 
-function hash(seed: string) {
-  let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function palette(seed: string) {
-  const h = hash(seed || "seat");
-  const hue = h % 360;
-  const hue2 = (hue + 40 + (h % 50)) % 360;
-  return {
-    bg: `hsl(${hue} 42% 22%)`,
-    mid: `hsl(${hue2} 55% 48%)`,
-    fg: `hsl(${(hue + 180) % 360} 48% 68%)`,
-    x: 10 + (h % 12),
-    y: 9 + ((h >> 4) % 12),
-    rx: 6 + ((h >> 8) % 7),
-    ry: 5 + ((h >> 12) % 7),
-  };
-}
+import { avatarPalette } from "./avatarPalette";
 
 export function SeatAvatar({
   seed,
@@ -35,7 +13,7 @@ export function SeatAvatar({
   size?: number;
   className?: string;
 }) {
-  const p = palette(seed);
+  const p = avatarPalette(seed);
   return (
     <svg
       className={`av blob ${kind || ""} ${className}`.trim()}
