@@ -113,9 +113,13 @@ export const api = {
   createGoal: (body: unknown) =>
     req<import("../data").Goal>("/api/v1/goals", { method: "POST", body: JSON.stringify(body) }),
   inbox: (id: string) =>
-    req<{ seatId: string; cursor: string | null; items: Array<Record<string, unknown> & { unread?: boolean; text?: string; from?: string; to?: string; kind?: string; id: string }>; unread: number }>(
-      `/api/v1/seats/${id}/inbox`,
-    ),
+    req<{
+      seatId: string;
+      cursor: string | null;
+      items: Array<Record<string, unknown> & { unread?: boolean; text?: string; from?: string; to?: string; kind?: string; id: string }>;
+      unread: number;
+      tasks: Array<import("../data").Task & { owed?: "claimed" | "assigned" }>;
+    }>(`/api/v1/seats/${id}/inbox`),
   markInboxRead: (id: string, beforeId?: string) =>
     req<{ unread: number; cursor: string | null }>(`/api/v1/seats/${id}/inbox/read`, {
       method: "POST",

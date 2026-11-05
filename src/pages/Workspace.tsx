@@ -2174,6 +2174,7 @@ function SeatInbox({ seatId, onChange }: { seatId: string; onChange?: () => void
   const [box, setBox] = useState<{
     items: Array<{ id: string; from?: string; text?: string; unread?: boolean; kind?: string }>;
     unread: number;
+    tasks?: Array<{ id: string; title?: string; owed?: string }>;
   } | null>(null);
   useEffect(() => {
     void api
@@ -2182,6 +2183,7 @@ function SeatInbox({ seatId, onChange }: { seatId: string; onChange?: () => void
       .catch(() => setBox(null));
   }, [seatId]);
   const unread = (box?.items || []).filter((i) => i.unread);
+  const tasks = box?.tasks || [];
   return (
     <div className="seat-inbox" data-testid="seat-inbox">
       <h4 style={{ marginTop: 16 }}>Inbox</h4>
@@ -2192,6 +2194,15 @@ function SeatInbox({ seatId, onChange }: { seatId: string; onChange?: () => void
           {item.from || "bus"}: {String(item.text || "").slice(0, 80)}
         </p>
       ))}
+      {tasks.length > 0 && (
+        <div data-testid="inbox-tasks">
+          {tasks.map((task) => (
+            <p key={task.id} className="micro" data-testid={`inbox-task-${task.id}`}>
+              {task.owed === "claimed" ? "Claimed" : "Assigned"}: {task.title}
+            </p>
+          ))}
+        </div>
+      )}
       {box && box.unread > 0 && (
         <button
           className="pill-btn"
