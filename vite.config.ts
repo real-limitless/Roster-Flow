@@ -1,10 +1,19 @@
-import { defineConfig } from "vite";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const webPort = Number(process.env.ROSTER_WEB_PORT || 5175);
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [tailwindcss(), react()],
+  resolve: {
+    alias: {
+      "@": path.resolve(rootDir, "src"),
+    },
+  },
   server: {
     host: "0.0.0.0",
     port: webPort,
