@@ -53,6 +53,23 @@ export function isUnread(state, entry, seatId) {
   return entryIdx > cursorIdx;
 }
 
+/** Open claim-lock tasks this seat owes. Done rows are omitted. `owed` is on the copy only. */
+export function tasksOwedBySeat(state, seatId) {
+  const tasks = [];
+  for (const task of state.tasks || []) {
+    if (!task || task.status === "done" || !task.id) continue;
+    const claimed = task.status === "claimed" && task.claimedBy === seatId;
+    const assigned = task.ownerSeatId === seatId;
+    if (!claimed && !assigned) continue;
+    tasks.push({
+      ...task,
+      dependOn: Array.isArray(task.dependOn) ? [...task.dependOn] : task.dependOn,
+      owed: claimed ? "claimed" : "assigned",
+    });
+  }
+  return tasks;
+}
+
 export function listInbox(state, seatId) {
   const seat = (state.seats || []).find((s) => s.id === seatId);
   if (!seat) return null;
@@ -64,6 +81,7 @@ export function listInbox(state, seatId) {
     cursor: (state.inboxCursors || {})[seatId] || null,
     items,
     unread: items.filter((i) => i.unread).length,
+    tasks: tasksOwedBySeat(state, seatId),
   };
 }
 

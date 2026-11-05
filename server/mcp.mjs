@@ -105,7 +105,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "roster_inbox",
-    description: "Read inbox for a seat (defaults to mcp-guest).",
+    description: "Read a seat inbox: bus mail after the unread cursor, plus open claimed or assigned tasks. Defaults to mcp-guest.",
     inputSchema: {
       type: "object",
       properties: {

@@ -279,7 +279,7 @@ export function buildTools(tool, fetchApi = api, wikiApi = wikiflowApi) {
     }),
     roster_inbox: tool({
       description:
-        "Read this seat’s inbox: bus mail to you, team:<id> if you are that team’s Supervisor, or channel:<id> rooms you are in. Unread is everything after your cursor.",
+        "Read this seat’s inbox: bus mail to you, team:<id> if you are that team’s Supervisor, or channel:<id> rooms you are in. Unread is everything after your cursor. Tasks are open work you claimed or that is assigned to you.",
       args: {
         seatId: z.string().optional().describe("Seat id. Defaults to the current agent."),
       },

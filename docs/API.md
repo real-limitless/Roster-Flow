@@ -136,9 +136,9 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | POST | `/api/v1/goals` | Create a goal |
 | PATCH | `/api/v1/projects/:id` | Also accepts `goalIds` |
 | GET | `/api/v1/seats/:id/channels` | Rooms the seat is in: `id`, `name`, `direct` (a direct member), `viaTeams` (teams that make it a member), `lead`, `responder`, and the room's `respond` mode |
-| GET | `/api/v1/seats/:id/inbox` | Bus mail for this seat (direct, `team:` if Supervisor, `channel:` / `#room` membership, `ask_human`) |
-| GET | `/api/v1/seats/me/inbox` | Inbox for You |
-| POST | `/api/v1/seats/:id/inbox/read` | `{ beforeId }` — mark unread after that bus id as read |
+| GET | `/api/v1/seats/:id/inbox` | Unread bus mail for this seat, plus open claimed/assigned tasks |
+| GET | `/api/v1/seats/me/inbox` | Same payload for the signed-in seat (You when the session has no seat) |
+| POST | `/api/v1/seats/:id/inbox/read` | `{ beforeId }` — set the unread cursor. Later rows stay unread |
 | POST | `/api/v1/seats/:id/pause` | Pause a bot (not You). System seats can pause; fire is still DELETE. Sets `pauseReason: owner`. |
 | POST | `/api/v1/seats/:id/resume` | Resume a paused bot. **400** `raise tokenBudget first` when `spent >= tokenBudget`. |
 | GET | `/api/v1/usage` | Meter rows (`tokens`, `usdEstimate`, `hours`, `channelId`, `threadId`) — filter `?projectId=` `?teamId=` `?seatId=` `?channelId=` `&format=csv` |
@@ -156,6 +156,10 @@ Company loop verbs. `GET /api/v1/state` includes `goals`, `approvals`, `routines
 | POST | `/api/v1/routines/:id/run` | Manual or webhook run — posts bus `{ from: "routine", wake: true }` |
 
 Wake prompts prepend linked goal title, project brief, constitution, attached knowledge pointers (not used for training), and `meta.runId` when present. `wakeSeat` does not prompt when the seat is paused, over `tokenBudget`, or the run is killed. Create/run a routine is rejected when `impliesDeploy` (or the prompt is clearly a deploy) and the seat `deny` includes `deploy`. Tick coalesces with another wake to the same seat in the same minute.
+
+`GET /api/v1/seats/:id/inbox` (and `/api/v1/seats/me/inbox`) returns `{ seatId, cursor, items, unread, tasks }`. `items` are bus rows addressed to this seat id, to `team:<id>` when this seat is that team's Supervisor, or to `channel:<id>` / `#<room>` when the seat is in that room (direct `seatIds` or via a team's `seatIds`). `ask_human` also matches when the sender's `reportsTo` is this seat. Each item copies the bus row and adds `unread`. `cursor` is the last bus id passed to mark-read (`null` until then). A row at or before that id is read; a later row is unread. Rows are kept, with `unread: false`, so a client can tell caught-up mail from mail that never matched. `unread` counts items still unread. It does not count tasks. `POST /api/v1/seats/:id/inbox/read` with `{ beforeId }` stores that bus id as the cursor. Omit `beforeId` to use the latest matching bus id. A following GET leaves those ids `unread: false`.
+
+`tasks` are open claim-lock rows this seat owes. `owed` is `"claimed"` when `status` is `claimed` and `claimedBy` is this seat, otherwise `"assigned"` when `ownerSeatId` is this seat. Done tasks are omitted. A seat with no open work gets `tasks: []`. The chart count pip uses `inboxUnread` from `GET /api/v1/state` (same unread count) and shows when that count is greater than 0.
 
 Plugin tool: `roster_inbox`.
 
