@@ -1,5 +1,59 @@
 /* roster-flow — Sealed Gateway chassis (shared with mcp-flow / skill-flow / ansible-flow) */
+/* Tailwind utilities sit above @layer legacy so shadcn classes win on migrated
+   surfaces. Preflight is intentionally not imported. Chassis --accent and
+   --muted are not the shadcn accent/muted surfaces (--ui-accent / --ui-muted). */
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap");
+
+@layer theme, base, legacy, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-display);
+  --font-sans: var(--font-body);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--ui-accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--ui-muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
 
 :root {
   --chassis: #080b12;
@@ -32,8 +86,77 @@
   --danger: var(--deny);
   --info: var(--signal);
   --ink-btn: #080b12;
+
+  /* shadcn semantic tokens mapped to the chassis. The product is dark-only. */
+  --background: var(--chassis);
+  --foreground: var(--ink);
+  --card: var(--panel);
+  --card-foreground: var(--ink);
+  --popover: var(--panel-2);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--ink-btn);
+  --secondary: var(--panel-2);
+  --secondary-foreground: var(--ink);
+  --ui-muted: var(--panel-2);
+  --muted-foreground: var(--mute);
+  --ui-accent: var(--rail);
+  --accent-foreground: var(--ink);
+  --destructive: var(--deny);
+  --border: var(--rail);
+  --input: var(--rail);
+  --ring: var(--accent);
+  --chart-1: var(--accent);
+  --chart-2: var(--vault);
+  --chart-3: var(--signal);
+  --chart-4: var(--phosphor);
+  --chart-5: var(--warn);
+  --radius: 0.625rem;
+  --sidebar: var(--panel);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--accent);
+  --sidebar-primary-foreground: var(--ink-btn);
+  --sidebar-accent: var(--panel-2);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--rail);
+  --sidebar-ring: var(--accent);
 }
 
+.dark {
+  --background: var(--chassis);
+  --foreground: var(--ink);
+  --card: var(--panel);
+  --card-foreground: var(--ink);
+  --popover: var(--panel-2);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--ink-btn);
+  --secondary: var(--panel-2);
+  --secondary-foreground: var(--ink);
+  --ui-muted: var(--panel-2);
+  --muted-foreground: var(--mute);
+  --ui-accent: var(--rail);
+  --accent-foreground: var(--ink);
+  --destructive: var(--deny);
+  --border: var(--rail);
+  --input: var(--rail);
+  --ring: var(--accent);
+  --chart-1: var(--accent);
+  --chart-2: var(--vault);
+  --chart-3: var(--signal);
+  --chart-4: var(--phosphor);
+  --chart-5: var(--warn);
+  --sidebar: var(--panel);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--accent);
+  --sidebar-primary-foreground: var(--ink-btn);
+  --sidebar-accent: var(--panel-2);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--rail);
+  --sidebar-ring: var(--accent);
+}
+
+@layer legacy {
 *,
 *::before,
 *::after {
@@ -1723,4 +1846,12 @@ input:focus, textarea:focus, select:focus {
 }
 @media (max-width: 720px) {
   .setup-templates, .setup-tour { grid-template-columns: 1fr; }
+}
+
+/* Headings inside shadcn card titles inherit the card type scale. */
+[data-slot="card-title"] :is(h1, h2) {
+  font: inherit;
+  letter-spacing: inherit;
+  max-width: none;
+}
 }
