@@ -74,6 +74,9 @@ ROSTER_API_PORT=8800 ROSTER_WEB_PORT=5180 docker compose up --build
 | `ROSTER_DEV_AGENT_MODEL` | `example-provider-dev/example-model` | Model for checked-in dev agents whose config says `{env:ROSTER_DEV_AGENT_MODEL}`. The serve sets this placeholder when the variable is blank so OpenCode does not substitute an empty model. |
 | `OPENCODE_CONFIG` | empty | Optional operator OpenCode config. The whole file is deep-merged into both harness configs (`username`, `mcp`, plugins, and other keys). Roster provider blocks win on a conflicting id. Plugin lists are a union and always include `roster-flow-opencode`. The serve loads the roster file, not this path. |
 | `FEATHERLESS_API_KEY` | unset | Key for the `featherless` provider that `roster-setup` writes as `{env:FEATHERLESS_API_KEY}`. Passed through to both OpenCode serves. |
+| `WIKIFLOW_URL` | empty | Wiki-flow base URL. Empty leaves the integration off. Compose network example: `http://wiki-flow:8788`. Host example: `http://127.0.0.1:8788`. |
+| `WIKIFLOW_TOKEN` | empty | Bearer token for the wiki-flow API (`Authorization: Bearer`). Never commit it. If the URL is set and this is empty, CORE warns once and keeps serving. |
+| `WIKIFLOW_API` | unset | Deprecated alias for `WIKIFLOW_URL`. Still accepted. CORE warns so it can be renamed. `WIKIFLOW_URL` wins when both are set. |
 
 `ROSTER_OWNER_*`, `ROSTER_BOOTSTRAP_TOKEN`, and `ROSTER_API_TOKEN` / `ROSTER_API_TOKEN_SCOPES` are applied on boot. See [Headless bootstrap](#headless-bootstrap-no-setup-screen) below.
 

@@ -36,7 +36,11 @@ Compose exposes these on the compose network only. It does not publish them on t
 | Product (UI + `/api`) | **5175** (`ROSTER_WEB_PORT`) | Marketing, `/setup`, `/app` |
 | CORE API | **8790** (`ROSTER_API_PORT`) | `/api/v1/health`, next to mcp-flow’s 8787 |
 
-mcp-flow uses **8787**. Roster CORE listens on **8790** inside and outside the container.
+mcp-flow uses **8787**. Roster CORE listens on **8790** inside and outside the container. The product UI port stays **5175**.
+
+## Wiki-Flow
+
+Optional. Set `WIKIFLOW_URL` and `WIKIFLOW_TOKEN` in `.env` (both empty in `.env.example`). `WIKIFLOW_URL` is the wiki-flow base URL (`http://wiki-flow:8788` on a compose network, `http://127.0.0.1:8788` on the host). `WIKIFLOW_TOKEN` is sent as `Authorization: Bearer` and is never logged. An empty URL leaves wiki-flow off. A URL without a token logs one warning and CORE keeps running. `WIKIFLOW_API` is a deprecated alias for `WIKIFLOW_URL`.
 
 ## Contributor path (host Node)
 
