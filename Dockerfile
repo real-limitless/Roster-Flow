@@ -1,13 +1,25 @@
 # syntax=docker/dockerfile:1
+# Build identity for GET /api/version and <meta name="roster-build">.
+# Pass the same values to both stages. Empty means "unknown" (the image has no .git).
+#   docker build \
+#     --build-arg ROSTER_BUILD_SHA="$(git rev-parse HEAD)" \
+#     --build-arg ROSTER_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+# Do not pass secrets. Compose reads these from the shell or .env (docs/STANDUP.md).
 FROM node:22-bookworm-slim AS build
+ARG ROSTER_BUILD_SHA=
+ARG ROSTER_BUILT_AT=
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages ./packages
 COPY tsconfig.json vite.config.ts index.html ./
+COPY server/build-info.mjs ./server/build-info.mjs
 COPY src ./src
-RUN npm ci && npm run build
+RUN npm ci \
+  && ROSTER_BUILD_SHA="$ROSTER_BUILD_SHA" ROSTER_BUILT_AT="$ROSTER_BUILT_AT" npm run build
 
 FROM node:22-bookworm-slim
+ARG ROSTER_BUILD_SHA=
+ARG ROSTER_BUILT_AT=
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
@@ -34,6 +46,8 @@ RUN chmod +x /entrypoint.sh \
   && chown -R node:node /app /data
 
 ENV NODE_ENV=production \
+    ROSTER_BUILD_SHA=${ROSTER_BUILD_SHA} \
+    ROSTER_BUILT_AT=${ROSTER_BUILT_AT} \
     ROSTER_API_HOST=0.0.0.0 \
     ROSTER_API_PORT=8790 \
     ROSTER_API=http://127.0.0.1:8790 \

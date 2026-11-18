@@ -3,12 +3,23 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { resolveBuildInfo, stampIndexHtml } from "./server/build-info.mjs";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const webPort = Number(process.env.ROSTER_WEB_PORT || 5175);
+const rosterBuild = resolveBuildInfo();
+
+function rosterBuildMeta() {
+  return {
+    name: "roster-build-meta",
+    transformIndexHtml(html: string) {
+      return stampIndexHtml(html, rosterBuild.sha);
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [tailwindcss(), react()],
+  plugins: [rosterBuildMeta(), tailwindcss(), react()],
   resolve: {
     alias: {
       "@": path.resolve(rootDir, "src"),

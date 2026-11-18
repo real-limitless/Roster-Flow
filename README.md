@@ -60,6 +60,8 @@ docker compose up --build
 
 Compose exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only. It does not publish them on the host. Reach Roster through the proxy, or from another container at `http://roster-flow:8790`. 8787 is mcp-flow. Host `npm run dev` / `npm run api` still bind 5175 and 8790 on the machine.
 
+To record which commit an image was built from, set `ROSTER_BUILD_SHA` and `ROSTER_BUILT_AT` before `docker compose up --build`. `GET /api/version` and `<meta name="roster-build">` both report that SHA. See [Installation](INSTALLATION.md) and [docs/STANDUP.md](docs/STANDUP.md#build-identity).
+
 State lives in the `roster-data` volume (survives `compose down`). Provider keys stay in `.env` / the environment: they are not baked into the image. Room, chart, and bus work if OpenCode is offline; Architect needs the System harness.
 
 ## Public demo (no owner)

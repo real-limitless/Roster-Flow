@@ -70,6 +70,7 @@ import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
 import { autostartHarness, seedProviderFromEnv } from "./autostart.mjs";
 import { isDataWritable } from "./paths.mjs";
 import { tryServeStatic } from "./static.mjs";
+import { buildInfo } from "./build-info.mjs";
 import { handleSlackAction, handleSlackEvent, mirrorToSlack, slackStatus, verifySlackRequest } from "./slack.mjs";
 import { allowMcp, isMcpPath, MCP_GUEST_ID, serveMcp } from "./mcp.mjs";
 import { actorLabel, beginRequestAudit, emitResponseAudit } from "./audit-log.mjs";
@@ -90,7 +91,10 @@ function json(res, code, body, extra) {
   const data = JSON.stringify(body);
   const headers = { "content-type": "application/json; charset=utf-8" };
   if (extra?.secret) headers["cache-control"] = "no-store";
-  else Object.assign(headers, corsHeaders(res.rosterReq));
+  else {
+    Object.assign(headers, corsHeaders(res.rosterReq));
+    if (extra?.noStore) headers["cache-control"] = "no-store";
+  }
   res.writeHead(code, headers);
   res.end(data);
 }
@@ -238,6 +242,7 @@ function jobDeps() {
 }
 
 function isPublicPath(method, pathname) {
+  if (method === "GET" && pathname === "/api/version") return true;
   if (method === "GET" && pathname === "/api/v1/health") return true;
   if (method === "GET" && pathname === "/api/v1/setup/status") return true;
   if (method === "POST" && pathname === "/api/v1/setup/first-user") return true;
@@ -350,6 +355,11 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (tryServeStatic(req, res, pathname)) return;
+    // Before auth: a bad bearer token must not hide the deploy SHA.
+    if (method === "GET" && pathname === "/api/version") {
+      json(res, 200, buildInfo(), { noStore: true });
+      return;
+    }
     const token = parseBearer(req);
     const internal = isInternalPluginToken(token);
     const apiToken = !internal && isApiToken(token) ? resolveApiToken(getState(), token) : null;

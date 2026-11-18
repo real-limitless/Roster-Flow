@@ -82,6 +82,8 @@ CORE API (ROSTER_API_HOST, default 127.0.0.1:8790 via ROSTER_API_PORT; 8787 is r
 
 `docker compose up` is the official install: one image runs CORE + the built UI + OpenCode. Company and System serves stay on container localhost so PTY attach still uses `opencode attach http://127.0.0.1:<port>`. Persist `/data` (`roster-data` volume). Host `npm run standup` is unchanged (Vite + loopback CORE).
 
+`GET /api/version` (no auth) returns the build SHA, build time, and package version baked in by the `ROSTER_BUILD_SHA` and `ROSTER_BUILT_AT` image build args. The same SHA is in `<meta name="roster-build">`. See [STANDUP.md](STANDUP.md#build-identity).
+
 Room-join peers (Claude Code / Codex / Cursor sitting in `#ship`) are tracked in [COMPETITIVE-ROOMS.md](COMPETITIVE-ROOMS.md). The MCP guest path is GitHub [#3](https://github.com/real-limitless/Roster-Flow/issues/3), not a second agent loop.
 
 ## What is not in this slice
