@@ -66,7 +66,7 @@ import { tickHeartbeats } from "./heartbeats.mjs";
 import { auditSkill, familyStatus, installSkill, listMcpBackends, registerMcpBackend } from "./family.mjs";
 import { attachGithubCard, githubStatus, handleGithubBlockAction, isGithubAction, refreshGithubMessage } from "./github.mjs";
 import { fallbackText, validateBlocks } from "roster-flow-blocks";
-import { apiHost, apiPort, opencodeHostname, publicUrl } from "./config.mjs";
+import { apiHost, apiPort, opencodeHostname, publicUrl, wikiflowWarnings } from "./config.mjs";
 import { autostartHarness, seedProviderFromEnv } from "./autostart.mjs";
 import { isDataWritable } from "./paths.mjs";
 import { tryServeStatic } from "./static.mjs";
@@ -258,6 +258,7 @@ try {
   process.exit(1);
 }
 for (const warning of callbackAllowlistWarnings()) console.warn(warning);
+for (const warning of wikiflowWarnings()) console.warn(warning);
 
 try {
   const seeded = await seedOwnerFromEnv(getState());

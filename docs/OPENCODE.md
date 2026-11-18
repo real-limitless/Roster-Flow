@@ -95,8 +95,9 @@ GITHUB_TOKEN=               # optional PAT / GitHub App installation token
 GH_TOKEN=                   # alias
 ROSTER_GITHUB_API=https://api.github.com
 ROSTER_MCP_TOKEN=            # optional dedicated bearer for POST /mcp
-WIKIFLOW_URL=               # wiki-flow base URL (wikiflow_* tools)
-WIKIFLOW_TOKEN=             # wiki-flow Bearer token; never commit it
+WIKIFLOW_URL=               # wiki-flow base URL; empty disables wikiflow_* tools
+WIKIFLOW_TOKEN=             # wiki-flow Bearer token; never commit it or log it
+WIKIFLOW_API=               # deprecated alias for WIKIFLOW_URL
 FEATHERLESS_API_KEY=        # used by scripts/setup-wiki-team.mjs seats via {env:...}
 ROSTER_FALLBACK_MODELS=     # optional provider/model list; blank keeps the placeholder default
 ROSTER_DEV_AGENT_MODEL=example-provider-dev/example-model  # {env:ROSTER_DEV_AGENT_MODEL} on checked-in dev agents
@@ -111,7 +112,7 @@ Older configs with `providers` / `agents` / `settings` / `package` / `system` / 
 
 ## wiki-flow tools
 
-The `roster-flow-opencode` plugin adds three tools that call wiki-flow with `Authorization: Bearer $WIKIFLOW_TOKEN` against `$WIKIFLOW_URL`:
+The `roster-flow-opencode` plugin adds three tools that call wiki-flow with `Authorization: Bearer` taken from `WIKIFLOW_TOKEN`, against the base URL from `WIKIFLOW_URL`. Both are read in `server/config.mjs` (the deprecated `WIKIFLOW_API` name is still accepted for the URL):
 
 | Tool | Request |
 | --- | --- |
@@ -119,9 +120,9 @@ The `roster-flow-opencode` plugin adds three tools that call wiki-flow with `Aut
 | `wikiflow_search {owner, repo, q}` | `GET /api/v1/repos/:owner/:repo/sources/search?q=` → `{results:[{path,line,snippet}]}` |
 | `wikiflow_put_page {owner, repo, slug, runId, title, markdown, sources, agent}` | `PUT /api/v1/repos/:owner/:repo/pages/:slug` with body `{runId, title, markdown, sources, agent}` |
 
-`runId` must name an existing wiki-flow run (404 if unknown, 409 if the run is complete). `WIKIFLOW_TOKEN` is the wiki-flow service token (`WIKIFLOW_API_TOKEN` on the wiki-flow side). `sources` is a JSON array of `{path, startLine?, endLine?}` (1-based lines, `endLine >= startLine`); other shapes or extra keys are rejected before the request; `agent` defaults to the calling OpenCode agent. If `WIKIFLOW_TOKEN` or `WIKIFLOW_URL` is missing, the tool fails with a message naming the variable. Non-2xx responses surface as `wiki-flow <status>: <error>`.
+`runId` must name an existing wiki-flow run (404 if unknown, 409 if the run is complete). `WIKIFLOW_TOKEN` is the wiki-flow service token (`WIKIFLOW_API_TOKEN` on the wiki-flow side). `sources` is a JSON array of `{path, startLine?, endLine?}` (1-based lines, `endLine >= startLine`); other shapes or extra keys are rejected before the request; `agent` defaults to the calling OpenCode agent. If `WIKIFLOW_URL` or `WIKIFLOW_TOKEN` is missing, the tool fails with a message naming the variable. Non-2xx responses surface as `wiki-flow <status>: <error>`. Error text that echoes the token is redacted before it is thrown.
 
-Both variables are passed to `opencode serve` by `serveChildEnv` (`server/providers.mjs`) and to the container by `docker-compose.yml` (`WIKIFLOW_URL`, `WIKIFLOW_TOKEN` from the host env).
+An empty `WIKIFLOW_URL` leaves wiki-flow off. When the URL is set and the token is empty, CORE logs one warning at startup and keeps running. `serveChildEnv` (`server/providers.mjs`) copies the resolved URL and token into `opencode serve`. `docker-compose.yml` forwards `WIKIFLOW_URL` and `WIKIFLOW_TOKEN` from the host env. The token is never written to logs.
 
 ### Wiki team
 

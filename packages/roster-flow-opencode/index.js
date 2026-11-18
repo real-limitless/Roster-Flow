@@ -4,7 +4,11 @@
  * Tools POST to the CORE bus so Room / Chart stay the source of truth.
  */
 
+import { redactWikiflowSecret, wikiflowAuthHeaders, wikiflowConfig } from "../../server/config.mjs";
+
 const API = process.env.ROSTER_API || "http://127.0.0.1:8790";
+
+export { wikiflowAuthHeaders, wikiflowConfig };
 
 /** Seat calls use the scoped token when the harness was started with ROSTER_API_TOKEN. */
 export function rosterAuthHeaders(env = process.env) {
@@ -28,22 +32,25 @@ async function api(path, init = {}) {
 }
 
 /**
- * wiki-flow client. Reads WIKIFLOW_URL (base URL) and WIKIFLOW_TOKEN (Bearer)
- * at call time so a running serve picks up rotated tokens.
+ * wiki-flow client. URL and bearer token come from server/config.mjs
+ * (`WIKIFLOW_URL`, deprecated `WIKIFLOW_API`, `WIKIFLOW_TOKEN`) at call time
+ * so a running serve picks up rotated tokens. The token is not logged.
  */
-export function wikiflowConfig(env = process.env) {
-  const token = String(env.WIKIFLOW_TOKEN || "").trim();
-  const base = String(env.WIKIFLOW_URL || "").trim().replace(/\/+$/, "");
-  if (!token) throw new Error("WIKIFLOW_TOKEN is not set. Export it in the OpenCode serve env to use wikiflow_* tools.");
-  if (!base) throw new Error("WIKIFLOW_URL is not set. Point it at the wiki-flow base URL (e.g. https://wiki.example).");
-  return { token, base };
-}
-
 export async function wikiflowApi(path, init = {}, env = process.env, fetchImpl = fetch) {
-  const { token, base } = wikiflowConfig(env);
-  const headers = { accept: "application/json", authorization: `Bearer ${token}`, ...(init.headers || {}) };
+  const { url, token } = wikiflowConfig(env);
+  if (!url) {
+    throw new Error(
+      "WIKIFLOW_URL is not set. Point it at the wiki-flow base URL (for example http://127.0.0.1:8788 or http://wiki-flow:8788).",
+    );
+  }
+  if (!token) {
+    throw new Error(
+      "WIKIFLOW_URL is set but WIKIFLOW_TOKEN is missing. Set WIKIFLOW_TOKEN to the wiki-flow API bearer token. Wiki-flow tools stay disabled until then.",
+    );
+  }
+  const headers = { accept: "application/json", ...wikiflowAuthHeaders(env), ...(init.headers || {}) };
   if (init.body && !headers["content-type"]) headers["content-type"] = "application/json";
-  const res = await fetchImpl(`${base}${path}`, { ...init, headers });
+  const res = await fetchImpl(`${url}${path}`, { ...init, headers });
   const text = await res.text();
   let data = null;
   try {
@@ -51,7 +58,10 @@ export async function wikiflowApi(path, init = {}, env = process.env, fetchImpl 
   } catch {
     data = text;
   }
-  if (!res.ok) throw new Error(`wiki-flow ${res.status}: ${data?.error || res.statusText || "request failed"}`);
+  if (!res.ok) {
+    const detail = data?.error || res.statusText || "request failed";
+    throw new Error(redactWikiflowSecret(`wiki-flow ${res.status}: ${detail}`, token));
+  }
   return data;
 }
 

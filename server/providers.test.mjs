@@ -261,7 +261,35 @@ test("upsertProvider does not add an in-use featherless id the upstream catalog 
 
 test("serveChildEnv passes wiki-flow env through to opencode serve", async () => {
   const { serveChildEnv } = await import("./providers.mjs");
-  const env = serveChildEnv({ PATH: "/bin", WIKIFLOW_URL: "http://wiki", WIKIFLOW_TOKEN: "tok" });
+  const env = serveChildEnv({ PATH: "/bin", WIKIFLOW_URL: "http://wiki/", WIKIFLOW_TOKEN: " tok " });
   assert.equal(env.WIKIFLOW_URL, "http://wiki");
   assert.equal(env.WIKIFLOW_TOKEN, "tok");
+});
+
+test("serveChildEnv promotes deprecated WIKIFLOW_API without logging the token", async () => {
+  const { serveChildEnv } = await import("./providers.mjs");
+  const token = "wiki-token-9f3a";
+  const prev = {
+    WIKIFLOW_URL: process.env.WIKIFLOW_URL,
+    WIKIFLOW_TOKEN: process.env.WIKIFLOW_TOKEN,
+    WIKIFLOW_API: process.env.WIKIFLOW_API,
+  };
+  delete process.env.WIKIFLOW_URL;
+  delete process.env.WIKIFLOW_TOKEN;
+  delete process.env.WIKIFLOW_API;
+  const lines = [];
+  const orig = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  try {
+    const env = serveChildEnv({ PATH: "/bin", WIKIFLOW_API: "http://wiki.example/", WIKIFLOW_TOKEN: ` ${token} ` });
+    assert.equal(env.WIKIFLOW_URL, "http://wiki.example");
+    assert.equal(env.WIKIFLOW_TOKEN, token);
+    assert.equal(lines.some((line) => line.includes(token)), false);
+  } finally {
+    console.warn = orig;
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

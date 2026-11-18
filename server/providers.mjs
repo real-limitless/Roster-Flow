@@ -12,6 +12,7 @@ import { authPath, opencodeDir as ocDir } from "./paths.mjs";
 import { protectPrivateFile, writePrivateFile } from "./private-file.mjs";
 import { openCodeGeneration, openCodeIsV2 } from "./opencode-generation.mjs";
 import { getState } from "./store.mjs";
+import { wikiflowConfig } from "./config.mjs";
 
 const ocPath = join(ocDir, "opencode.json");
 const ROSTER_PLUGIN_NAME = "roster-flow-opencode";
@@ -417,7 +418,7 @@ export function listModels() {
 }
 
 /** Env vars the OpenCode serve child needs for roster-flow-opencode plugin tools. */
-export const PLUGIN_PASSTHROUGH_ENV = ["WIKIFLOW_URL", "WIKIFLOW_TOKEN"];
+export const PLUGIN_PASSTHROUGH_ENV = ["WIKIFLOW_URL", "WIKIFLOW_TOKEN", "WIKIFLOW_API"];
 
 /** Model OpenCode substitutes for `{env:ROSTER_DEV_AGENT_MODEL}` when that var is blank. */
 export const DEFAULT_DEV_AGENT_MODEL = "example-provider-dev/example-model";
@@ -460,6 +461,9 @@ export function serveChildEnv(base = process.env) {
   }
   const devAgentModel = String(env.ROSTER_DEV_AGENT_MODEL || "").trim();
   env.ROSTER_DEV_AGENT_MODEL = devAgentModel || DEFAULT_DEV_AGENT_MODEL;
+  const wiki = wikiflowConfig(env);
+  if (wiki.url) env.WIKIFLOW_URL = wiki.url;
+  if (wiki.token) env.WIKIFLOW_TOKEN = wiki.token;
   return env;
 }
 

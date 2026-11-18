@@ -60,6 +60,19 @@ docker compose up --build
 
 Compose exposes **5175** (`ROSTER_WEB_PORT`) and **8790** (`ROSTER_API_PORT`) on the compose network only. It does not publish them on the host. Reach Roster through the proxy, or from another container at `http://roster-flow:8790`. 8787 is mcp-flow. Host `npm run dev` / `npm run api` still bind 5175 and 8790 on the machine.
 
+## Wiki-Flow
+
+Set these in `.env` (see `.env.example`) when Roster should call a Wiki-Flow server. An empty `WIKIFLOW_URL` leaves the integration off.
+
+| Variable | Purpose |
+| --- | --- |
+| `WIKIFLOW_URL` | Base URL of the Wiki-Flow UI and API. On a compose network use `http://wiki-flow:8788`. On the host use `http://127.0.0.1:8788`. |
+| `WIKIFLOW_TOKEN` | Bearer token for the Wiki-Flow API. Roster sends it as `Authorization: Bearer`. Keep it out of git and out of logs. |
+
+`server/config.mjs` is the only reader. When `WIKIFLOW_URL` is set and `WIKIFLOW_TOKEN` is empty, CORE logs one warning that names both variables and keeps serving. Wiki-Flow tools stay off until the token is set. `WIKIFLOW_API` is a deprecated alias for `WIKIFLOW_URL` and still works; CORE warns so it can be renamed.
+
+The product UI stays on **5175** and the CORE API stays on **8790**.
+
 State lives in the `roster-data` volume (survives `compose down`). Provider keys stay in `.env` / the environment: they are not baked into the image. Room, chart, and bus work if OpenCode is offline; Architect needs the System harness.
 
 ## Public demo (no owner)

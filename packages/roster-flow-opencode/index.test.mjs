@@ -153,8 +153,15 @@ test("wikiflow tools hit the documented wiki-flow paths", async () => {
 });
 
 test("wikiflow client fails clearly without a token and sends Bearer auth", async () => {
-  assert.throws(() => wikiflowConfig({ WIKIFLOW_URL: "http://w" }), /WIKIFLOW_TOKEN is not set/);
-  assert.throws(() => wikiflowConfig({ WIKIFLOW_TOKEN: "t" }), /WIKIFLOW_URL is not set/);
+  const missingToken = wikiflowConfig({ WIKIFLOW_URL: "http://w" });
+  assert.equal(missingToken.enabled, false);
+  assert.equal(missingToken.token, "");
+  await assert.rejects(wikiflowApi("/x", {}, { WIKIFLOW_URL: "http://w" }, async () => {
+    throw new Error("fetch should not run");
+  }), /WIKIFLOW_TOKEN is missing/);
+  await assert.rejects(wikiflowApi("/x", {}, { WIKIFLOW_TOKEN: "t" }, async () => {
+    throw new Error("fetch should not run");
+  }), /WIKIFLOW_URL is not set/);
   let seen = null;
   const fetchImpl = async (url, init) => {
     seen = { url, init };
@@ -163,11 +170,25 @@ test("wikiflow client fails clearly without a token and sends Bearer auth", asyn
   const out = await wikiflowApi("/api/v1/repos/o/r/sources", {}, { WIKIFLOW_URL: "http://w/", WIKIFLOW_TOKEN: "tok" }, fetchImpl);
   assert.deepEqual(out, []);
   assert.equal(seen.url, "http://w/api/v1/repos/o/r/sources");
-  assert.equal(seen.init.headers.authorization, "Bearer tok");
+  assert.equal(seen.init.headers.Authorization, "Bearer tok");
   const failing = async () => ({ ok: false, status: 401, statusText: "Unauthorized", text: async () => '{"error":"bad token"}' });
   await assert.rejects(
     wikiflowApi("/x", {}, { WIKIFLOW_URL: "http://w", WIKIFLOW_TOKEN: "tok" }, failing),
     /wiki-flow 401: bad token/,
+  );
+  const echoing = async () => ({
+    ok: false,
+    status: 401,
+    statusText: "Unauthorized",
+    text: async () => JSON.stringify({ error: "rejected wiki-token-9f3a" }),
+  });
+  await assert.rejects(
+    wikiflowApi("/x", {}, { WIKIFLOW_URL: "http://w", WIKIFLOW_TOKEN: "wiki-token-9f3a" }, echoing),
+    (err) => {
+      assert.match(err.message, /wiki-flow 401: rejected \[redacted\]/);
+      assert.equal(err.message.includes("wiki-token-9f3a"), false);
+      return true;
+    },
   );
 });
 
