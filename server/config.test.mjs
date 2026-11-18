@@ -10,6 +10,7 @@ import {
   redactWikiflowSecret,
   wikiflowAuthHeaders,
   wikiflowConfig,
+  wikiflowDisplayUrl,
   wikiflowWarnings,
 } from "./config.mjs";
 
@@ -109,6 +110,29 @@ test("wikiflow config trims the URL and token and builds a Bearer header", () =>
   assert.deepEqual(wikiflowWarnings(env), []);
   assert.equal(redactWikiflowSecret("wiki-flow 401: bad token", "tok"), "wiki-flow 401: bad token");
   assert.equal(redactWikiflowSecret("rejected wiki-token-9f3a", "wiki-token-9f3a"), "rejected [redacted]");
+});
+
+test("wikiflowDisplayUrl does not echo an unparsed URL", () => {
+  const secret = "wiki-token-9f3a";
+  const broken = [
+    `http://user:${secret}`,
+    `not a url?access_token=${secret}`,
+    `http://user:${secret}@`,
+    `user:${secret}@wiki.example/docs#${secret}`,
+    secret,
+  ];
+  for (const raw of broken) {
+    const shown = wikiflowDisplayUrl(raw);
+    assert.equal(shown.includes(secret), false, shown);
+    assert.notEqual(shown, raw);
+  }
+  assert.equal(wikiflowDisplayUrl(`http://user:${secret}`), "http://[redacted]");
+  assert.equal(wikiflowDisplayUrl(`not a url?access_token=${secret}`), "not a url");
+  assert.equal(wikiflowDisplayUrl(`user:${secret}@wiki.example/docs#${secret}`), "[redacted]@wiki.example/docs");
+  assert.equal(wikiflowDisplayUrl("not a url"), "[redacted]");
+  const notes = wikiflowWarnings({ WIKIFLOW_URL: `http://user:${secret}` });
+  assert.equal(notes.join("\n").includes(secret), false);
+  assert.match(notes[0], /http:\/\/\[redacted\]/);
 });
 
 test("a set WIKIFLOW_URL without a token warns and does not throw", () => {
