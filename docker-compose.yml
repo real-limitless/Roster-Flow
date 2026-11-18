@@ -7,6 +7,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Image build args, not runtime env, so the API and the web bundle match.
+      # Unset resolves to unknown inside the image. See docs/STANDUP.md.
+      args:
+        ROSTER_BUILD_SHA: ${ROSTER_BUILD_SHA:-}
+        ROSTER_BUILT_AT: ${ROSTER_BUILT_AT:-}
     image: roster-flow:local
     init: true
     # No user: override. The entrypoint starts as root, repairs /data ownership,

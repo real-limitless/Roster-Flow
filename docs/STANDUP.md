@@ -29,8 +29,38 @@ Health from another container on the compose network (`roster-flow:8790`). Compo
 
 ```bash
 curl -s http://roster-flow:8790/api/v1/health
-curl -s http://roster-flow:8790/setup
+curl -s http://roster-flow:8790/api/version
+curl -s http://roster-flow:8790/ | grep roster-build
 ```
+
+### Build identity
+
+`GET /api/version` needs no session. It returns `{ sha, builtAt, version }` and nothing else. `sha` is the commit the image was built from. `builtAt` is the UTC time of that build. `version` is the `package.json` version. The served `index.html` carries the same SHA:
+
+```html
+<meta name="roster-build" content="<sha>" />
+```
+
+Compare the JSON `sha` with that meta tag after a deploy. They differ when the API process and the web bundle were not built together (for example the API was rebuilt and `dist/` was left stale).
+
+Compose passes `ROSTER_BUILD_SHA` and `ROSTER_BUILT_AT` as Docker build args, not as container environment, so both halves of the image get the same values. Set them in the shell or `.env`, then rebuild:
+
+```bash
+export ROSTER_BUILD_SHA="$(git rev-parse HEAD)"
+export ROSTER_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+docker compose up --build
+```
+
+Dokploy uses the same args in `docker-compose.dokploy.yml`. A direct image build is:
+
+```bash
+docker build \
+  --build-arg ROSTER_BUILD_SHA="$(git rev-parse HEAD)" \
+  --build-arg ROSTER_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  .
+```
+
+Leave either arg unset and the image reports `unknown` for that field. The image does not contain `.git`, so there is no commit lookup inside the container. Host `npm run dev` and `npm run build` use `git rev-parse HEAD` when `ROSTER_BUILD_SHA` is unset, and `unknown` when that command fails. `ROSTER_BUILT_AT` is never inferred. Do not put secrets in these args.
 
 First run is `/setup` on that origin. Install checks should show CORE ready, a writable data dir, and OpenCode (or a clear optional/offline warn). Completing owner → login → welcome lands in `/app`. `GET /api/v1/setup/status` without a session returns booleans (`hasOwner`, `setupClosed`, and the checklist flags) and does not include the owner's email or name.
 

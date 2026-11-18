@@ -26,8 +26,13 @@ Then:
 
 ```bash
 cp -n .env.example .env
+# Optional: stamp this checkout onto the image so a deploy can be checked.
+# export ROSTER_BUILD_SHA="$(git rev-parse HEAD)"
+# export ROSTER_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker compose up --build
 ```
+
+After it is up, `GET /api/version` (no auth) returns `{ sha, builtAt, version }`. The web page has the same SHA in `<meta name="roster-build">`. Details: [docs/STANDUP.md](docs/STANDUP.md#build-identity).
 
 Compose exposes these on the compose network only. It does not publish them on the host. Reach Roster through the proxy, or from another container at `http://roster-flow:8790`.
 

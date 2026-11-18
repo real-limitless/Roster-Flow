@@ -36,6 +36,7 @@ const files = [
   "server/auth.test.mjs",
   "server/setup.test.mjs",
   "server/config.test.mjs",
+  "server/build-info.test.mjs",
   "server/static.test.mjs",
   "server/paths.test.mjs",
   "server/family.test.mjs",

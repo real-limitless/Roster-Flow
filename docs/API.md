@@ -10,7 +10,7 @@ All JSON. Times are ISO-8601. Seat IDs match the org chart (`product`, `build`, 
 
 ## Setup and auth
 
-Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1` in an explicit local environment. `GET` and `POST /api/v1/jobs/callback-secret` are the exception: they require an owner or admin session in every mode, including when onboarding is skipped.
+Public without a session: `GET /api/version`, `GET /health`, `GET /setup/status`, `POST /setup/install`, `POST /setup/first-user`, `POST /auth/login`, `POST /access`. `POST /setup/start-over` is reachable without a session so a logged-out owner can send a password, and it does not wipe an existing owner unless that proof succeeds. Everything else needs a bearer token unless `ROSTER_SKIP_ONBOARDING=1` in an explicit local environment. `GET` and `POST /api/v1/jobs/callback-secret` are the exception: they require an owner or admin session in every mode, including when onboarding is skipped.
 
 `POST /api/v1/auth/login`, `/api/v1/access`, `/api/v1/setup/*`, and `/api/v1/slack*` share an in-memory limit per client IP. Defaults are 30 requests per 10 minutes (`ROSTER_AUTH_RATE_MAX`, `ROSTER_AUTH_RATE_WINDOW_MS`) and a lockout after 8 failed attempts for 15 minutes (`ROSTER_AUTH_LOCKOUT_AFTER`, `ROSTER_AUTH_LOCKOUT_MS`). Both return **429** with `Retry-After`. `CF-Connecting-IP` and `X-Forwarded-For` are used only when `ROSTER_TRUST_PROXY=1` or the peer is listed in `ROSTER_TRUSTED_PROXIES`.
 
@@ -54,6 +54,7 @@ The demo token (`Bearer roster-demo` with `ROSTER_SKIP_ONBOARDING=1`) cannot rot
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/api/version` | Deploy identity. No auth. `{ sha, builtAt, version }` only: the git SHA baked at image build (`ROSTER_BUILD_SHA`, or `git rev-parse HEAD` on a local checkout, otherwise `unknown`), the UTC build time (`ROSTER_BUILT_AT`, otherwise `unknown`), and the `package.json` version. No environment values. `cache-control: no-store`. The same SHA is in the web page as `<meta name="roster-build" content="<sha>">`. A mismatch means the API and the web bundle were not built together. See [STANDUP.md](STANDUP.md#build-identity). |
 | GET | `/api/v1/health` | API + company OpenCode status (`harness`) plus `systemHarness`. `harnessReady` is true when the company serve is up and at least one company seat can run. One seat whose provider is not loaded stays `ready: false` on `seats` and does not clear `harnessReady`. `harnessReady` is false when the serve is down or every company seat is unhirable. `ready` is true when `harnessReady` is true and the system serve is up. `seats` is `[{ seat, model, ready, error }]`. `seatCount` is the roster size |
 | POST | `/api/v1/harness/ensure` | Start or reuse `opencode serve` (`{ forceRestart, kind?: "company" \| "system" }`) |
 | GET | `/api/v1/harness` | Company serve plus `systemHarness` (Architect / Channel), and the same per-seat `seats` / `harnessReady` report as `/health` |
