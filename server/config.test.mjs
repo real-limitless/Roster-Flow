@@ -101,6 +101,7 @@ test("wikiflow config trims the URL and token and builds a Bearer header", () =>
   };
   const cfg = wikiflowConfig(env);
   assert.equal(cfg.url, "http://wiki.example/wiki");
+  assert.equal(wikiflowConfig({ WIKIFLOW_URL: "http://wiki.example/wiki///" }).url, "http://wiki.example/wiki");
   assert.equal(cfg.token, "wiki-token-9f3a");
   assert.equal(cfg.enabled, true);
   assert.equal(cfg.source, "WIKIFLOW_URL");

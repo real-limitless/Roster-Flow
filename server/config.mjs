@@ -22,8 +22,14 @@ export function rosterApiUrl() {
   return process.env.ROSTER_API || `http://127.0.0.1:${apiPort()}`;
 }
 
+function stripTrailingSlashes(value) {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return end === value.length ? value : value.slice(0, end);
+}
+
 function cleanUrl(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
+  return stripTrailingSlashes(String(value || "").trim());
 }
 
 /** Drop userinfo and query from a URL before it is written to a log line. */
@@ -36,7 +42,7 @@ export function wikiflowDisplayUrl(url) {
     parsed.password = "";
     parsed.search = "";
     parsed.hash = "";
-    return parsed.toString().replace(/\/+$/, "");
+    return stripTrailingSlashes(parsed.toString());
   } catch {
     return raw;
   }
