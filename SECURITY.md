@@ -16,6 +16,19 @@ Use these in order when access has to be cut. Details for the API calls are in [
 
 4. **Stop the service** in the hosting platform so it stops accepting traffic.
 
+## Dependency advisories
+
+`npm audit` on DEVELOPMENT (November 2026) reported more rows than unique advisories. Four advisories were in the tree:
+
+| Advisory | Severity | Where | What we did |
+|---|---|---|---|
+| [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) | high | `zod` 4.1.8 via `@opencode-ai/plugin` (the OpenCode plugin). shadcn already used 4.6.7. | Override `zod` to `4.6.7` (patched in 4.6.6, same major). The Roster plugin only builds `z.string()` schemas. |
+| [GHSA-chp3-j5qr-2vfr](https://github.com/advisories/GHSA-chp3-j5qr-2vfr) | moderate | `effect` 4.0.0-beta.83, pinned by `@opencode-ai/plugin`. Cookie attribute injection in `makeCookie()`. | Override `effect` to `4.0.0-beta.103`, the first patched beta. The plugin entrypoint does not import `effect` or call `makeCookie()`. |
+| [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249) | moderate | `minimatch` 10.2.6 via `shadcn` → `ts-morph`. No 10.x patch. The fix is `>=11.0.1`. | Override `minimatch` to `11.0.9`. The only caller is `minimatch(path, pattern)`. |
+| [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) | high | `picomatch` `<=4.0.7`. Latest release is 4.0.7. GitHub lists no patched version. | Not overridden. npm's suggested fix downgrades `vite` 7 to 6 and `shadcn` 4 to 2, and those trees still use `picomatch` `<=4.0.7`. |
+
+`picomatch` is pulled in by Vite and the shadcn CLI. Neither is imported by `server/`. `@tailwindcss/vite`, `tailwindcss`, `tw-animate-css`, and `shadcn` are devDependencies: the image build stage still installs them for `vite build`, and the runtime stage (`npm ci --omit=dev`) does not. The running API does not pass globs to `picomatch`. A full `npm audit` still lists this one high several times (Vite, shadcn, and their glob helpers) until picomatch publishes a fix. CI runs `npm audit --omit=dev --audit-level=high`, which is clean after the overrides above, and fails on a new high or critical finding in a runtime dependency.
+
 ## Interim on-call
 
 Repository owner: Chen Chiu.
