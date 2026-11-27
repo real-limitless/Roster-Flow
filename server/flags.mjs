@@ -22,6 +22,15 @@ export function isLocalOrDev(env = process.env) {
   return ok.has(envName(env, "NODE_ENV")) || ok.has(envName(env, "ENVIRONMENT"));
 }
 
+/**
+ * POST /api/v1/debug/auth-guard/reset may clear the in-memory auth limiter.
+ * The flag does nothing unless the process is local, dev, or development.
+ * Production keeps the default window, max, and lockout.
+ */
+export function allowAuthGuardReset(env = process.env) {
+  return envFlag("ROSTER_AUTH_GUARD_RESET", env) && isLocalOrDev(env);
+}
+
 export function resetSkipOnboardingNotice() {
   skipNoticeSent = false;
 }

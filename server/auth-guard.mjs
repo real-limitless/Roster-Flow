@@ -98,6 +98,7 @@ export function clearAuthFailures(ip) {
   failures.delete(bucketKey(ip));
 }
 
+/** Drop in-memory buckets. The HTTP route that calls this stays off in production. */
 export function resetAuthGuard() {
   hits.clear();
   failures.clear();

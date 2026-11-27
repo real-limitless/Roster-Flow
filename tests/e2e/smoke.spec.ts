@@ -1,6 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
+import { FEATHERLESS_CHAT_MODEL } from "../../server/model-defaults.mjs";
+import { resetAuthGuard } from "./auth-guard";
+
+test.beforeEach(async ({ request }) => {
+  await resetAuthGuard(request);
+});
 
 test("home renders Room / Harness / Chart story", async ({ page }) => {
   await page.goto("/");
@@ -296,7 +302,7 @@ test("team inspector shows seat count and hire specialist", async ({ page, reque
   await expect(page.getByTestId("team-seat-count")).toBeVisible();
   const count = Number(await page.getByTestId("team-seat-count").innerText());
   expect(count).toBeGreaterThanOrEqual(4);
-  await expect(page.getByTestId("team-models")).toContainText("featherless/deepseek-ai/DeepSeek-V4.1-Flash");
+  await expect(page.getByTestId("team-models")).toContainText(FEATHERLESS_CHAT_MODEL);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("conversation-modal")).toHaveCount(0);
 
