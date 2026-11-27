@@ -157,7 +157,10 @@ test("auth guard reset is off in production and clears a local test process", as
     assert.equal((await login(local.base)).status, 401);
     assert.equal((await login(local.base)).status, 401);
     assert.equal((await login(local.base)).status, 429);
-    const reset = await fetch(`${local.base}/api/v1/debug/auth-guard/reset`, { method: "POST" });
+    const reset = await fetch(`${local.base}/api/v1/debug/auth-guard/reset`, {
+      method: "POST",
+      headers: { "x-roster-test-reset": "1" },
+    });
     assert.equal(reset.status, 200);
     assert.equal((await reset.json()).ok, true);
     assert.equal((await login(local.base)).status, 401);
@@ -175,6 +178,52 @@ test("auth guard reset is off in production and clears a local test process", as
     assert.equal(reset.status, 404);
   } finally {
     await closed.stop();
+  }
+});
+
+test("auth guard reset refuses a production name on either side and a missing test header", async () => {
+  const login = (base) =>
+    fetch(`${base}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "nobody@example.com", password: "not-the-password" }),
+    });
+  const reset = (base, headers) =>
+    fetch(`${base}/api/v1/debug/auth-guard/reset`, { method: "POST", headers });
+  const mixed = await bootCore({
+    ROSTER_AUTH_RATE_MAX: "2",
+    ROSTER_AUTH_LOCKOUT_AFTER: "100",
+    ROSTER_AUTH_GUARD_RESET: "1",
+    NODE_ENV: "production",
+    ENVIRONMENT: "development",
+  });
+  try {
+    assert.equal((await login(mixed.base)).status, 401);
+    assert.equal((await login(mixed.base)).status, 401);
+    assert.equal((await login(mixed.base)).status, 429);
+    assert.equal((await reset(mixed.base, { "x-roster-test-reset": "1" })).status, 404);
+    assert.equal((await login(mixed.base)).status, 429);
+  } finally {
+    await mixed.stop();
+  }
+
+  const local = await bootCore({
+    ROSTER_AUTH_RATE_MAX: "2",
+    ROSTER_AUTH_LOCKOUT_AFTER: "100",
+    ROSTER_AUTH_GUARD_RESET: "1",
+    NODE_ENV: "local",
+    ENVIRONMENT: "local",
+  });
+  try {
+    assert.equal((await login(local.base)).status, 401);
+    assert.equal((await login(local.base)).status, 401);
+    assert.equal((await login(local.base)).status, 429);
+    assert.equal((await reset(local.base)).status, 404);
+    assert.equal((await login(local.base)).status, 429);
+    assert.equal((await reset(local.base, { "x-roster-test-reset": "1" })).status, 200);
+    assert.equal((await login(local.base)).status, 401);
+  } finally {
+    await local.stop();
   }
 });
 

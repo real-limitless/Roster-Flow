@@ -34,6 +34,18 @@ test("allowAuthGuardReset stays off in production and without the test flag", ()
   withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "production", ENVIRONMENT: "" }, () => {
     assert.equal(allowAuthGuardReset(), false);
   });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "production", ENVIRONMENT: "development" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "development", ENVIRONMENT: "PROD" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "Production", ENVIRONMENT: "local" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "dev", ENVIRONMENT: "prod" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
   withEnv({ ROSTER_AUTH_GUARD_RESET: "", NODE_ENV: "", ENVIRONMENT: "local" }, () => {
     assert.equal(allowAuthGuardReset(), false);
   });

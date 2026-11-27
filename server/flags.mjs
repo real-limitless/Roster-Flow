@@ -22,13 +22,22 @@ export function isLocalOrDev(env = process.env) {
   return ok.has(envName(env, "NODE_ENV")) || ok.has(envName(env, "ENVIRONMENT"));
 }
 
+/** NODE_ENV or ENVIRONMENT is production or prod, in any case. */
+function isProdRuntime(env = process.env) {
+  const names = [envName(env, "NODE_ENV"), envName(env, "ENVIRONMENT")];
+  return names.some((name) => name === "production" || name === "prod");
+}
+
 /**
  * POST /api/v1/debug/auth-guard/reset may clear the in-memory auth limiter.
  * The flag does nothing unless the process is local, dev, or development.
- * Production keeps the default window, max, and lockout.
+ * Either name being production or prod refuses the route, even if the other is development.
+ * The request must also send X-Roster-Test-Reset: 1. Defaults stay 30 requests / 10 min and 8 failures / 15 min.
  */
 export function allowAuthGuardReset(env = process.env) {
-  return envFlag("ROSTER_AUTH_GUARD_RESET", env) && isLocalOrDev(env);
+  if (!envFlag("ROSTER_AUTH_GUARD_RESET", env)) return false;
+  if (isProdRuntime(env)) return false;
+  return isLocalOrDev(env);
 }
 
 export function resetSkipOnboardingNotice() {

@@ -320,7 +320,9 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (method === "POST" && pathname === "/api/v1/debug/auth-guard/reset") {
-      if (!allowAuthGuardReset()) {
+      const raw = req.headers["x-roster-test-reset"];
+      const header = String(Array.isArray(raw) ? raw[0] : raw || "").trim();
+      if (!allowAuthGuardReset() || header !== "1") {
         json(res, 404, { error: "not found" });
         return;
       }
