@@ -11,6 +11,7 @@ export default defineConfig({
   timeout: 60_000,
   use: {
     baseURL: `http://127.0.0.1:${webPort}`,
+    extraHTTPHeaders: { "X-Roster-Test-Reset": "1" },
     trace: "retain-on-failure",
   },
   webServer: [
@@ -27,6 +28,8 @@ export default defineConfig({
         ROSTER_DEMO: "1",
         ROSTER_ALLOW_RESET: "1",
         ROSTER_DEMO_RESET_MS: "0",
+        // Test-only. The reset route also requires header X-Roster-Test-Reset: 1.
+        ROSTER_AUTH_GUARD_RESET: "1",
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || "e2e-slack-token",
         SLACK_CHANNEL_SHIP: process.env.SLACK_CHANNEL_SHIP || "C-SHIP",
         ROSTER_SLACK_API: process.env.ROSTER_SLACK_API || "http://127.0.0.1:8796",

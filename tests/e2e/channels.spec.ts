@@ -1,5 +1,10 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { resetAuthGuard } from "./auth-guard";
 import { startFakeOpenCode } from "./fake-opencode";
+
+test.beforeEach(async ({ request }) => {
+  await resetAuthGuard(request);
+});
 
 const API = "http://127.0.0.1:8790";
 const COMPANY_PORT = 14180;

@@ -19,8 +19,8 @@ import {
 import { listProviders, upsertProvider, setAuth, removeProvider, listModels, mergeModelLists, readOpenCodeConfig, hasProviderKey, canonicalProviderId } from "./providers.mjs";
 import { featherlessOfferedModelIds, PROVIDER_WRITE_CATALOG_TIMEOUT_MS } from "./featherless-catalog.mjs";
 import { addFirstUser, changePassword, DEMO_TOKEN, loginUser, parseBearer, publicUser, revokeSession, skipOnboarding, userFromToken } from "./auth.mjs";
-import { allowStateReset, demoMode, demoResetMs, isLocalOrDev } from "./flags.mjs";
-import { chargeAuthRate, authGuardKind, clearAuthFailures, recordAuthFailure } from "./auth-guard.mjs";
+import { allowAuthGuardReset, allowStateReset, demoMode, demoResetMs, isLocalOrDev } from "./flags.mjs";
+import { chargeAuthRate, authGuardKind, clearAuthFailures, recordAuthFailure, resetAuthGuard } from "./auth-guard.mjs";
 import { corsHeaders } from "./cors.mjs";
 import { clientIp } from "./client-ip.mjs";
 import { createApiToken, isApiToken, listApiTokens, resolveApiToken, revokeApiToken, seedApiTokenFromEnv, tokenAllows } from "./tokens.mjs";
@@ -317,6 +317,17 @@ const server = createServer(async (req, res) => {
     }
     if (method === "GET" && pathname === "/api/v1/debug/trace" && !isLocalOrDev()) {
       json(res, 404, { error: "not found" });
+      return;
+    }
+    if (method === "POST" && pathname === "/api/v1/debug/auth-guard/reset") {
+      const raw = req.headers["x-roster-test-reset"];
+      const header = String(Array.isArray(raw) ? raw[0] : raw || "").trim();
+      if (!allowAuthGuardReset() || header !== "1") {
+        json(res, 404, { error: "not found" });
+        return;
+      }
+      resetAuthGuard();
+      json(res, 200, { ok: true });
       return;
     }
     if (method === "OPTIONS") {

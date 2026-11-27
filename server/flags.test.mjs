@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowStateReset, demoMode, demoResetMs, isLocalOrDev, resetSkipOnboardingNotice, skipOnboarding } from "./flags.mjs";
+import { allowAuthGuardReset, allowStateReset, demoMode, demoResetMs, isLocalOrDev, resetSkipOnboardingNotice, skipOnboarding } from "./flags.mjs";
 
 function withEnv(map, fn) {
   const prev = {};
@@ -25,6 +25,36 @@ test("demoMode is off unless ROSTER_DEMO is 1 or true", () => {
   withEnv({ ROSTER_DEMO: "0" }, () => assert.equal(demoMode(), false));
   withEnv({ ROSTER_DEMO: "1" }, () => assert.equal(demoMode(), true));
   withEnv({ ROSTER_DEMO: "true" }, () => assert.equal(demoMode(), true));
+});
+
+test("allowAuthGuardReset stays off in production and without the test flag", () => {
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "production", ENVIRONMENT: "production" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "production", ENVIRONMENT: "" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "production", ENVIRONMENT: "development" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "development", ENVIRONMENT: "PROD" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "Production", ENVIRONMENT: "local" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "dev", ENVIRONMENT: "prod" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "", NODE_ENV: "", ENVIRONMENT: "local" }, () => {
+    assert.equal(allowAuthGuardReset(), false);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "1", NODE_ENV: "", ENVIRONMENT: "local" }, () => {
+    assert.equal(allowAuthGuardReset(), true);
+  });
+  withEnv({ ROSTER_AUTH_GUARD_RESET: "true", NODE_ENV: "dev", ENVIRONMENT: "" }, () => {
+    assert.equal(allowAuthGuardReset(), true);
+  });
 });
 
 test("allowStateReset is false on public demo unless ROSTER_ALLOW_RESET", () => {

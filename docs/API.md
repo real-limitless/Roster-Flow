@@ -14,6 +14,8 @@ Public without a session: `GET /health`, `GET /setup/status`, `POST /setup/insta
 
 `POST /api/v1/auth/login`, `/api/v1/access`, `/api/v1/setup/*`, and `/api/v1/slack*` share an in-memory limit per client IP. Defaults are 30 requests per 10 minutes (`ROSTER_AUTH_RATE_MAX`, `ROSTER_AUTH_RATE_WINDOW_MS`) and a lockout after 8 failed attempts for 15 minutes (`ROSTER_AUTH_LOCKOUT_AFTER`, `ROSTER_AUTH_LOCKOUT_MS`). Both return **429** with `Retry-After`. `CF-Connecting-IP` and `X-Forwarded-For` are used only when `ROSTER_TRUST_PROXY=1` or the peer is listed in `ROSTER_TRUSTED_PROXIES`.
 
+`ROSTER_AUTH_GUARD_RESET` is test-only. Never set it in a deployed environment. When it is `1` or `true`, `POST /api/v1/debug/auth-guard/reset` can clear that in-memory limiter. The route is **404**, and the limiter is left unchanged, unless every one of these is true: the flag is set, neither `NODE_ENV` nor `ENVIRONMENT` is `production` or `prod` (any case, so a development name on the other side does not open it), at least one of those names is `local`, `dev`, or `development`, and the request sends `X-Roster-Test-Reset: 1`. A POST without that header does not clear the limiter. The 30-request and 8-failure defaults do not change.
+
 CORS allow-origin is never `*`. `ROSTER_CORS_ORIGINS` is a comma-separated allowlist. When it is unset, only a same-origin `Origin` (its host matches the request `Host`) is reflected. `GET /api/v1/debug/trace` responds only when `NODE_ENV` or `ENVIRONMENT` is `local`, `dev`, or `development`; otherwise it is **404**.
 
 | Method | Path | Purpose |

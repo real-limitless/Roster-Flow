@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chargeAuthRate, authGuardKind, clearAuthFailures, recordAuthFailure, resetAuthGuard } from "./auth-guard.mjs";
+import { chargeAuthRate, authGuardKind, authGuardLimits, clearAuthFailures, recordAuthFailure, resetAuthGuard } from "./auth-guard.mjs";
 import { clientIp } from "./client-ip.mjs";
 import { allowOrigin, corsHeaders } from "./cors.mjs";
 import { bootCore } from "./test-helpers.mjs";
@@ -18,6 +18,14 @@ test("auth guard kind covers login, access, setup, and slack", () => {
   assert.equal(authGuardKind("POST", "/api/v1/setup/first-user"), "setup");
   assert.equal(authGuardKind("POST", "/api/v1/slack/events"), "slack");
   assert.equal(authGuardKind("GET", "/api/v1/health"), "");
+});
+
+test("auth guard defaults stay at 30 requests and 8 failures", () => {
+  const limits = authGuardLimits({});
+  assert.equal(limits.max, 30);
+  assert.equal(limits.lockAfter, 8);
+  assert.equal(authGuardLimits({ ROSTER_AUTH_GUARD_RESET: "1" }).max, 30);
+  assert.equal(authGuardLimits({ ROSTER_AUTH_GUARD_RESET: "1" }).lockAfter, 8);
 });
 
 test("rate limit and lockout share one bucket per IP", () => {
@@ -108,6 +116,114 @@ test("login lockout returns 429 with Retry-After and CORS stays on the allowlist
     assert.equal(trace.status, 404);
   } finally {
     await core.stop();
+  }
+});
+
+test("auth guard reset is off in production and clears a local test process", async () => {
+  const login = (base) =>
+    fetch(`${base}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "nobody@example.com", password: "not-the-password" }),
+    });
+  const prod = await bootCore({
+    ROSTER_AUTH_RATE_MAX: "2",
+    ROSTER_AUTH_LOCKOUT_AFTER: "100",
+    ROSTER_AUTH_GUARD_RESET: "1",
+    NODE_ENV: "production",
+    ENVIRONMENT: "production",
+  });
+  try {
+    const hidden = await fetch(`${prod.base}/api/v1/debug/auth-guard/reset`, { method: "POST" });
+    assert.equal(hidden.status, 404);
+    assert.equal((await login(prod.base)).status, 401);
+    assert.equal((await login(prod.base)).status, 401);
+    assert.equal((await login(prod.base)).status, 429);
+    const again = await fetch(`${prod.base}/api/v1/debug/auth-guard/reset`, { method: "POST" });
+    assert.equal(again.status, 404);
+    assert.equal((await login(prod.base)).status, 429);
+  } finally {
+    await prod.stop();
+  }
+
+  const local = await bootCore({
+    ROSTER_AUTH_RATE_MAX: "2",
+    ROSTER_AUTH_LOCKOUT_AFTER: "100",
+    ROSTER_AUTH_GUARD_RESET: "1",
+    NODE_ENV: "local",
+    ENVIRONMENT: "local",
+  });
+  try {
+    assert.equal((await login(local.base)).status, 401);
+    assert.equal((await login(local.base)).status, 401);
+    assert.equal((await login(local.base)).status, 429);
+    const reset = await fetch(`${local.base}/api/v1/debug/auth-guard/reset`, {
+      method: "POST",
+      headers: { "x-roster-test-reset": "1" },
+    });
+    assert.equal(reset.status, 200);
+    assert.equal((await reset.json()).ok, true);
+    assert.equal((await login(local.base)).status, 401);
+  } finally {
+    await local.stop();
+  }
+
+  const closed = await bootCore({
+    ROSTER_AUTH_GUARD_RESET: "",
+    NODE_ENV: "local",
+    ENVIRONMENT: "local",
+  });
+  try {
+    const reset = await fetch(`${closed.base}/api/v1/debug/auth-guard/reset`, { method: "POST" });
+    assert.equal(reset.status, 404);
+  } finally {
+    await closed.stop();
+  }
+});
+
+test("auth guard reset refuses a production name on either side and a missing test header", async () => {
+  const login = (base) =>
+    fetch(`${base}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "nobody@example.com", password: "not-the-password" }),
+    });
+  const reset = (base, headers) =>
+    fetch(`${base}/api/v1/debug/auth-guard/reset`, { method: "POST", headers });
+  const mixed = await bootCore({
+    ROSTER_AUTH_RATE_MAX: "2",
+    ROSTER_AUTH_LOCKOUT_AFTER: "100",
+    ROSTER_AUTH_GUARD_RESET: "1",
+    NODE_ENV: "production",
+    ENVIRONMENT: "development",
+  });
+  try {
+    assert.equal((await login(mixed.base)).status, 401);
+    assert.equal((await login(mixed.base)).status, 401);
+    assert.equal((await login(mixed.base)).status, 429);
+    assert.equal((await reset(mixed.base, { "x-roster-test-reset": "1" })).status, 404);
+    assert.equal((await login(mixed.base)).status, 429);
+  } finally {
+    await mixed.stop();
+  }
+
+  const local = await bootCore({
+    ROSTER_AUTH_RATE_MAX: "2",
+    ROSTER_AUTH_LOCKOUT_AFTER: "100",
+    ROSTER_AUTH_GUARD_RESET: "1",
+    NODE_ENV: "local",
+    ENVIRONMENT: "local",
+  });
+  try {
+    assert.equal((await login(local.base)).status, 401);
+    assert.equal((await login(local.base)).status, 401);
+    assert.equal((await login(local.base)).status, 429);
+    assert.equal((await reset(local.base)).status, 404);
+    assert.equal((await login(local.base)).status, 429);
+    assert.equal((await reset(local.base, { "x-roster-test-reset": "1" })).status, 200);
+    assert.equal((await login(local.base)).status, 401);
+  } finally {
+    await local.stop();
   }
 });
 
